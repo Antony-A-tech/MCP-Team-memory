@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Team Memory - Dashboard</title>
+  <link rel="stylesheet" href="styles.css">
+  <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
+</head>
+<body>
+  <div class="app">
+    <!-- Sidebar -->
+    <aside class="sidebar">
+      <div class="logo">
+        <i data-lucide="brain" class="logo-icon"></i>
+        <span class="logo-text">Team Memory</span>
+      </div>
+
+      <nav class="nav">
+        <button class="nav-item active" data-category="all">
+          <i data-lucide="layout-grid" class="nav-icon"></i>
+          <span>Все записи</span>
+          <span class="nav-count" id="count-all">0</span>
+        </button>
+        <button class="nav-item" data-category="pinned">
+          <i data-lucide="pin" class="nav-icon"></i>
+          <span>Закреплённые</span>
+          <span class="nav-count" id="count-pinned">0</span>
+        </button>
+        <button class="nav-item" data-category="architecture">
+          <i data-lucide="building-2" class="nav-icon"></i>
+          <span>Архитектура</span>
+          <span class="nav-count" id="count-architecture">0</span>
+        </button>
+        <button class="nav-item" data-category="tasks">
+          <i data-lucide="clipboard-list" class="nav-icon"></i>
+          <span>Задачи</span>
+          <span class="nav-count" id="count-tasks">0</span>
+        </button>
+        <button class="nav-item" data-category="decisions">
+          <i data-lucide="check-circle-2" class="nav-icon"></i>
+          <span>Решения</span>
+          <span class="nav-count" id="count-decisions">0</span>
+        </button>
+        <button class="nav-item" data-category="issues">
+          <i data-lucide="bug" class="nav-icon"></i>
+          <span>Проблемы</span>
+          <span class="nav-count" id="count-issues">0</span>
+        </button>
+        <button class="nav-item" data-category="progress">
+          <i data-lucide="trending-up" class="nav-icon"></i>
+          <span>Прогресс</span>
+          <span class="nav-count" id="count-progress">0</span>
+        </button>
+      </nav>
+
+      <div class="sidebar-footer">
+        <div class="agents-status">
+          <span class="status-dot"></span>
+          <span id="agents-count">0 агентов онлайн</span>
+        </div>
+        <button class="btn btn-secondary" id="btn-backup">
+          <i data-lucide="hard-drive-download"></i>
+          Создать бэкап
+        </button>
+      </div>
+    </aside>
+
+    <!-- Main Content -->
+    <main class="main">
+      <!-- Header -->
+      <header class="header">
+        <div class="header-left">
+          <h1 id="page-title">Все записи</h1>
+          <div class="stats">
+            <span class="stat">
+              <span class="stat-value" id="stat-total">0</span>
+              <span class="stat-label">всего</span>
+            </span>
+            <span class="stat">
+              <span class="stat-value" id="stat-24h">0</span>
+              <span class="stat-label">за 24ч</span>
+            </span>
+          </div>
+        </div>
+        <div class="header-right">
+          <div class="search-box">
+            <i data-lucide="search" class="search-icon"></i>
+            <input type="text" id="search-input" placeholder="Поиск...">
+          </div>
+          <select id="status-filter">
+            <option value="">Все статусы</option>
+            <option value="active">Активные</option>
+            <option value="completed">Завершённые</option>
+            <option value="archived">Архив</option>
+          </select>
+          <button class="btn btn-primary" id="btn-add">
+            <i data-lucide="plus"></i>
+            Добавить
+          </button>
+        </div>
+      </header>
+
+      <!-- Entries Grid -->
+      <div class="entries-container" id="entries-container">
+        <div class="loading">
+          <i data-lucide="loader-2" class="spin"></i>
+          <span>Загрузка...</span>
+        </div>
+      </div>
+    </main>
+
+    <!-- Add/Edit Modal -->
+    <div class="modal" id="entry-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="modal-title">Добавить запись</h2>
+          <button class="modal-close" id="modal-close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <form id="entry-form">
+          <input type="hidden" id="entry-id">
+
+          <div class="form-group">
+            <label for="entry-category">Категория</label>
+            <select id="entry-category" required>
+              <option value="architecture">Архитектура</option>
+              <option value="tasks">Задачи</option>
+              <option value="decisions">Решения</option>
+              <option value="issues">Проблемы</option>
+              <option value="progress">Прогресс</option>
+            </select>
+          </div>
+
+          <div class="form-group">
+            <label for="entry-title">Заголовок</label>
+            <input type="text" id="entry-title" required placeholder="Краткое описание">
+          </div>
+
+          <div class="form-group">
+            <label for="entry-content">Содержимое</label>
+            <textarea id="entry-content" required rows="5" placeholder="Подробное описание..."></textarea>
+          </div>
+
+          <div class="form-row">
+            <div class="form-group">
+              <label for="entry-priority">Приоритет</label>
+              <select id="entry-priority">
+                <option value="low">Низкий</option>
+                <option value="medium" selected>Средний</option>
+                <option value="high">Высокий</option>
+                <option value="critical">Критический</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="entry-status">Статус</label>
+              <select id="entry-status">
+                <option value="active">Активный</option>
+                <option value="completed">Завершён</option>
+                <option value="archived">Архив</option>
+              </select>
+            </div>
+          </div>
+
+          <div class="form-group">
+            <label for="entry-tags">Теги (через запятую)</label>
+            <input type="text" id="entry-tags" placeholder="frontend, api, bug">
+          </div>
+
+          <div class="form-group">
+            <label for="entry-author">Автор</label>
+            <input type="text" id="entry-author" placeholder="Имя или агент">
+          </div>
+
+          <div class="form-actions">
+            <button type="button" class="btn btn-secondary" id="btn-cancel">Отмена</button>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Toast Notifications -->
+    <div class="toast-container" id="toast-container"></div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

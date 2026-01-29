@@ -1,0 +1,216 @@
+import { WebSocketServer, WebSocket } from 'ws';
+import type { MemoryManager } from '../memory/manager.js';
+import type { WSEvent } from '../memory/types.js';
+
+interface ConnectedClient {
+  ws: WebSocket;
+  id: string;
+  name: string;
+  connectedAt: Date;
+}
+
+export class SyncWebSocketServer {
+  private wss: WebSocketServer | null = null;
+  private clients: Map<string, ConnectedClient> = new Map();
+  private memoryManager: MemoryManager;
+  private unsubscribe: (() => void) | null = null;
+
+  constructor(memoryManager: MemoryManager) {
+    this.memoryManager = memoryManager;
+  }
+
+  start(port: number): void {
+    this.wss = new WebSocketServer({ port });
+
+    console.error(`WebSocket server started on port ${port}`);
+
+    this.wss.on('connection', (ws, req) => {
+      const clientId = this.generateClientId();
+      const clientName = req.headers['x-agent-name']?.toString() || `agent-${clientId.slice(0, 8)}`;
+
+      const client: ConnectedClient = {
+        ws,
+        id: clientId,
+        name: clientName,
+        connectedAt: new Date()
+      };
+
+      this.clients.set(clientId, client);
+
+      console.error(`Client connected: ${clientName} (${clientId})`);
+
+      // Отправляем приветственное сообщение
+      this.sendToClient(ws, {
+        type: 'agent:connected',
+        payload: {
+          clientId,
+          clientName,
+          connectedClients: this.getConnectedClientsInfo()
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      // Уведомляем других клиентов
+      this.broadcastExcept(clientId, {
+        type: 'agent:connected',
+        payload: {
+          clientId,
+          clientName
+        },
+        timestamp: new Date().toISOString()
+      });
+
+      // Обработка сообщений от клиента
+      ws.on('message', (data) => {
+        try {
+          const message = JSON.parse(data.toString());
+          this.handleClientMessage(clientId, message);
+        } catch (error) {
+          console.error('Invalid message from client:', error);
+        }
+      });
+
+      // Обработка отключения
+      ws.on('close', () => {
+        this.clients.delete(clientId);
+        console.error(`Client disconnected: ${clientName} (${clientId})`);
+
+        this.broadcast({
+          type: 'agent:disconnected',
+          payload: { clientId, clientName },
+          timestamp: new Date().toISOString()
+        });
+      });
+
+      // Обработка ошибок
+      ws.on('error', (error) => {
+        console.error(`WebSocket error for ${clientName}:`, error);
+      });
+    });
+
+    // Подписываемся на события памяти
+    this.unsubscribe = this.memoryManager.subscribe((event) => {
+      this.broadcast(event);
+    });
+  }
+
+  private handleClientMessage(clientId: string, message: unknown): void {
+    const client = this.clients.get(clientId);
+    if (!client) return;
+
+    const msg = message as { type?: string; payload?: unknown };
+
+    switch (msg.type) {
+      case 'ping':
+        this.sendToClient(client.ws, {
+          type: 'memory:sync',
+          payload: { pong: true },
+          timestamp: new Date().toISOString()
+        });
+        break;
+
+      case 'sync_request':
+        // Клиент запрашивает синхронизацию
+        this.handleSyncRequest(client, msg.payload as { since?: string });
+        break;
+
+      case 'rename':
+        // Клиент меняет имя
+        const newName = (msg.payload as { name?: string })?.name;
+        if (newName) {
+          client.name = newName;
+          this.broadcast({
+            type: 'agent:connected',
+            payload: {
+              clientId,
+              clientName: newName,
+              renamed: true
+            },
+            timestamp: new Date().toISOString()
+          });
+        }
+        break;
+
+      default:
+        console.error(`Unknown message type from ${client.name}:`, msg.type);
+    }
+  }
+
+  private async handleSyncRequest(
+    client: ConnectedClient,
+    payload: { since?: string }
+  ): Promise<void> {
+    try {
+      const result = await this.memoryManager.sync({
+        since: payload?.since
+      });
+
+      this.sendToClient(client.ws, {
+        type: 'memory:sync',
+        payload: result,
+        timestamp: new Date().toISOString()
+      });
+    } catch (error) {
+      console.error('Sync request failed:', error);
+    }
+  }
+
+  private sendToClient(ws: WebSocket, event: WSEvent): void {
+    if (ws.readyState === WebSocket.OPEN) {
+      ws.send(JSON.stringify(event));
+    }
+  }
+
+  private broadcast(event: WSEvent): void {
+    const message = JSON.stringify(event);
+    this.clients.forEach((client) => {
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(message);
+      }
+    });
+  }
+
+  private broadcastExcept(excludeId: string, event: WSEvent): void {
+    const message = JSON.stringify(event);
+    this.clients.forEach((client, id) => {
+      if (id !== excludeId && client.ws.readyState === WebSocket.OPEN) {
+        client.ws.send(message);
+      }
+    });
+  }
+
+  private generateClientId(): string {
+    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+  }
+
+  getConnectedClientsInfo(): Array<{ id: string; name: string; connectedAt: string }> {
+    return Array.from(this.clients.values()).map(c => ({
+      id: c.id,
+      name: c.name,
+      connectedAt: c.connectedAt.toISOString()
+    }));
+  }
+
+  getConnectedCount(): number {
+    return this.clients.size;
+  }
+
+  stop(): void {
+    if (this.unsubscribe) {
+      this.unsubscribe();
+      this.unsubscribe = null;
+    }
+
+    if (this.wss) {
+      this.clients.forEach((client) => {
+        client.ws.close();
+      });
+      this.clients.clear();
+
+      this.wss.close();
+      this.wss = null;
+
+      console.error('WebSocket server stopped');
+    }
+  }
+}

@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "allow": [
+      "mcp__team-memory__memory_read",
+      "mcp__team-memory__memory_delete",
+      "mcp__team-memory__memory_write"
+    ]
+  }
+}

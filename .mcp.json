@@ -1,0 +1,10 @@
+{
+  "mcpServers": {
+    "team-memory": {
+      "type": "stdio",
+      "command": "node",
+      "args": ["D:/MCP/team-memory-mcp/dist/index.js"],
+      "env": {}
+    }
+  }
+}
