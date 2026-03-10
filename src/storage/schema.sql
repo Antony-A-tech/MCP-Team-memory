@@ -96,10 +96,29 @@ CREATE INDEX IF NOT EXISTS idx_audit_project  ON audit_log(project_id);
 CREATE INDEX IF NOT EXISTS idx_audit_created  ON audit_log(created_at);
 CREATE INDEX IF NOT EXISTS idx_audit_action   ON audit_log(action);
 
+-- Entry versions (history of changes)
+CREATE TABLE IF NOT EXISTS entry_versions (
+    id          BIGSERIAL PRIMARY KEY,
+    entry_id    UUID NOT NULL,
+    version     INT NOT NULL DEFAULT 1,
+    title       TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    domain      TEXT,
+    category    TEXT NOT NULL,
+    tags        TEXT[] DEFAULT '{}',
+    priority    TEXT NOT NULL,
+    status      TEXT NOT NULL,
+    author      TEXT NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE(entry_id, version)
+);
+
+CREATE INDEX IF NOT EXISTS idx_versions_entry ON entry_versions(entry_id);
+
 -- Schema version tracking
 CREATE TABLE IF NOT EXISTS schema_meta (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
 );
-INSERT INTO schema_meta(key, value) VALUES ('version', '2.0.0')
-    ON CONFLICT (key) DO UPDATE SET value = '2.0.0';
+INSERT INTO schema_meta(key, value) VALUES ('version', '2.1.0')
+    ON CONFLICT (key) DO UPDATE SET value = '2.1.0';
