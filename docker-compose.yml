@@ -1,0 +1,32 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: team_memory
+      POSTGRES_USER: memory
+      POSTGRES_PASSWORD: memory
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    ports:
+      - "5432:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memory -d team_memory"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  app:
+    build: .
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql://memory:memory@postgres:5432/team_memory
+      MEMORY_TRANSPORT: http
+      MEMORY_PORT: "3846"
+    ports:
+      - "3846:3846"
+    restart: unless-stopped
+
+volumes:
+  pgdata:

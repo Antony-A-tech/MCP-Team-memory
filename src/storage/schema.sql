@@ -1,0 +1,89 @@
+-- Team Memory MCP v2 — PostgreSQL Schema
+
+-- Projects table
+CREATE TABLE IF NOT EXISTS projects (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    name        TEXT NOT NULL,
+    description TEXT DEFAULT '',
+    domains     TEXT[] DEFAULT ARRAY['backend','frontend','infrastructure','devops','database','testing'],
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- Memory entries table
+CREATE TABLE IF NOT EXISTS entries (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    project_id  UUID NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+    category    TEXT NOT NULL CHECK (category IN ('architecture','tasks','decisions','issues','progress')),
+    domain      TEXT DEFAULT NULL,
+    title       TEXT NOT NULL,
+    content     TEXT NOT NULL,
+    author      TEXT DEFAULT 'unknown',
+    tags        TEXT[] DEFAULT '{}',
+    priority    TEXT NOT NULL DEFAULT 'medium' CHECK (priority IN ('low','medium','high','critical')),
+    status      TEXT NOT NULL DEFAULT 'active' CHECK (status IN ('active','completed','archived')),
+    pinned      BOOLEAN NOT NULL DEFAULT FALSE,
+    related_ids UUID[] DEFAULT '{}',
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    search_vector TSVECTOR
+);
+
+-- Indexes
+CREATE INDEX IF NOT EXISTS idx_entries_project    ON entries(project_id);
+CREATE INDEX IF NOT EXISTS idx_entries_category   ON entries(project_id, category);
+CREATE INDEX IF NOT EXISTS idx_entries_domain     ON entries(project_id, domain);
+CREATE INDEX IF NOT EXISTS idx_entries_status     ON entries(project_id, status);
+CREATE INDEX IF NOT EXISTS idx_entries_updated    ON entries(updated_at);
+CREATE INDEX IF NOT EXISTS idx_entries_pinned     ON entries(project_id, pinned);
+CREATE INDEX IF NOT EXISTS idx_entries_search     ON entries USING GIN(search_vector);
+
+-- Auto-update search_vector trigger
+CREATE OR REPLACE FUNCTION update_search_vector()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.search_vector :=
+        setweight(to_tsvector('simple', coalesce(NEW.title, '')), 'A') ||
+        setweight(to_tsvector('simple', coalesce(NEW.content, '')), 'B') ||
+        setweight(to_tsvector('simple', coalesce(array_to_string(NEW.tags, ' '), '')), 'C');
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_entries_search') THEN
+        CREATE TRIGGER trg_entries_search BEFORE INSERT OR UPDATE ON entries
+            FOR EACH ROW EXECUTE FUNCTION update_search_vector();
+    END IF;
+END $$;
+
+-- Auto-update updated_at trigger
+CREATE OR REPLACE FUNCTION update_timestamp()
+RETURNS TRIGGER AS $$
+BEGIN
+    NEW.updated_at = NOW();
+    RETURN NEW;
+END;
+$$ LANGUAGE plpgsql;
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_entries_updated') THEN
+        CREATE TRIGGER trg_entries_updated BEFORE UPDATE ON entries
+            FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+    END IF;
+END $$;
+
+DO $$ BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_trigger WHERE tgname = 'trg_projects_updated') THEN
+        CREATE TRIGGER trg_projects_updated BEFORE UPDATE ON projects
+            FOR EACH ROW EXECUTE FUNCTION update_timestamp();
+    END IF;
+END $$;
+
+-- Schema version tracking
+CREATE TABLE IF NOT EXISTS schema_meta (
+    key   TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+);
+INSERT INTO schema_meta(key, value) VALUES ('version', '2.0.0')
+    ON CONFLICT (key) DO UPDATE SET value = '2.0.0';

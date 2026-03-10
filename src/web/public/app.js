@@ -1,14 +1,26 @@
-// Team Memory Dashboard - JavaScript
+// Team Memory Dashboard v2 - JavaScript
 
 const API_BASE = '/api';
-const WS_PORT = 3847;
 
 // State
 let currentCategory = 'all';
 let currentSearch = '';
 let currentStatus = '';
+let currentDomain = '';
+let currentProjectId = '';
 let entries = [];
+let projects = [];
 let ws = null;
+
+// Domain display info
+const domainInfo = {
+  backend:        { name: 'Backend',        icon: 'server' },
+  frontend:       { name: 'Frontend',       icon: 'monitor' },
+  infrastructure: { name: 'Infrastructure', icon: 'network' },
+  devops:         { name: 'DevOps',         icon: 'container' },
+  database:       { name: 'Database',       icon: 'database' },
+  testing:        { name: 'Testing',        icon: 'test-tubes' }
+};
 
 // DOM Elements
 const entriesContainer = document.getElementById('entries-container');
@@ -18,6 +30,12 @@ const pageTitle = document.getElementById('page-title');
 const modal = document.getElementById('entry-modal');
 const entryForm = document.getElementById('entry-form');
 const toastContainer = document.getElementById('toast-container');
+const projectSelect = document.getElementById('project-select');
+const projectSelectTrigger = projectSelect.querySelector('.custom-select-trigger');
+const projectSelectValue = projectSelect.querySelector('.custom-select-value');
+const projectOptionsContainer = document.getElementById('project-options');
+const domainFiltersContainer = document.getElementById('domain-filters');
+const projectsModal = document.getElementById('projects-modal');
 
 // Category config
 const categoryConfig = {
@@ -31,15 +49,147 @@ const categoryConfig = {
 };
 
 // Initialize
-document.addEventListener('DOMContentLoaded', () => {
+document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
   initNavigation();
   initSearch();
   initModal();
+  initProjectsModal();
   initWebSocket();
+  await loadProjects();
   loadEntries();
   loadStats();
 });
+
+// === Projects ===
+
+async function loadProjects() {
+  try {
+    const response = await fetch(`${API_BASE}/projects`);
+    const result = await response.json();
+
+    if (result.success) {
+      projects = result.projects;
+      renderProjectSelect();
+      renderDomainFilters();
+    }
+  } catch (error) {
+    console.error('Failed to load projects:', error);
+  }
+}
+
+function renderProjectSelect() {
+  const current = currentProjectId;
+  projectOptionsContainer.innerHTML = '';
+
+  for (const p of projects) {
+    const opt = document.createElement('div');
+    opt.className = 'custom-select-option' + (p.id === current ? ' selected' : '');
+    opt.dataset.value = p.id;
+    opt.innerHTML = `
+      <span class="custom-select-option-name">${escapeHtml(p.name)}</span>
+      ${p.description ? `<span class="custom-select-option-desc">${escapeHtml(p.description)}</span>` : ''}
+    `;
+    opt.addEventListener('click', () => {
+      selectProjectOption(p.id);
+    });
+    projectOptionsContainer.appendChild(opt);
+  }
+
+  // Restore selection or select default
+  if (current && projects.some(p => p.id === current)) {
+    updateProjectSelectDisplay(current);
+  } else if (projects.length > 0) {
+    const defaultProject = projects.find(p => p.name === 'default') || projects[0];
+    updateProjectSelectDisplay(defaultProject.id);
+    currentProjectId = defaultProject.id;
+  }
+}
+
+function updateProjectSelectDisplay(projectId) {
+  const project = projects.find(p => p.id === projectId);
+  if (project) {
+    projectSelectValue.textContent = project.name;
+  }
+  // Update selected state
+  projectOptionsContainer.querySelectorAll('.custom-select-option').forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.value === projectId);
+  });
+}
+
+function selectProjectOption(projectId) {
+  projectSelect.classList.remove('open');
+  updateProjectSelectDisplay(projectId);
+  switchProject(projectId);
+}
+
+function escapeHtml(text) {
+  const div = document.createElement('div');
+  div.textContent = text;
+  return div.innerHTML;
+}
+
+function renderDomainFilters() {
+  const project = projects.find(p => p.id === currentProjectId);
+  const domains = project ? project.domains : [];
+
+  domainFiltersContainer.innerHTML = '';
+
+  // "All domains" pill
+  const allBtn = document.createElement('button');
+  allBtn.className = 'domain-pill' + (currentDomain === '' ? ' active' : '');
+  allBtn.dataset.domain = '';
+  allBtn.textContent = 'Все домены';
+  allBtn.addEventListener('click', () => selectDomain(''));
+  domainFiltersContainer.appendChild(allBtn);
+
+  // Domain pills
+  for (const d of domains) {
+    const btn = document.createElement('button');
+    btn.className = 'domain-pill' + (currentDomain === d ? ' active' : '');
+    btn.dataset.domain = d;
+    const info = domainInfo[d];
+    btn.innerHTML = info
+      ? `<i data-lucide="${info.icon}"></i> ${info.name}`
+      : escapeHtml(d);
+    btn.addEventListener('click', () => selectDomain(d));
+    domainFiltersContainer.appendChild(btn);
+  }
+
+  lucide.createIcons();
+}
+
+function selectDomain(domain) {
+  currentDomain = domain;
+  domainFiltersContainer.querySelectorAll('.domain-pill').forEach(btn => {
+    btn.classList.toggle('active', btn.dataset.domain === domain);
+  });
+  loadEntries();
+}
+
+function switchProject(projectId) {
+  currentProjectId = projectId;
+  currentDomain = '';
+  renderDomainFilters();
+  populateEntryDomainSelect();
+  loadEntries();
+  loadStats();
+}
+
+function populateEntryDomainSelect() {
+  const domainSelect = document.getElementById('entry-domain');
+  const project = projects.find(p => p.id === currentProjectId);
+  const domains = project ? project.domains : [];
+
+  domainSelect.innerHTML = '<option value="">Без домена</option>';
+  for (const d of domains) {
+    const opt = document.createElement('option');
+    opt.value = d;
+    const info = domainInfo[d];
+    opt.textContent = info ? info.name : d;
+    domainSelect.appendChild(opt);
+  }
+}
 
 // Navigation
 function initNavigation() {
@@ -55,7 +205,19 @@ function initNavigation() {
   });
 
   document.getElementById('btn-add').addEventListener('click', () => openModal());
-  document.getElementById('btn-backup').addEventListener('click', createBackup);
+
+  // Custom project dropdown toggle
+  projectSelectTrigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    projectSelect.classList.toggle('open');
+  });
+
+  // Close dropdown on outside click
+  document.addEventListener('click', (e) => {
+    if (!projectSelect.contains(e.target)) {
+      projectSelect.classList.remove('open');
+    }
+  });
 }
 
 // Search & Filter
@@ -75,7 +237,8 @@ function initSearch() {
   });
 }
 
-// Modal
+// === Entry Modal ===
+
 function initModal() {
   document.getElementById('modal-close').addEventListener('click', closeModal);
   document.getElementById('btn-cancel').addEventListener('click', closeModal);
@@ -88,12 +251,14 @@ function initModal() {
 }
 
 function openModal(entry = null) {
+  populateEntryDomainSelect();
   const modalTitle = document.getElementById('modal-title');
 
   if (entry) {
     modalTitle.textContent = 'Редактировать запись';
     document.getElementById('entry-id').value = entry.id;
     document.getElementById('entry-category').value = entry.category;
+    document.getElementById('entry-domain').value = entry.domain || '';
     document.getElementById('entry-title').value = entry.title;
     document.getElementById('entry-content').value = entry.content;
     document.getElementById('entry-priority').value = entry.priority;
@@ -104,8 +269,11 @@ function openModal(entry = null) {
     modalTitle.textContent = 'Добавить запись';
     entryForm.reset();
     document.getElementById('entry-id').value = '';
-    if (currentCategory !== 'all') {
+    if (currentCategory !== 'all' && currentCategory !== 'pinned') {
       document.getElementById('entry-category').value = currentCategory;
+    }
+    if (currentDomain) {
+      document.getElementById('entry-domain').value = currentDomain;
     }
   }
 
@@ -122,6 +290,7 @@ async function handleFormSubmit(e) {
   const id = document.getElementById('entry-id').value;
   const data = {
     category: document.getElementById('entry-category').value,
+    domain: document.getElementById('entry-domain').value || null,
     title: document.getElementById('entry-title').value,
     content: document.getElementById('entry-content').value,
     priority: document.getElementById('entry-priority').value,
@@ -129,6 +298,10 @@ async function handleFormSubmit(e) {
     tags: document.getElementById('entry-tags').value.split(',').map(t => t.trim()).filter(Boolean),
     author: document.getElementById('entry-author').value || 'web-ui'
   };
+
+  if (!id) {
+    data.project_id = currentProjectId;
+  }
 
   try {
     let response;
@@ -162,7 +335,131 @@ async function handleFormSubmit(e) {
   }
 }
 
-// Load Data
+// === Projects Modal ===
+
+function initProjectsModal() {
+  document.getElementById('btn-manage-projects').addEventListener('click', openProjectsModal);
+  document.getElementById('projects-modal-close').addEventListener('click', closeProjectsModal);
+  projectsModal.addEventListener('click', (e) => {
+    if (e.target === projectsModal) closeProjectsModal();
+  });
+  document.getElementById('btn-create-project').addEventListener('click', createProject);
+}
+
+function openProjectsModal() {
+  projectsModal.classList.add('active');
+  renderProjectsList();
+  lucide.createIcons();
+}
+
+function closeProjectsModal() {
+  projectsModal.classList.remove('active');
+}
+
+function renderProjectsList() {
+  const container = document.getElementById('projects-list');
+
+  if (projects.length === 0) {
+    container.innerHTML = '<div class="empty-state-text">Нет проектов</div>';
+    return;
+  }
+
+  container.innerHTML = projects.map(p => `
+    <div class="project-item" data-id="${p.id}">
+      <div class="project-item-info">
+        <div class="project-item-name">
+          <i data-lucide="folder"></i>
+          <strong>${escapeHtml(p.name)}</strong>
+          ${p.name === 'default' ? '<span class="badge">по умолчанию</span>' : ''}
+        </div>
+        <div class="project-item-desc">${p.description ? escapeHtml(p.description) : '<em>Нет описания</em>'}</div>
+        <div class="project-item-domains">
+          ${p.domains.map(d => {
+            const info = domainInfo[d];
+            return `<span class="domain-tag">${info ? info.name : escapeHtml(d)}</span>`;
+          }).join('')}
+        </div>
+      </div>
+      <div class="project-item-actions">
+        ${p.name !== 'default' ? `
+          <button class="btn-icon" onclick="deleteProject('${p.id}')" title="Удалить проект">
+            <i data-lucide="trash-2"></i>
+          </button>
+        ` : ''}
+      </div>
+    </div>
+  `).join('');
+
+  lucide.createIcons();
+}
+
+async function createProject() {
+  const nameInput = document.getElementById('new-project-name');
+  const descInput = document.getElementById('new-project-description');
+  const name = nameInput.value.trim();
+  const description = descInput.value.trim();
+
+  if (!name) {
+    showToast('Введите название проекта', 'error');
+    return;
+  }
+
+  try {
+    const response = await fetch(`${API_BASE}/projects`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, description })
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      showToast('Проект создан', 'success');
+      nameInput.value = '';
+      descInput.value = '';
+      await loadProjects();
+      renderProjectsList();
+    } else {
+      showToast(result.error || 'Ошибка создания', 'error');
+    }
+  } catch (error) {
+    showToast('Ошибка сети', 'error');
+    console.error(error);
+  }
+}
+
+window.deleteProject = async function(id) {
+  const project = projects.find(p => p.id === id);
+  if (!project) return;
+
+  if (!confirm(`Удалить проект "${project.name}" и все его записи?`)) return;
+
+  try {
+    const response = await fetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' });
+    const result = await response.json();
+
+    if (result.success) {
+      showToast('Проект удалён', 'success');
+
+      // Switch to default if deleted current
+      if (currentProjectId === id) {
+        const defaultProject = projects.find(p => p.name === 'default');
+        if (defaultProject) switchProject(defaultProject.id);
+      }
+
+      await loadProjects();
+      renderProjectsList();
+    } else {
+      showToast(result.error || 'Ошибка удаления', 'error');
+    }
+  } catch (error) {
+    showToast('Ошибка сети', 'error');
+    console.error(error);
+  }
+};
+
+// === Load Data ===
+
 async function loadEntries() {
   entriesContainer.innerHTML = `
     <div class="loading">
@@ -174,10 +471,12 @@ async function loadEntries() {
 
   try {
     const params = new URLSearchParams();
-    // Для "pinned" категории получаем все записи и фильтруем на клиенте
+
+    if (currentProjectId) params.append('project_id', currentProjectId);
     if (currentCategory !== 'all' && currentCategory !== 'pinned') {
       params.append('category', currentCategory);
     }
+    if (currentDomain) params.append('domain', currentDomain);
     if (currentSearch) params.append('search', currentSearch);
     if (currentStatus) params.append('status', currentStatus);
 
@@ -187,7 +486,6 @@ async function loadEntries() {
     if (result.success) {
       entries = result.entries;
 
-      // Фильтруем по pinned если выбрана категория "Закреплённые"
       if (currentCategory === 'pinned') {
         entries = entries.filter(e => e.pinned === true);
       }
@@ -208,30 +506,31 @@ async function loadEntries() {
 
 async function loadStats() {
   try {
-    const response = await fetch(`${API_BASE}/stats`);
+    const params = currentProjectId ? `?project_id=${currentProjectId}` : '';
+    const response = await fetch(`${API_BASE}/stats${params}`);
     const result = await response.json();
 
     if (result.success) {
       const stats = result.stats;
 
-      // Update counters
       document.getElementById('count-all').textContent = stats.totalEntries;
-      document.getElementById('count-architecture').textContent = stats.byCategory.architecture;
-      document.getElementById('count-tasks').textContent = stats.byCategory.tasks;
-      document.getElementById('count-decisions').textContent = stats.byCategory.decisions;
-      document.getElementById('count-issues').textContent = stats.byCategory.issues;
-      document.getElementById('count-progress').textContent = stats.byCategory.progress;
+      document.getElementById('count-architecture').textContent = stats.byCategory.architecture || 0;
+      document.getElementById('count-tasks').textContent = stats.byCategory.tasks || 0;
+      document.getElementById('count-decisions').textContent = stats.byCategory.decisions || 0;
+      document.getElementById('count-issues').textContent = stats.byCategory.issues || 0;
+      document.getElementById('count-progress').textContent = stats.byCategory.progress || 0;
 
-      // Update header stats
       document.getElementById('stat-total').textContent = stats.totalEntries;
-      document.getElementById('stat-24h').textContent = stats.recentActivity.last24h;
+      document.getElementById('stat-24h').textContent = stats.recentActivity?.last24h || 0;
 
-      // Update agents count
-      document.getElementById('agents-count').textContent = `${stats.connectedAgents} агентов онлайн`;
+      document.getElementById('agents-count').textContent =
+        `${stats.connectedAgents || 0} агентов онлайн`;
     }
 
-    // Загружаем количество закреплённых записей отдельно
-    const allResponse = await fetch(`${API_BASE}/memory`);
+    // Load pinned count
+    const pinnedParams = new URLSearchParams();
+    if (currentProjectId) pinnedParams.append('project_id', currentProjectId);
+    const allResponse = await fetch(`${API_BASE}/memory?${pinnedParams}`);
     const allResult = await allResponse.json();
     if (allResult.success) {
       const pinnedCount = allResult.entries.filter(e => e.pinned === true).length;
@@ -242,7 +541,8 @@ async function loadStats() {
   }
 }
 
-// Render
+// === Render ===
+
 function renderEntries() {
   if (entries.length === 0) {
     entriesContainer.innerHTML = `
@@ -255,7 +555,13 @@ function renderEntries() {
     return;
   }
 
-  entriesContainer.innerHTML = entries.map(entry => `
+  entriesContainer.innerHTML = entries.map(entry => {
+    const dInfo = entry.domain ? domainInfo[entry.domain] : null;
+    const domainBadge = entry.domain
+      ? `<span class="entry-domain-badge">${dInfo ? dInfo.name : escapeHtml(entry.domain)}</span>`
+      : '';
+
+    return `
     <div class="entry-card ${entry.status}${entry.pinned ? ' pinned' : ''}" data-id="${entry.id}">
       <div class="entry-header">
         <div class="entry-title">
@@ -263,10 +569,13 @@ function renderEntries() {
           <span class="priority-dot priority-${entry.priority}"></span>
           ${escapeHtml(entry.title)}
         </div>
-        <span class="entry-category">
-          <i data-lucide="${categoryConfig[entry.category]?.icon || 'file'}"></i>
-          ${entry.category}
-        </span>
+        <div class="entry-badges">
+          ${domainBadge}
+          <span class="entry-category">
+            <i data-lucide="${categoryConfig[entry.category]?.icon || 'file'}"></i>
+            ${entry.category}
+          </span>
+        </div>
       </div>
       <div class="entry-content">${escapeHtml(entry.content)}</div>
       ${entry.tags.length > 0 ? `
@@ -295,12 +604,13 @@ function renderEntries() {
         </div>
       </div>
     </div>
-  `).join('');
+  `}).join('');
 
   lucide.createIcons();
 }
 
-// Actions
+// === Entry Actions ===
+
 window.editEntry = function(id) {
   const entry = entries.find(e => e.id === id);
   if (entry) openModal(entry);
@@ -378,24 +688,11 @@ window.togglePin = async function(id) {
   }
 };
 
-async function createBackup() {
-  try {
-    const response = await fetch(`${API_BASE}/backup`, { method: 'POST' });
-    const result = await response.json();
+// === WebSocket ===
 
-    if (result.success) {
-      showToast('Бэкап создан', 'success');
-    } else {
-      showToast(result.error, 'error');
-    }
-  } catch (error) {
-    showToast('Ошибка создания бэкапа', 'error');
-  }
-}
-
-// WebSocket
 function initWebSocket() {
-  const wsUrl = `ws://${window.location.hostname}:${WS_PORT}`;
+  const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+  const wsUrl = `${protocol}//${window.location.host}/ws`;
 
   try {
     ws = new WebSocket(wsUrl);
@@ -416,7 +713,6 @@ function initWebSocket() {
 
     ws.onclose = () => {
       console.log('WebSocket disconnected');
-      // Reconnect after 5 seconds
       setTimeout(initWebSocket, 5000);
     };
 
@@ -433,7 +729,6 @@ function handleWSMessage(data) {
     case 'memory:created':
     case 'memory:updated':
     case 'memory:deleted':
-      // Reload data on any change
       loadEntries();
       loadStats();
       if (data.type === 'memory:created') {
@@ -453,7 +748,8 @@ function handleWSMessage(data) {
   }
 }
 
-// Helpers
+// === Helpers ===
+
 function formatDate(dateString) {
   const date = new Date(dateString);
   const now = new Date();

@@ -1,51 +1,52 @@
 #!/usr/bin/env node
 /**
- * Team Memory MCP Server
+ * Team Memory MCP Server v2
  *
- * This runs as MCP server through stdio protocol.
- * For Web UI, run standalone-web.ts separately.
+ * Supports two transport modes:
+ * - stdio: for local Claude Code integration (default)
+ * - http:  for remote server with Web UI (set MEMORY_TRANSPORT=http)
  */
 
-import path from 'path';
-import { fileURLToPath } from 'url';
-import { TeamMemoryMCPServer } from './server.js';
+import { loadConfig } from './config.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
+const config = loadConfig();
 
-// Configuration from environment variables
-const config = {
-  dataPath: process.env.MEMORY_DATA_PATH || path.join(__dirname, '..', 'data'),
-  autoArchiveEnabled: process.env.MEMORY_AUTO_ARCHIVE !== 'false',
-  autoArchiveDays: parseInt(process.env.MEMORY_AUTO_ARCHIVE_DAYS || '14', 10),
-};
+if (config.transport === 'http') {
+  // HTTP mode — import and run app.ts
+  await import('./app.js');
+} else {
+  // stdio mode — original MCP server behavior
+  const { PgStorage } = await import('./storage/pg-storage.js');
+  const { MemoryManager } = await import('./memory/manager.js');
+  const { TeamMemoryMCPServer } = await import('./server.js');
 
-async function main(): Promise<void> {
-  // Use stderr for logs (stdout is reserved for MCP JSON-RPC)
   console.error('='.repeat(50));
-  console.error('Team Memory MCP Server (stdio mode)');
+  console.error('Team Memory MCP Server v2 (stdio mode)');
   console.error('='.repeat(50));
-  console.error(`Data path: ${config.dataPath}`);
+  console.error(`Database: ${config.databaseUrl.replace(/\/\/.*:.*@/, '//***:***@')}`);
   console.error('='.repeat(50));
 
   try {
-    // Initialize MCP Server only
-    const mcpServer = new TeamMemoryMCPServer(config.dataPath);
+    const storage = new PgStorage(config.databaseUrl);
+    const memoryManager = new MemoryManager(storage);
+    await memoryManager.initialize();
+
+    const mcpServer = new TeamMemoryMCPServer(memoryManager);
     await mcpServer.start();
 
-    // Start auto-archive for old entries (non-pinned, older than N days)
     if (config.autoArchiveEnabled) {
-      const memoryManager = mcpServer.getMemoryManager();
       memoryManager.startAutoArchive(config.autoArchiveDays);
-      console.error(`Auto-archive enabled: entries older than ${config.autoArchiveDays} days will be archived (pinned entries excluded)`);
+      console.error(`Auto-archive: entries older than ${config.autoArchiveDays} days`);
     }
 
     console.error('MCP Server ready. Waiting for commands...');
 
+    process.on('SIGINT', async () => {
+      await memoryManager.close();
+      process.exit(0);
+    });
   } catch (error) {
     console.error('Failed to start server:', error);
     process.exit(1);
   }
 }
-
-main();

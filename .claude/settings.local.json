@@ -5,5 +5,8 @@
       "mcp__team-memory__memory_delete",
       "mcp__team-memory__memory_write"
     ]
-  }
+  },
+  "enabledMcpjsonServers": [
+    "team-memory"
+  ]
 }
