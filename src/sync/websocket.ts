@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type http from 'http';
+import crypto from 'crypto';
 import type { MemoryManager } from '../memory/manager.js';
 import type { WSEvent } from '../memory/types.js';
 
@@ -174,7 +175,7 @@ export class SyncWebSocketServer {
   }
 
   private generateClientId(): string {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return crypto.randomUUID();
   }
 
   getConnectedClientsInfo(): Array<{ id: string; name: string; connectedAt: string }> {

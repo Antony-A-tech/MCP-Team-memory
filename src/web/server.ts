@@ -46,7 +46,8 @@ export class WebServer {
         const projects = await this.memoryManager.listProjects();
         res.json({ success: true, projects });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -60,7 +61,8 @@ export class WebServer {
         const project = await this.memoryManager.createProject({ name, description, domains });
         res.json({ success: true, project });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -75,7 +77,8 @@ export class WebServer {
         }
         res.json({ success: true, project });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -89,7 +92,8 @@ export class WebServer {
         }
         res.json({ success: true });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -139,7 +143,8 @@ export class WebServer {
 
         res.json({ success: true, stats });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -148,7 +153,8 @@ export class WebServer {
         const agents = this.wsServer?.getConnectedClientsInfo() || [];
         res.json({ success: true, agents });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -203,7 +209,8 @@ export class WebServer {
 
         res.json({ success: true, archived: archive });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -220,7 +227,8 @@ export class WebServer {
 
         res.json({ success: true, entry: updated });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
   }
