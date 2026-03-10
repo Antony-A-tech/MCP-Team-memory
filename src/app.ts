@@ -15,6 +15,7 @@ import { WebServer } from './web/server.js';
 import { SyncWebSocketServer } from './sync/websocket.js';
 import { migrateFromJson } from './storage/migration.js';
 import { loadConfig } from './config.js';
+import { createAuthMiddleware } from './middleware/auth.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -44,6 +45,9 @@ async function main(): Promise<void> {
   // Create Express app
   const app = express();
   app.use(express.json());
+
+  // Auth middleware (optional — set MEMORY_API_TOKEN to enable)
+  app.use(createAuthMiddleware(config.apiToken));
 
   // Mount MCP StreamableHTTP transport
   mountMcpTransport(app, () => buildMcpServer(memoryManager));

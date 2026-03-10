@@ -10,6 +10,7 @@ export interface AppConfig {
   autoArchiveDays: number;
   autoBackupEnabled: boolean;
   backupIntervalMs: number;
+  apiToken: string | undefined;
 }
 
 export function loadConfig(): AppConfig {
@@ -21,5 +22,6 @@ export function loadConfig(): AppConfig {
     autoArchiveDays: parseInt(process.env.MEMORY_AUTO_ARCHIVE_DAYS || '14', 10),
     autoBackupEnabled: process.env.MEMORY_AUTO_BACKUP !== 'false',
     backupIntervalMs: parseInt(process.env.MEMORY_BACKUP_INTERVAL || '3600000', 10),
+    apiToken: process.env.MEMORY_API_TOKEN || undefined,
   };
 }
