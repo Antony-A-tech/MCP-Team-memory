@@ -1,4 +1,5 @@
 import { WebSocketServer, WebSocket } from 'ws';
+import type http from 'http';
 import type { MemoryManager } from '../memory/manager.js';
 import type { WSEvent } from '../memory/types.js';
 
@@ -19,10 +20,22 @@ export class SyncWebSocketServer {
     this.memoryManager = memoryManager;
   }
 
+  /** Start WebSocket on a standalone port */
   start(port: number): void {
     this.wss = new WebSocketServer({ port });
-
     console.error(`WebSocket server started on port ${port}`);
+    this.setupConnectionHandler();
+  }
+
+  /** Attach WebSocket to an existing HTTP server (for unified mode) */
+  attachToServer(server: http.Server): void {
+    this.wss = new WebSocketServer({ server, path: '/ws' });
+    console.error('WebSocket attached to HTTP server at /ws');
+    this.setupConnectionHandler();
+  }
+
+  private setupConnectionHandler(): void {
+    if (!this.wss) return;
 
     this.wss.on('connection', (ws, req) => {
       const clientId = this.generateClientId();
@@ -36,10 +49,8 @@ export class SyncWebSocketServer {
       };
 
       this.clients.set(clientId, client);
-
       console.error(`Client connected: ${clientName} (${clientId})`);
 
-      // Отправляем приветственное сообщение
       this.sendToClient(ws, {
         type: 'agent:connected',
         payload: {
@@ -50,17 +61,12 @@ export class SyncWebSocketServer {
         timestamp: new Date().toISOString()
       });
 
-      // Уведомляем других клиентов
       this.broadcastExcept(clientId, {
         type: 'agent:connected',
-        payload: {
-          clientId,
-          clientName
-        },
+        payload: { clientId, clientName },
         timestamp: new Date().toISOString()
       });
 
-      // Обработка сообщений от клиента
       ws.on('message', (data) => {
         try {
           const message = JSON.parse(data.toString());
@@ -70,11 +76,9 @@ export class SyncWebSocketServer {
         }
       });
 
-      // Обработка отключения
       ws.on('close', () => {
         this.clients.delete(clientId);
         console.error(`Client disconnected: ${clientName} (${clientId})`);
-
         this.broadcast({
           type: 'agent:disconnected',
           payload: { clientId, clientName },
@@ -82,13 +86,11 @@ export class SyncWebSocketServer {
         });
       });
 
-      // Обработка ошибок
       ws.on('error', (error) => {
         console.error(`WebSocket error for ${clientName}:`, error);
       });
     });
 
-    // Подписываемся на события памяти
     this.unsubscribe = this.memoryManager.subscribe((event) => {
       this.broadcast(event);
     });
@@ -110,26 +112,21 @@ export class SyncWebSocketServer {
         break;
 
       case 'sync_request':
-        // Клиент запрашивает синхронизацию
         this.handleSyncRequest(client, msg.payload as { since?: string });
         break;
 
-      case 'rename':
-        // Клиент меняет имя
+      case 'rename': {
         const newName = (msg.payload as { name?: string })?.name;
         if (newName) {
           client.name = newName;
           this.broadcast({
             type: 'agent:connected',
-            payload: {
-              clientId,
-              clientName: newName,
-              renamed: true
-            },
+            payload: { clientId, clientName: newName, renamed: true },
             timestamp: new Date().toISOString()
           });
         }
         break;
+      }
 
       default:
         console.error(`Unknown message type from ${client.name}:`, msg.type);
@@ -141,10 +138,7 @@ export class SyncWebSocketServer {
     payload: { since?: string }
   ): Promise<void> {
     try {
-      const result = await this.memoryManager.sync({
-        since: payload?.since
-      });
-
+      const result = await this.memoryManager.sync({ since: payload?.since });
       this.sendToClient(client.ws, {
         type: 'memory:sync',
         payload: result,
@@ -200,16 +194,11 @@ export class SyncWebSocketServer {
       this.unsubscribe();
       this.unsubscribe = null;
     }
-
     if (this.wss) {
-      this.clients.forEach((client) => {
-        client.ws.close();
-      });
+      this.clients.forEach((client) => client.ws.close());
       this.clients.clear();
-
       this.wss.close();
       this.wss = null;
-
       console.error('WebSocket server stopped');
     }
   }

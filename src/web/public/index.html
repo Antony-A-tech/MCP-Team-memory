@@ -16,6 +16,23 @@
         <span class="logo-text">Team Memory</span>
       </div>
 
+      <!-- Project Selector -->
+      <div class="project-selector">
+        <label class="project-label">Проект</label>
+        <div class="project-dropdown-wrap">
+          <div class="custom-select" id="project-select">
+            <button class="custom-select-trigger" type="button">
+              <span class="custom-select-value">Загрузка...</span>
+              <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+            </button>
+            <div class="custom-select-options" id="project-options"></div>
+          </div>
+          <button class="btn-icon" id="btn-manage-projects" title="Управление проектами">
+            <i data-lucide="settings"></i>
+          </button>
+        </div>
+      </div>
+
       <nav class="nav">
         <button class="nav-item active" data-category="all">
           <i data-lucide="layout-grid" class="nav-icon"></i>
@@ -59,10 +76,6 @@
           <span class="status-dot"></span>
           <span id="agents-count">0 агентов онлайн</span>
         </div>
-        <button class="btn btn-secondary" id="btn-backup">
-          <i data-lucide="hard-drive-download"></i>
-          Создать бэкап
-        </button>
       </div>
     </aside>
 
@@ -101,6 +114,11 @@
         </div>
       </header>
 
+      <!-- Domain Filter Pills -->
+      <div class="domain-filters" id="domain-filters">
+        <button class="domain-pill active" data-domain="">Все домены</button>
+      </div>
+
       <!-- Entries Grid -->
       <div class="entries-container" id="entries-container">
         <div class="loading">
@@ -110,7 +128,7 @@
       </div>
     </main>
 
-    <!-- Add/Edit Modal -->
+    <!-- Add/Edit Entry Modal -->
     <div class="modal" id="entry-modal">
       <div class="modal-content">
         <div class="modal-header">
@@ -122,15 +140,23 @@
         <form id="entry-form">
           <input type="hidden" id="entry-id">
 
-          <div class="form-group">
-            <label for="entry-category">Категория</label>
-            <select id="entry-category" required>
-              <option value="architecture">Архитектура</option>
-              <option value="tasks">Задачи</option>
-              <option value="decisions">Решения</option>
-              <option value="issues">Проблемы</option>
-              <option value="progress">Прогресс</option>
-            </select>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="entry-category">Категория</label>
+              <select id="entry-category" required>
+                <option value="architecture">Архитектура</option>
+                <option value="tasks">Задачи</option>
+                <option value="decisions">Решения</option>
+                <option value="issues">Проблемы</option>
+                <option value="progress">Прогресс</option>
+              </select>
+            </div>
+            <div class="form-group">
+              <label for="entry-domain">Домен</label>
+              <select id="entry-domain">
+                <option value="">Без домена</option>
+              </select>
+            </div>
           </div>
 
           <div class="form-group">
@@ -140,7 +166,7 @@
 
           <div class="form-group">
             <label for="entry-content">Содержимое</label>
-            <textarea id="entry-content" required rows="5" placeholder="Подробное описание..."></textarea>
+            <textarea id="entry-content" required rows="10" placeholder="Подробное описание..."></textarea>
           </div>
 
           <div class="form-row">
@@ -178,6 +204,42 @@
             <button type="submit" class="btn btn-primary">Сохранить</button>
           </div>
         </form>
+      </div>
+    </div>
+
+    <!-- Project Management Modal -->
+    <div class="modal" id="projects-modal">
+      <div class="modal-content modal-wide">
+        <div class="modal-header">
+          <h2>Управление проектами</h2>
+          <button class="modal-close" id="projects-modal-close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="projects-body">
+          <!-- New Project Form -->
+          <div class="project-form">
+            <h3>Новый проект</h3>
+            <div class="form-row">
+              <div class="form-group" style="flex:2">
+                <input type="text" id="new-project-name" placeholder="Название проекта">
+              </div>
+              <div class="form-group" style="flex:3">
+                <input type="text" id="new-project-description" placeholder="Описание (необязательно)">
+              </div>
+              <div class="form-group" style="flex:0 0 auto">
+                <button class="btn btn-primary" id="btn-create-project">
+                  <i data-lucide="plus"></i> Создать
+                </button>
+              </div>
+            </div>
+          </div>
+
+          <!-- Projects List -->
+          <div class="projects-list" id="projects-list">
+            <div class="loading">Загрузка...</div>
+          </div>
+        </div>
       </div>
     </div>
 

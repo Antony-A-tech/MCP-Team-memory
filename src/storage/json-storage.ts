@@ -2,7 +2,7 @@ import { readFile, writeFile, mkdir, copyFile } from 'fs/promises';
 import { existsSync } from 'fs';
 import path from 'path';
 import lockfile from 'proper-lockfile';
-import type { MemoryStore, MemoryEntry } from '../memory/types.js';
+import type { MemoryStore, LegacyMemoryEntry } from '../memory/types.js';
 
 const STORAGE_VERSION = '1.0.0';
 
@@ -104,22 +104,22 @@ export class JsonStorage {
 
   // CRUD операции для записей
 
-  async getAll(): Promise<MemoryEntry[]> {
+  async getAll(): Promise<LegacyMemoryEntry[]> {
     const data = await this.read();
     return data.entries;
   }
 
-  async getById(id: string): Promise<MemoryEntry | undefined> {
+  async getById(id: string): Promise<LegacyMemoryEntry | undefined> {
     const data = await this.read();
     return data.entries.find(e => e.id === id);
   }
 
-  async getByCategory(category: string): Promise<MemoryEntry[]> {
+  async getByCategory(category: string): Promise<LegacyMemoryEntry[]> {
     const data = await this.read();
     return data.entries.filter(e => e.category === category);
   }
 
-  async search(query: string, limit = 50): Promise<MemoryEntry[]> {
+  async search(query: string, limit = 50): Promise<LegacyMemoryEntry[]> {
     const data = await this.read();
     const lowerQuery = query.toLowerCase();
 
@@ -132,14 +132,14 @@ export class JsonStorage {
     return results.slice(0, limit);
   }
 
-  async add(entry: MemoryEntry): Promise<MemoryEntry> {
+  async add(entry: LegacyMemoryEntry): Promise<LegacyMemoryEntry> {
     const data = await this.read();
     data.entries.push(entry);
     await this.write(data);
     return entry;
   }
 
-  async update(id: string, updates: Partial<MemoryEntry>): Promise<MemoryEntry | undefined> {
+  async update(id: string, updates: Partial<LegacyMemoryEntry>): Promise<LegacyMemoryEntry | undefined> {
     const data = await this.read();
     const index = data.entries.findIndex(e => e.id === id);
 
@@ -176,11 +176,11 @@ export class JsonStorage {
     return true;
   }
 
-  async archive(id: string): Promise<MemoryEntry | undefined> {
+  async archive(id: string): Promise<LegacyMemoryEntry | undefined> {
     return this.update(id, { status: 'archived' });
   }
 
-  async getChangesSince(since: string): Promise<MemoryEntry[]> {
+  async getChangesSince(since: string): Promise<LegacyMemoryEntry[]> {
     const data = await this.read();
     const sinceDate = new Date(since);
 

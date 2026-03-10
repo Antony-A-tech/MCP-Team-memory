@@ -4,7 +4,10 @@
       "type": "stdio",
       "command": "node",
       "args": ["D:/MCP/team-memory-mcp/dist/index.js"],
-      "env": {}
+      "env": {
+        "MEMORY_TRANSPORT": "stdio",
+        "DATABASE_URL": "postgresql://memory:memory@localhost:5432/team_memory"
+      }
     }
   }
 }

@@ -15,8 +15,58 @@ export type Status = 'active' | 'completed' | 'archived';
 // Режимы синхронизации
 export type SyncMode = 'auto' | 'manual' | 'both';
 
+// Домены по умолчанию
+export const DEFAULT_DOMAINS: string[] = [
+  'backend',
+  'frontend',
+  'infrastructure',
+  'devops',
+  'database',
+  'testing',
+];
+
+// Проект
+export interface Project {
+  id: string;
+  name: string;
+  description: string;
+  domains: string[];
+  createdAt: string;
+  updatedAt: string;
+}
+
 // Запись в памяти
 export interface MemoryEntry {
+  id: string;
+  projectId: string;       // ID проекта
+  category: Category;
+  domain: string | null;   // Домен: backend, frontend, infrastructure, etc.
+  title: string;
+  content: string;
+  author: string;
+  tags: string[];
+  priority: Priority;
+  status: Status;
+  pinned: boolean;
+  createdAt: string;
+  updatedAt: string;
+  relatedIds: string[];
+}
+
+// Хранилище памяти (legacy, для миграции)
+export interface MemoryStore {
+  version: string;
+  lastUpdated: string;
+  entries: LegacyMemoryEntry[];
+  metadata: {
+    projectName: string;
+    team: string[];
+    createdAt: string;
+  };
+}
+
+// Legacy entry format (v1, без projectId и domain)
+export interface LegacyMemoryEntry {
   id: string;
   category: Category;
   title: string;
@@ -25,22 +75,10 @@ export interface MemoryEntry {
   tags: string[];
   priority: Priority;
   status: Status;
-  pinned: boolean;        // Закреплённые записи не архивируются автоматически
+  pinned: boolean;
   createdAt: string;
   updatedAt: string;
   relatedIds: string[];
-}
-
-// Хранилище памяти
-export interface MemoryStore {
-  version: string;
-  lastUpdated: string;
-  entries: MemoryEntry[];
-  metadata: {
-    projectName: string;
-    team: string[];
-    createdAt: string;
-  };
 }
 
 // Конфигурация сервера
@@ -50,14 +88,16 @@ export interface ServerConfig {
   wsPort: number;
   syncMode: SyncMode;
   backupEnabled: boolean;
-  backupInterval: number;       // в миллисекундах
-  autoArchiveEnabled: boolean;  // Включить автоархивацию старых записей
-  autoArchiveDays: number;      // Записи старше N дней архивируются (по умолчанию 14)
+  backupInterval: number;
+  autoArchiveEnabled: boolean;
+  autoArchiveDays: number;
 }
 
 // Параметры для чтения памяти
 export interface ReadParams {
+  projectId?: string;
   category?: Category | 'all';
+  domain?: string;
   search?: string;
   limit?: number;
   status?: Status;
@@ -66,13 +106,15 @@ export interface ReadParams {
 
 // Параметры для записи в память
 export interface WriteParams {
+  projectId?: string;
   category: Category;
+  domain?: string;
   title: string;
   content: string;
   author?: string;
   tags?: string[];
   priority?: Priority;
-  pinned?: boolean;       // Закрепить запись (не будет автоархивирована)
+  pinned?: boolean;
   relatedIds?: string[];
 }
 
@@ -81,10 +123,11 @@ export interface UpdateParams {
   id: string;
   title?: string;
   content?: string;
+  domain?: string | null;
   status?: Status;
   tags?: string[];
   priority?: Priority;
-  pinned?: boolean;       // Изменить статус закрепления
+  pinned?: boolean;
   relatedIds?: string[];
 }
 
@@ -96,6 +139,7 @@ export interface DeleteParams {
 
 // Параметры синхронизации
 export interface SyncParams {
+  projectId?: string;
   since?: string; // ISO date string
 }
 
@@ -125,6 +169,7 @@ export interface WSEvent {
 export interface MemoryStats {
   totalEntries: number;
   byCategory: Record<Category, number>;
+  byDomain: Record<string, number>;
   byStatus: Record<Status, number>;
   byPriority: Record<Priority, number>;
   recentActivity: {
@@ -165,15 +210,25 @@ export const CATEGORY_INFO: Record<Category, { name: string; description: string
 
 // Цвета приоритетов для UI
 export const PRIORITY_COLORS: Record<Priority, string> = {
-  low: '#6b7280',      // gray
-  medium: '#3b82f6',   // blue
-  high: '#f59e0b',     // amber
-  critical: '#ef4444'  // red
+  low: '#6b7280',
+  medium: '#3b82f6',
+  high: '#f59e0b',
+  critical: '#ef4444'
 };
 
 // Цвета статусов для UI
 export const STATUS_COLORS: Record<Status, string> = {
-  active: '#22c55e',    // green
-  completed: '#6b7280', // gray
-  archived: '#9ca3af'   // light gray
+  active: '#22c55e',
+  completed: '#6b7280',
+  archived: '#9ca3af'
+};
+
+// Информация о доменах
+export const DOMAIN_INFO: Record<string, { name: string; icon: string }> = {
+  backend: { name: 'Бэкенд', icon: '🖥️' },
+  frontend: { name: 'Фронтенд', icon: '🎨' },
+  infrastructure: { name: 'Инфраструктура', icon: '🏗️' },
+  devops: { name: 'DevOps', icon: '⚙️' },
+  database: { name: 'База данных', icon: '🗄️' },
+  testing: { name: 'Тестирование', icon: '🧪' },
 };
