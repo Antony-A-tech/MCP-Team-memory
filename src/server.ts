@@ -19,6 +19,16 @@ import type {
   DeleteParams,
   SyncParams
 } from './memory/types.js';
+import {
+  ReadParamsSchema,
+  WriteParamsSchema,
+  UpdateParamsSchema,
+  DeleteParamsSchema,
+  SyncParamsSchema,
+  PinParamsSchema,
+  ProjectActionSchema,
+  formatZodError,
+} from './memory/validation.js';
 
 export function buildMcpServer(memoryManager: MemoryManager): Server {
   const server = new Server(
@@ -170,13 +180,17 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
     try {
       switch (name) {
         case 'memory_read': {
+          const parsed = ReadParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
           const params: ReadParams = {
-            projectId: (args?.project_id as string) || undefined,
-            category: (args?.category as Category | 'all') || 'all',
-            domain: args?.domain as string | undefined,
-            search: args?.search as string | undefined,
-            limit: (args?.limit as number) || 50,
-            status: args?.status as Status | undefined
+            projectId: parsed.data.project_id || undefined,
+            category: parsed.data.category,
+            domain: parsed.data.domain,
+            search: parsed.data.search,
+            limit: parsed.data.limit,
+            status: parsed.data.status
           };
           const entries = await memoryManager.read(params);
           if (entries.length === 0) {
@@ -192,17 +206,12 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
         }
 
         case 'memory_write': {
-          const params: WriteParams = {
-            projectId: (args?.project_id as string) || undefined,
-            category: args?.category as Category,
-            domain: args?.domain as string | undefined,
-            title: args?.title as string,
-            content: args?.content as string,
-            tags: (args?.tags as string[]) || [],
-            priority: (args?.priority as Priority) || 'medium',
-            author: (args?.author as string) || 'claude-agent',
-            pinned: (args?.pinned as boolean) || false
-          };
+          const parsed = WriteParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { project_id, ...writeData } = parsed.data;
+          const params: WriteParams = { ...writeData, projectId: project_id };
           const entry = await memoryManager.write(params);
           const domTxt = entry.domain ? `\n**Домен**: ${entry.domain}` : '';
           const pinTxt = entry.pinned ? '\n📌 Закреплена' : '';
@@ -212,30 +221,33 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
         }
 
         case 'memory_update': {
-          const params: UpdateParams = {
-            id: args?.id as string,
-            title: args?.title as string | undefined,
-            content: args?.content as string | undefined,
-            domain: args?.domain as string | undefined,
-            status: args?.status as Status | undefined,
-            tags: args?.tags as string[] | undefined,
-            priority: args?.priority as Priority | undefined,
-            pinned: args?.pinned as boolean | undefined
-          };
+          const parsed = UpdateParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const params = parsed.data;
           const updated = await memoryManager.update(params);
           if (!updated) return { content: [{ type: 'text', text: `❌ Запись с ID "${params.id}" не найдена.` }] };
           return { content: [{ type: 'text', text: `✅ Запись обновлена!\n\n**ID**: ${updated.id}\n**Заголовок**: ${updated.title}\n**Статус**: ${updated.status}` }] };
         }
 
         case 'memory_delete': {
-          const params: DeleteParams = { id: args?.id as string, archive: args?.archive !== false };
+          const parsed = DeleteParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const params = parsed.data;
           const success = await memoryManager.delete(params);
           if (!success) return { content: [{ type: 'text', text: `❌ Запись с ID "${params.id}" не найдена.` }] };
           return { content: [{ type: 'text', text: params.archive ? `📦 Запись архивирована (ID: ${params.id})` : `🗑️ Запись удалена (ID: ${params.id})` }] };
         }
 
         case 'memory_sync': {
-          const params: SyncParams = { projectId: (args?.project_id as string) || undefined, since: args?.since as string | undefined };
+          const parsed = SyncParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const params: SyncParams = { projectId: parsed.data.project_id || undefined, since: parsed.data.since };
           const result = await memoryManager.sync(params);
           if (result.entries.length === 0) {
             return { content: [{ type: 'text', text: `✅ Синхронизировано. Новых изменений нет.\nПоследнее обновление: ${result.lastUpdated}` }] };
@@ -253,17 +265,23 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
         }
 
         case 'memory_pin': {
-          const id = args?.id as string;
-          const pinned = args?.pinned !== false;
-          if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID записи.' }], isError: true };
+          const parsed = PinParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { id, pinned } = parsed.data;
           const updated = await memoryManager.pin(id, pinned);
           if (!updated) return { content: [{ type: 'text', text: `❌ Запись "${id}" не найдена.` }] };
           return { content: [{ type: 'text', text: `${pinned ? '📌' : '📍'} Запись ${pinned ? 'закреплена' : 'откреплена'}!\n\n**ID**: ${updated.id}\n**Заголовок**: ${updated.title}` }] };
         }
 
         case 'memory_projects': {
-          const action = args?.action as string;
-          switch (action) {
+          const parsed = ProjectActionSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const projectAction = parsed.data;
+          switch (projectAction.action) {
             case 'list': {
               const projects = await memoryManager.listProjects();
               if (projects.length === 0) return { content: [{ type: 'text', text: 'Проектов не найдено.' }] };
@@ -271,26 +289,18 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
               return { content: [{ type: 'text', text: `# Проекты (${projects.length})\n\n${list}` }] };
             }
             case 'create': {
-              const n = args?.name as string;
-              if (!n) return { content: [{ type: 'text', text: '❌ Укажите название проекта.' }], isError: true };
-              const p = await memoryManager.createProject({ name: n, description: args?.description as string | undefined, domains: args?.domains as string[] | undefined });
+              const p = await memoryManager.createProject({ name: projectAction.name, description: projectAction.description, domains: projectAction.domains });
               return { content: [{ type: 'text', text: `✅ Проект создан!\n\n**ID**: ${p.id}\n**Название**: ${p.name}\n**Домены**: ${p.domains.join(', ')}` }] };
             }
             case 'update': {
-              const id = args?.id as string;
-              if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID проекта.' }], isError: true };
-              const u = await memoryManager.updateProject(id, { name: args?.name as string | undefined, description: args?.description as string | undefined, domains: args?.domains as string[] | undefined });
-              if (!u) return { content: [{ type: 'text', text: `❌ Проект "${id}" не найден.` }] };
+              const u = await memoryManager.updateProject(projectAction.id, { name: projectAction.name, description: projectAction.description, domains: projectAction.domains });
+              if (!u) return { content: [{ type: 'text', text: `❌ Проект "${projectAction.id}" не найден.` }] };
               return { content: [{ type: 'text', text: `✅ Проект обновлён!\n\n**ID**: ${u.id}\n**Название**: ${u.name}` }] };
             }
             case 'delete': {
-              const id = args?.id as string;
-              if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID проекта.' }], isError: true };
-              const d = await memoryManager.deleteProject(id);
-              return { content: [{ type: 'text', text: d ? `🗑️ Проект удалён (${id})` : `❌ Не найден или default.` }] };
+              const d = await memoryManager.deleteProject(projectAction.id);
+              return { content: [{ type: 'text', text: d ? `🗑️ Проект удалён (${projectAction.id})` : `❌ Не найден или default.` }] };
             }
-            default:
-              return { content: [{ type: 'text', text: `❌ Неизвестное действие: ${action}` }], isError: true };
           }
         }
 
