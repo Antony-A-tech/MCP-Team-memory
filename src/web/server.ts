@@ -5,6 +5,7 @@ import type { MemoryManager } from '../memory/manager.js';
 import type { SyncWebSocketServer } from '../sync/websocket.js';
 import type { Category, Priority, Status } from '../memory/types.js';
 import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError } from '../memory/validation.js';
+import { exportEntries, type ExportFormat } from '../export/exporter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -226,6 +227,93 @@ export class WebServer {
         }
 
         res.json({ success: true, entry: updated });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Audit API ===
+
+    app.get('/api/audit/:entryId', async (req: Request, res: Response) => {
+      try {
+        const auditLogger = this.memoryManager.getAuditLogger();
+        if (!auditLogger) {
+          res.status(501).json({ success: false, error: 'Audit logging not enabled' });
+          return;
+        }
+        const entries = await auditLogger.getByEntry(req.params.entryId);
+        res.json({ success: true, audit: entries });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.get('/api/audit', async (req: Request, res: Response) => {
+      try {
+        const auditLogger = this.memoryManager.getAuditLogger();
+        if (!auditLogger) {
+          res.status(501).json({ success: false, error: 'Audit logging not enabled' });
+          return;
+        }
+        const projectId = req.query.project_id as string | undefined;
+        const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10), 200) : 50;
+
+        const entries = projectId
+          ? await auditLogger.getByProject(projectId, limit)
+          : await auditLogger.getRecent(limit);
+
+        res.json({ success: true, audit: entries });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Version History API ===
+
+    app.get('/api/memory/:id/history', async (req: Request, res: Response) => {
+      try {
+        const vm = this.memoryManager.getVersionManager();
+        if (!vm) {
+          res.status(501).json({ success: false, error: 'Versioning not enabled' });
+          return;
+        }
+        const versions = await vm.getVersions(req.params.id);
+        res.json({ success: true, versions });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Export API ===
+
+    app.get('/api/export', async (req: Request, res: Response) => {
+      try {
+        const projectId = req.query.project_id as string | undefined;
+        const format = (req.query.format as ExportFormat) || 'markdown';
+        const category = (req.query.category as string) || 'all';
+
+        const entries = await this.memoryManager.read({
+          projectId,
+          category: category as any,
+          limit: 500,
+          status: 'active',
+        });
+
+        const exported = exportEntries(entries, format);
+
+        if (format === 'json') {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Content-Disposition', 'attachment; filename="team-memory-export.json"');
+        } else {
+          res.setHeader('Content-Type', 'text/markdown');
+          res.setHeader('Content-Disposition', 'attachment; filename="team-memory-export.md"');
+        }
+
+        res.send(exported);
       } catch (error) {
         console.error('API error:', error);
         res.status(500).json({ success: false, error: 'Internal server error' });

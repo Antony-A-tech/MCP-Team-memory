@@ -27,8 +27,12 @@ import {
   SyncParamsSchema,
   PinParamsSchema,
   ProjectActionSchema,
+  AuditParamsSchema,
+  HistoryParamsSchema,
+  ExportParamsSchema,
   formatZodError,
 } from './memory/validation.js';
+import { exportEntries, type ExportFormat } from './export/exporter.js';
 
 export function buildMcpServer(memoryManager: MemoryManager): Server {
   const server = new Server(
@@ -169,6 +173,42 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
           },
           required: ['action']
         }
+      },
+      {
+        name: 'memory_audit',
+        description: 'Просмотр истории изменений записи или проекта (аудит-лог).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entry_id: { type: 'string', description: 'ID записи для просмотра истории' },
+            project_id: { type: 'string', description: 'ID проекта для просмотра истории' },
+            limit: { type: 'number', default: 20, description: 'Макс. записей' },
+          },
+        },
+      },
+      {
+        name: 'memory_history',
+        description: 'Показывает историю версий записи. Используйте для отслеживания изменений.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entry_id: { type: 'string', description: 'ID записи' },
+            version: { type: 'number', description: 'Конкретная версия (опционально)' },
+          },
+          required: ['entry_id'],
+        },
+      },
+      {
+        name: 'memory_export',
+        description: 'Экспортирует записи в формат Markdown или JSON.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', description: 'ID проекта' },
+            format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown', description: 'Формат экспорта' },
+            category: { type: 'string', enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'all'], description: 'Категория' },
+          },
+        },
       }
     ];
     return { tools };
@@ -302,6 +342,86 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
               return { content: [{ type: 'text', text: d ? `🗑️ Проект удалён (${projectAction.id})` : `❌ Не найден или default.` }] };
             }
           }
+        }
+
+        case 'memory_audit': {
+          const auditLogger = memoryManager.getAuditLogger();
+          if (!auditLogger) {
+            return { content: [{ type: 'text', text: '❌ Аудит-лог не подключён.' }], isError: true };
+          }
+          const parsed = AuditParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { entry_id: auditEntryId, project_id: auditProjectId, limit: auditLimit } = parsed.data;
+
+          let auditEntries;
+          if (auditEntryId) {
+            auditEntries = await auditLogger.getByEntry(auditEntryId, auditLimit);
+          } else if (auditProjectId) {
+            auditEntries = await auditLogger.getByProject(auditProjectId, auditLimit);
+          } else {
+            auditEntries = await auditLogger.getRecent(auditLimit);
+          }
+
+          if (auditEntries.length === 0) {
+            return { content: [{ type: 'text', text: 'История изменений пуста.' }] };
+          }
+
+          const auditFormatted = auditEntries.map(a =>
+            `- **${a.action}** [${new Date(a.createdAt).toLocaleString()}] by ${a.actor}` +
+            (a.entryId ? ` (entry: ${a.entryId})` : '') +
+            (Object.keys(a.changes).length > 0 ? `\n  Изменения: ${JSON.stringify(a.changes)}` : '')
+          ).join('\n');
+
+          return { content: [{ type: 'text', text: `# Аудит-лог (${auditEntries.length} записей)\n\n${auditFormatted}` }] };
+        }
+
+        case 'memory_history': {
+          const vm = memoryManager.getVersionManager();
+          if (!vm) {
+            return { content: [{ type: 'text', text: '❌ Версионирование не подключено.' }], isError: true };
+          }
+          const parsed = HistoryParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { entry_id: histEntryId, version: histVersion } = parsed.data;
+
+          if (histVersion !== undefined) {
+            const v = await vm.getVersion(histEntryId, histVersion);
+            if (!v) return { content: [{ type: 'text', text: `❌ Версия ${histVersion} не найдена.` }] };
+            return { content: [{ type: 'text', text: `# Версия ${v.version}\n\n**Заголовок**: ${v.title}\n**Категория**: ${v.category}\n**Статус**: ${v.status}\n**Автор**: ${v.author}\n**Дата**: ${new Date(v.createdAt).toLocaleString()}\n\n${v.content}` }] };
+          }
+
+          const versions = await vm.getVersions(histEntryId);
+          if (versions.length === 0) {
+            return { content: [{ type: 'text', text: 'История версий пуста (запись ещё не обновлялась).' }] };
+          }
+
+          const vFormatted = versions.map(v =>
+            `- **v${v.version}** [${new Date(v.createdAt).toLocaleString()}] — ${v.title} (${v.status})`
+          ).join('\n');
+
+          return { content: [{ type: 'text', text: `# История версий (${versions.length})\n\n${vFormatted}` }] };
+        }
+
+        case 'memory_export': {
+          const parsed = ExportParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { project_id: expProjectId, format: expFormat, category: expCategory } = parsed.data;
+
+          const expEntries = await memoryManager.read({
+            projectId: expProjectId,
+            category: expCategory as any,
+            limit: 500,
+            status: 'active',
+          });
+
+          const exported = exportEntries(expEntries, expFormat);
+          return { content: [{ type: 'text', text: exported }] };
         }
 
         default:

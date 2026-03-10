@@ -1,6 +1,7 @@
 import { v4 as uuidv4 } from 'uuid';
 import { PgStorage } from '../storage/pg-storage.js';
 import { AuditLogger } from '../storage/audit.js';
+import { VersionManager } from '../storage/versioning.js';
 import type {
   MemoryEntry,
   Project,
@@ -23,12 +24,14 @@ type EventListener = (event: WSEvent) => void;
 export class MemoryManager {
   private storage: PgStorage;
   private auditLogger: AuditLogger | null = null;
+  private versionManager: VersionManager | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
 
-  constructor(storage: PgStorage, auditLogger?: AuditLogger) {
+  constructor(storage: PgStorage, auditLogger?: AuditLogger, versionManager?: VersionManager) {
     this.storage = storage;
     this.auditLogger = auditLogger || null;
+    this.versionManager = versionManager || null;
   }
 
   async initialize(): Promise<void> {
@@ -141,6 +144,16 @@ export class MemoryManager {
       Object.entries(updates).filter(([_, value]) => value !== undefined)
     ) as Partial<MemoryEntry>;
 
+    // Save current version before updating
+    if (this.versionManager) {
+      const current = await this.storage.getById(id);
+      if (current) {
+        await this.versionManager.saveVersion(current).catch(err =>
+          console.error('Version save failed:', err)
+        );
+      }
+    }
+
     const updated = await this.storage.update(id, filteredUpdates);
 
     if (updated) {
@@ -208,6 +221,10 @@ export class MemoryManager {
 
   getAuditLogger(): AuditLogger | null {
     return this.auditLogger;
+  }
+
+  getVersionManager(): VersionManager | null {
+    return this.versionManager;
   }
 
   // === Sync ===
