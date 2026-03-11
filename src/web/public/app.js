@@ -55,6 +55,7 @@ const categoryConfig = {
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
+  initSidebarToggle();
   initNavigation();
   initSearch();
   initModal();
@@ -263,6 +264,19 @@ function initNavigation() {
     if (!statusSelect.contains(e.target)) {
       statusSelect.classList.remove('open');
     }
+  });
+}
+
+// Sidebar collapse toggle
+function initSidebarToggle() {
+  const sidebar = document.querySelector('.sidebar');
+  const toggleBtn = document.getElementById('sidebar-toggle');
+  const stored = localStorage.getItem('sidebar-collapsed');
+  if (stored === 'true') sidebar.classList.add('collapsed');
+
+  toggleBtn.addEventListener('click', () => {
+    sidebar.classList.toggle('collapsed');
+    localStorage.setItem('sidebar-collapsed', sidebar.classList.contains('collapsed'));
   });
 }
 
