@@ -103,6 +103,7 @@ body {
 /* Custom Select */
 .custom-select {
   flex: 1;
+  min-width: 0;
   position: relative;
 }
 
