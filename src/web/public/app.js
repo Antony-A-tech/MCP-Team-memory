@@ -26,7 +26,10 @@ const domainInfo = {
 // DOM Elements
 const entriesContainer = document.getElementById('entries-container');
 const searchInput = document.getElementById('search-input');
-const statusFilter = document.getElementById('status-filter');
+const statusSelect = document.getElementById('status-select');
+const statusSelectTrigger = statusSelect.querySelector('.custom-select-trigger');
+const statusSelectValue = statusSelect.querySelector('.custom-select-value');
+const statusOptionsContainer = document.getElementById('status-options');
 const pageTitle = document.getElementById('page-title');
 const modal = document.getElementById('entry-modal');
 const entryForm = document.getElementById('entry-form');
@@ -228,12 +231,37 @@ function initNavigation() {
   projectSelectTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
     projectSelect.classList.toggle('open');
+    statusSelect.classList.remove('open');
   });
 
-  // Close dropdown on outside click
+  // Custom status dropdown toggle
+  statusSelectTrigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    statusSelect.classList.toggle('open');
+    projectSelect.classList.remove('open');
+  });
+
+  // Status option click handlers
+  statusOptionsContainer.querySelectorAll('.custom-select-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      const value = opt.dataset.value;
+      currentStatus = value;
+      statusSelectValue.textContent = opt.querySelector('.custom-select-option-name').textContent;
+      statusOptionsContainer.querySelectorAll('.custom-select-option').forEach(o =>
+        o.classList.toggle('selected', o === opt)
+      );
+      statusSelect.classList.remove('open');
+      loadEntries();
+    });
+  });
+
+  // Close dropdowns on outside click
   document.addEventListener('click', (e) => {
     if (!projectSelect.contains(e.target)) {
       projectSelect.classList.remove('open');
+    }
+    if (!statusSelect.contains(e.target)) {
+      statusSelect.classList.remove('open');
     }
   });
 }
@@ -249,10 +277,6 @@ function initSearch() {
     }, 300);
   });
 
-  statusFilter.addEventListener('change', (e) => {
-    currentStatus = e.target.value;
-    loadEntries();
-  });
 }
 
 // === Entry Modal ===
