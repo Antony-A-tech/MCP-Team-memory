@@ -218,6 +218,18 @@ body {
   color: rgba(255, 255, 255, 0.7);
 }
 
+/* Compact variant for header filters */
+.custom-select--compact {
+  flex: 0 0 auto;
+  min-width: 150px;
+}
+
+.custom-select--compact .custom-select-options {
+  min-width: 100%;
+  right: 0;
+  left: auto;
+}
+
 .btn-icon {
   background: var(--bg-tertiary);
   border: 1px solid var(--border-color);

@@ -109,12 +109,26 @@
             <i data-lucide="search" class="search-icon"></i>
             <input type="text" id="search-input" placeholder="Поиск...">
           </div>
-          <select id="status-filter">
-            <option value="">Все статусы</option>
-            <option value="active">Активные</option>
-            <option value="completed">Завершённые</option>
-            <option value="archived">Архив</option>
-          </select>
+          <div class="custom-select custom-select--compact" id="status-select">
+            <button class="custom-select-trigger" type="button">
+              <span class="custom-select-value">Все статусы</span>
+              <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+            </button>
+            <div class="custom-select-options" id="status-options">
+              <div class="custom-select-option selected" data-value="">
+                <span class="custom-select-option-name">Все статусы</span>
+              </div>
+              <div class="custom-select-option" data-value="active">
+                <span class="custom-select-option-name">Активные</span>
+              </div>
+              <div class="custom-select-option" data-value="completed">
+                <span class="custom-select-option-name">Завершённые</span>
+              </div>
+              <div class="custom-select-option" data-value="archived">
+                <span class="custom-select-option-name">Архив</span>
+              </div>
+            </div>
+          </div>
           <button class="btn btn-secondary" id="btn-export" title="Экспорт">
             <i data-lucide="download"></i>
             Экспорт
