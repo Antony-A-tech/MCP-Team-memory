@@ -10,6 +10,11 @@ const __dirname = path.dirname(__filename);
 
 const DEFAULT_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
 
+/** Escape ILIKE special characters to prevent wildcard injection */
+export function escapeIlike(query: string): string {
+  return query.replace(/[\\%_]/g, '\\$&');
+}
+
 /** Map snake_case DB row → camelCase MemoryEntry */
 function rowToEntry(row: Record<string, unknown>): MemoryEntry {
   return {
@@ -218,7 +223,7 @@ export class PgStorage {
          )
        ORDER BY updated_at DESC
        LIMIT $4`,
-      [projectId, query, `%${query}%`, limit]
+      [projectId, query, `%${escapeIlike(query)}%`, limit]
     );
     return rows.map(rowToEntry);
   }

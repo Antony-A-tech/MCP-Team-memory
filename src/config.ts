@@ -13,15 +13,21 @@ export interface AppConfig {
   apiToken: string | undefined;
 }
 
+/** Parse integer with fallback to default on NaN */
+export function parseIntSafe(value: string, defaultValue: number): number {
+  const parsed = parseInt(value, 10);
+  return Number.isNaN(parsed) ? defaultValue : parsed;
+}
+
 export function loadConfig(): AppConfig {
   return {
     databaseUrl: process.env.DATABASE_URL || 'postgresql://memory:memory@localhost:5432/team_memory',
     transport: (process.env.MEMORY_TRANSPORT as 'http' | 'stdio') || 'http',
-    port: parseInt(process.env.MEMORY_PORT || '3846', 10),
+    port: parseIntSafe(process.env.MEMORY_PORT || '3846', 3846),
     autoArchiveEnabled: process.env.MEMORY_AUTO_ARCHIVE !== 'false',
-    autoArchiveDays: parseInt(process.env.MEMORY_AUTO_ARCHIVE_DAYS || '14', 10),
+    autoArchiveDays: parseIntSafe(process.env.MEMORY_AUTO_ARCHIVE_DAYS || '14', 14),
     autoBackupEnabled: process.env.MEMORY_AUTO_BACKUP !== 'false',
-    backupIntervalMs: parseInt(process.env.MEMORY_BACKUP_INTERVAL || '3600000', 10),
+    backupIntervalMs: parseIntSafe(process.env.MEMORY_BACKUP_INTERVAL || '3600000', 3600000),
     apiToken: process.env.MEMORY_API_TOKEN || undefined,
   };
 }

@@ -7,9 +7,14 @@ import crypto from 'crypto';
  * Static files and health checks are excluded from auth.
  */
 export function createAuthMiddleware(token: string | undefined) {
+  const trimmedToken = token?.trim() || undefined;
+  if (token !== undefined && !trimmedToken) {
+    console.error('WARNING: MEMORY_API_TOKEN is empty/whitespace — auth is disabled');
+  }
+
   return (req: Request, res: Response, next: NextFunction): void => {
     // No token configured — auth disabled
-    if (!token) {
+    if (!trimmedToken) {
       next();
       return;
     }
@@ -35,7 +40,7 @@ export function createAuthMiddleware(token: string | undefined) {
     const provided = match[1];
 
     // Timing-safe comparison to prevent timing attacks
-    const tokenBuffer = Buffer.from(token);
+    const tokenBuffer = Buffer.from(trimmedToken);
     const providedBuffer = Buffer.from(provided);
 
     if (tokenBuffer.length !== providedBuffer.length ||

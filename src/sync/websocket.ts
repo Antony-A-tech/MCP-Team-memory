@@ -42,11 +42,16 @@ export class SyncWebSocketServer {
 
     this.wss.on('connection', (ws, req) => {
       // Verify token if auth is enabled
-      if (this.apiToken) {
+      const effectiveToken = this.apiToken?.trim();
+      if (effectiveToken) {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         const token = url.searchParams.get('token') || req.headers.authorization?.replace(/^Bearer\s+/i, '');
-        const tokenBuf = Buffer.from(token || '');
-        const expectedBuf = Buffer.from(this.apiToken);
+        if (!token) {
+          ws.close(4401, 'Unauthorized');
+          return;
+        }
+        const tokenBuf = Buffer.from(token);
+        const expectedBuf = Buffer.from(effectiveToken);
         if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
           ws.close(4401, 'Unauthorized');
           return;

@@ -68,3 +68,38 @@ describe('Auth middleware', () => {
     expect(nextCalled).toBe(true);
   });
 });
+
+describe('createAuthMiddleware edge cases', () => {
+  it('treats empty string token as auth disabled (next() called)', () => {
+    const middleware = createAuthMiddleware('');
+    let nextCalled = false;
+    const next = () => { nextCalled = true; };
+    const req = mockReq();
+    const res = mockRes();
+
+    middleware(req, res, next);
+    expect(nextCalled).toBe(true);
+  });
+
+  it('treats whitespace-only token as auth disabled (next() called)', () => {
+    const middleware = createAuthMiddleware('   ');
+    let nextCalled = false;
+    const next = () => { nextCalled = true; };
+    const req = mockReq();
+    const res = mockRes();
+
+    middleware(req, res, next);
+    expect(nextCalled).toBe(true);
+  });
+
+  it('whitespace-trimmed token matches correctly', () => {
+    const middleware = createAuthMiddleware('  secret-token-123  ');
+    let nextCalled = false;
+    const next = () => { nextCalled = true; };
+    const req = mockReq({ authorization: 'Bearer secret-token-123' });
+    const res = mockRes();
+
+    middleware(req, res, next);
+    expect(nextCalled).toBe(true);
+  });
+});
