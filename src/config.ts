@@ -8,8 +8,6 @@ export interface AppConfig {
   port: number;
   autoArchiveEnabled: boolean;
   autoArchiveDays: number;
-  autoBackupEnabled: boolean;
-  backupIntervalMs: number;
   apiToken: string | undefined;
 }
 
@@ -26,8 +24,6 @@ export function loadConfig(): AppConfig {
     port: parseIntSafe(process.env.MEMORY_PORT || '3846', 3846),
     autoArchiveEnabled: process.env.MEMORY_AUTO_ARCHIVE !== 'false',
     autoArchiveDays: parseIntSafe(process.env.MEMORY_AUTO_ARCHIVE_DAYS || '14', 14),
-    autoBackupEnabled: process.env.MEMORY_AUTO_BACKUP !== 'false',
-    backupIntervalMs: parseIntSafe(process.env.MEMORY_BACKUP_INTERVAL || '3600000', 3600000),
     apiToken: process.env.MEMORY_API_TOKEN || undefined,
   };
 }
