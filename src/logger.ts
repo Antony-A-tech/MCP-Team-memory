@@ -24,7 +24,7 @@ export function createLogger(level?: string): pino.Logger {
         target: 'pino-pretty',
         options: {
           colorize: true,
-          translateTime: 'HH:MM:ss',
+          translateTime: 'HH:mm:ss',
           ignore: 'pid,hostname',
           destination: 2,
         },
