@@ -55,6 +55,11 @@ export class PgStorage {
       connectionString: databaseUrl,
       max: 20,
     });
+
+    // Prevent unhandled error crash when idle clients lose connection
+    this.pool.on('error', (err) => {
+      console.error('PostgreSQL pool error (idle client):', err.message);
+    });
   }
 
   async initialize(): Promise<void> {
