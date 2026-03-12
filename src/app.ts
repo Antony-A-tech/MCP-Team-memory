@@ -15,6 +15,10 @@ import { WebServer } from './web/server.js';
 import { SyncWebSocketServer } from './sync/websocket.js';
 import { migrateFromJson } from './storage/migration.js';
 import { loadConfig } from './config.js';
+import { createAuthMiddleware } from './middleware/auth.js';
+import { createRateLimiter } from './middleware/rate-limit.js';
+import { AuditLogger } from './storage/audit.js';
+import { VersionManager } from './storage/versioning.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -31,7 +35,9 @@ async function main(): Promise<void> {
 
   // Initialize storage
   const storage = new PgStorage(config.databaseUrl);
-  const memoryManager = new MemoryManager(storage);
+  const auditLogger = new AuditLogger(storage.getPool());
+  const versionManager = new VersionManager(storage.getPool());
+  const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
   await memoryManager.initialize();
 
   // Auto-migrate from JSON if needed
@@ -43,7 +49,29 @@ async function main(): Promise<void> {
 
   // Create Express app
   const app = express();
-  app.use(express.json());
+  app.use(express.json({ limit: '1mb' }));
+
+  // CORS — allow configurable origins
+  const allowedOrigin = process.env.MEMORY_CORS_ORIGIN || '*';
+  if (allowedOrigin === '*') {
+    console.error('WARNING: CORS origin is set to "*" — all origins allowed. Set MEMORY_CORS_ORIGIN for production.');
+  }
+  app.use((_req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+    res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
+    if (_req.method === 'OPTIONS') {
+      res.status(204).end();
+      return;
+    }
+    next();
+  });
+
+  // Auth middleware (optional — set MEMORY_API_TOKEN to enable)
+  app.use(createAuthMiddleware(config.apiToken));
+
+  // Rate limiting
+  app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
 
   // Mount MCP StreamableHTTP transport
   mountMcpTransport(app, () => buildMcpServer(memoryManager));
@@ -63,8 +91,9 @@ async function main(): Promise<void> {
   const server = http.createServer(app);
 
   // Attach WebSocket to the same HTTP server
-  const wsServer = new SyncWebSocketServer(memoryManager);
+  const wsServer = new SyncWebSocketServer(memoryManager, config.apiToken);
   wsServer.attachToServer(server);
+  webServer.setWsServer(wsServer);
 
   // Auto-archive
   if (config.autoArchiveEnabled) {

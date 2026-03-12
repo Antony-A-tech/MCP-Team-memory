@@ -1,5 +1,6 @@
 import { WebSocketServer, WebSocket } from 'ws';
 import type http from 'http';
+import crypto from 'crypto';
 import type { MemoryManager } from '../memory/manager.js';
 import type { WSEvent } from '../memory/types.js';
 
@@ -14,10 +15,12 @@ export class SyncWebSocketServer {
   private wss: WebSocketServer | null = null;
   private clients: Map<string, ConnectedClient> = new Map();
   private memoryManager: MemoryManager;
+  private apiToken: string | undefined;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(memoryManager: MemoryManager) {
+  constructor(memoryManager: MemoryManager, apiToken?: string) {
     this.memoryManager = memoryManager;
+    this.apiToken = apiToken;
   }
 
   /** Start WebSocket on a standalone port */
@@ -38,6 +41,23 @@ export class SyncWebSocketServer {
     if (!this.wss) return;
 
     this.wss.on('connection', (ws, req) => {
+      // Verify token if auth is enabled
+      const effectiveToken = this.apiToken?.trim();
+      if (effectiveToken) {
+        const url = new URL(req.url || '/', `http://${req.headers.host}`);
+        const token = url.searchParams.get('token') || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+        if (!token) {
+          ws.close(4401, 'Unauthorized');
+          return;
+        }
+        const tokenBuf = Buffer.from(token);
+        const expectedBuf = Buffer.from(effectiveToken);
+        if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+          ws.close(4401, 'Unauthorized');
+          return;
+        }
+      }
+
       const clientId = this.generateClientId();
       const clientName = req.headers['x-agent-name']?.toString() || `agent-${clientId.slice(0, 8)}`;
 
@@ -112,7 +132,8 @@ export class SyncWebSocketServer {
         break;
 
       case 'sync_request':
-        this.handleSyncRequest(client, msg.payload as { since?: string });
+        this.handleSyncRequest(client, msg.payload as { since?: string })
+          .catch(err => console.error('Sync request error:', err));
         break;
 
       case 'rename': {
@@ -151,7 +172,9 @@ export class SyncWebSocketServer {
 
   private sendToClient(ws: WebSocket, event: WSEvent): void {
     if (ws.readyState === WebSocket.OPEN) {
-      ws.send(JSON.stringify(event));
+      ws.send(JSON.stringify(event), (err) => {
+        if (err) console.error('WebSocket send failed:', err);
+      });
     }
   }
 
@@ -159,7 +182,9 @@ export class SyncWebSocketServer {
     const message = JSON.stringify(event);
     this.clients.forEach((client) => {
       if (client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(message);
+        client.ws.send(message, (err) => {
+          if (err) console.error(`WebSocket broadcast failed for ${client.name}:`, err);
+        });
       }
     });
   }
@@ -168,13 +193,15 @@ export class SyncWebSocketServer {
     const message = JSON.stringify(event);
     this.clients.forEach((client, id) => {
       if (id !== excludeId && client.ws.readyState === WebSocket.OPEN) {
-        client.ws.send(message);
+        client.ws.send(message, (err) => {
+          if (err) console.error(`WebSocket broadcast failed for ${client.name}:`, err);
+        });
       }
     });
   }
 
   private generateClientId(): string {
-    return `${Date.now()}-${Math.random().toString(36).substr(2, 9)}`;
+    return crypto.randomUUID();
   }
 
   getConnectedClientsInfo(): Array<{ id: string; name: string; connectedAt: string }> {

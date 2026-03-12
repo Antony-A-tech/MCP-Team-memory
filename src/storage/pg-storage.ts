@@ -2,13 +2,18 @@ import pg from 'pg';
 import { readFileSync } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { v4 as uuidv4 } from 'uuid';
-import type { MemoryEntry, Project, ReadParams, DEFAULT_DOMAINS } from '../memory/types.js';
+import crypto from 'crypto';
+import { DEFAULT_PROJECT_ID } from '../memory/types.js';
+import type { MemoryEntry, Project, ReadParams } from '../memory/types.js';
+import { toISOString } from './utils.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-const DEFAULT_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
+/** Escape ILIKE special characters to prevent wildcard injection */
+export function escapeIlike(query: string): string {
+  return query.replace(/[\\%_]/g, '\\$&');
+}
 
 /** Map snake_case DB row → camelCase MemoryEntry */
 function rowToEntry(row: Record<string, unknown>): MemoryEntry {
@@ -24,8 +29,8 @@ function rowToEntry(row: Record<string, unknown>): MemoryEntry {
     priority: row.priority as MemoryEntry['priority'],
     status: row.status as MemoryEntry['status'],
     pinned: row.pinned as boolean,
-    createdAt: (row.created_at as Date).toISOString(),
-    updatedAt: (row.updated_at as Date).toISOString(),
+    createdAt: toISOString(row.created_at),
+    updatedAt: toISOString(row.updated_at),
     relatedIds: (row.related_ids as string[]) || [],
   };
 }
@@ -37,8 +42,8 @@ function rowToProject(row: Record<string, unknown>): Project {
     name: row.name as string,
     description: (row.description as string) || '',
     domains: (row.domains as string[]) || [],
-    createdAt: (row.created_at as Date).toISOString(),
-    updatedAt: (row.updated_at as Date).toISOString(),
+    createdAt: toISOString(row.created_at),
+    updatedAt: toISOString(row.updated_at),
   };
 }
 
@@ -49,6 +54,11 @@ export class PgStorage {
     this.pool = new pg.Pool({
       connectionString: databaseUrl,
       max: 20,
+    });
+
+    // Prevent unhandled error crash when idle clients lose connection
+    this.pool.on('error', (err) => {
+      console.error('PostgreSQL pool error (idle client):', err.message);
     });
   }
 
@@ -69,6 +79,10 @@ export class PgStorage {
     await this.ensureDefaultProject();
 
     console.error('PgStorage initialized');
+  }
+
+  getPool(): pg.Pool {
+    return this.pool;
   }
 
   async close(): Promise<void> {
@@ -96,7 +110,7 @@ export class PgStorage {
     description?: string;
     domains?: string[];
   }): Promise<Project> {
-    const id = uuidv4();
+    const id = crypto.randomUUID();
     const { DEFAULT_DOMAINS: defaultDomains } = await import('../memory/types.js');
     const { rows } = await this.pool.query(
       `INSERT INTO projects (id, name, description, domains)
@@ -202,19 +216,46 @@ export class PgStorage {
     return rows.length > 0 ? rowToEntry(rows[0]) : undefined;
   }
 
-  async search(projectId: string, query: string, limit = 50): Promise<MemoryEntry[]> {
-    // Use plainto_tsquery for safe query parsing + ILIKE fallback for partial matches
+  async search(projectId: string, query: string, filters?: {
+    category?: string;
+    domain?: string;
+    status?: string;
+    tags?: string[];
+    limit?: number;
+  }): Promise<MemoryEntry[]> {
+    const conditions: string[] = ['project_id = $1'];
+    const values: unknown[] = [projectId];
+    let paramIdx = 2;
+
+    // Full-text search + ILIKE fallback
+    conditions.push(`(search_vector @@ plainto_tsquery('simple', $${paramIdx}) OR title ILIKE $${paramIdx + 1} OR content ILIKE $${paramIdx + 1})`);
+    values.push(query, `%${escapeIlike(query)}%`);
+    paramIdx += 2;
+
+    if (filters?.category && filters.category !== 'all') {
+      conditions.push(`category = $${paramIdx++}`);
+      values.push(filters.category);
+    }
+    if (filters?.domain) {
+      conditions.push(`domain = $${paramIdx++}`);
+      values.push(filters.domain);
+    }
+    if (filters?.status) {
+      conditions.push(`status = $${paramIdx++}`);
+      values.push(filters.status);
+    }
+    if (filters?.tags && filters.tags.length > 0) {
+      conditions.push(`tags && $${paramIdx++}`);
+      values.push(filters.tags);
+    }
+
+    const limit = filters?.limit || 50;
+    values.push(limit);
+
     const { rows } = await this.pool.query(
-      `SELECT * FROM entries
-       WHERE project_id = $1
-         AND (
-           search_vector @@ plainto_tsquery('simple', $2)
-           OR title ILIKE $3
-           OR content ILIKE $3
-         )
-       ORDER BY updated_at DESC
-       LIMIT $4`,
-      [projectId, query, `%${query}%`, limit]
+      `SELECT * FROM entries WHERE ${conditions.join(' AND ')}
+       ORDER BY updated_at DESC LIMIT $${paramIdx}`,
+      values
     );
     return rows.map(rowToEntry);
   }
@@ -386,6 +427,6 @@ export class PgStorage {
       `SELECT MAX(updated_at) as last FROM entries WHERE project_id = $1`,
       [projectId]
     );
-    return rows[0]?.last ? (rows[0].last as Date).toISOString() : new Date().toISOString();
+    return rows[0]?.last ? toISOString(rows[0].last) : new Date().toISOString();
   }
 }

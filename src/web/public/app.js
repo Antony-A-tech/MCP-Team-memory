@@ -7,7 +7,7 @@ let currentCategory = 'all';
 let currentSearch = '';
 let currentStatus = '';
 let currentDomain = '';
-let currentProjectId = '';
+let currentProjectId = localStorage.getItem('selected-project') || '';
 let entries = [];
 let projects = [];
 let ws = null;
@@ -26,7 +26,10 @@ const domainInfo = {
 // DOM Elements
 const entriesContainer = document.getElementById('entries-container');
 const searchInput = document.getElementById('search-input');
-const statusFilter = document.getElementById('status-filter');
+const statusSelect = document.getElementById('status-select');
+const statusSelectTrigger = statusSelect.querySelector('.custom-select-trigger');
+const statusSelectValue = statusSelect.querySelector('.custom-select-value');
+const statusOptionsContainer = document.getElementById('status-options');
 const pageTitle = document.getElementById('page-title');
 const modal = document.getElementById('entry-modal');
 const entryForm = document.getElementById('entry-form');
@@ -52,6 +55,7 @@ const categoryConfig = {
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
   lucide.createIcons();
+  initSidebarToggle();
   initNavigation();
   initSearch();
   initModal();
@@ -170,6 +174,7 @@ function selectDomain(domain) {
 
 function switchProject(projectId) {
   currentProjectId = projectId;
+  localStorage.setItem('selected-project', projectId);
   currentDomain = '';
   renderDomainFilters();
   populateEntryDomainSelect();
@@ -209,6 +214,16 @@ function initNavigation() {
 
   document.getElementById('btn-add').addEventListener('click', () => openModal());
 
+  document.getElementById('btn-export').addEventListener('click', () => {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    params.append('format', 'markdown');
+    if (currentCategory !== 'all' && currentCategory !== 'pinned') {
+      params.append('category', currentCategory);
+    }
+    window.open(`${API_BASE}/export?${params}`, '_blank');
+  });
+
   // Graph view toggle
   document.getElementById('btn-graph-view').addEventListener('click', () => {
     toggleGraphView(true);
@@ -218,13 +233,51 @@ function initNavigation() {
   projectSelectTrigger.addEventListener('click', (e) => {
     e.stopPropagation();
     projectSelect.classList.toggle('open');
+    statusSelect.classList.remove('open');
   });
 
-  // Close dropdown on outside click
+  // Custom status dropdown toggle
+  statusSelectTrigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    statusSelect.classList.toggle('open');
+    projectSelect.classList.remove('open');
+  });
+
+  // Status option click handlers
+  statusOptionsContainer.querySelectorAll('.custom-select-option').forEach(opt => {
+    opt.addEventListener('click', () => {
+      const value = opt.dataset.value;
+      currentStatus = value;
+      statusSelectValue.textContent = opt.querySelector('.custom-select-option-name').textContent;
+      statusOptionsContainer.querySelectorAll('.custom-select-option').forEach(o =>
+        o.classList.toggle('selected', o === opt)
+      );
+      statusSelect.classList.remove('open');
+      loadEntries();
+    });
+  });
+
+  // Close dropdowns on outside click
   document.addEventListener('click', (e) => {
     if (!projectSelect.contains(e.target)) {
       projectSelect.classList.remove('open');
     }
+    if (!statusSelect.contains(e.target)) {
+      statusSelect.classList.remove('open');
+    }
+  });
+}
+
+// Sidebar collapse toggle
+function initSidebarToggle() {
+  const sidebar = document.querySelector('.sidebar');
+  const toggleBtn = document.getElementById('sidebar-toggle');
+  const stored = localStorage.getItem('sidebar-collapsed');
+  if (stored === 'true') sidebar.classList.add('collapsed');
+
+  toggleBtn.addEventListener('click', () => {
+    sidebar.classList.toggle('collapsed');
+    localStorage.setItem('sidebar-collapsed', sidebar.classList.contains('collapsed'));
   });
 }
 
@@ -239,10 +292,6 @@ function initSearch() {
     }, 300);
   });
 
-  statusFilter.addEventListener('change', (e) => {
-    currentStatus = e.target.value;
-    loadEntries();
-  });
 }
 
 // === Entry Modal ===
@@ -603,6 +652,9 @@ function renderEntries() {
           <button onclick="editEntry('${entry.id}')" title="Редактировать">
             <i data-lucide="pencil"></i>
           </button>
+          <button onclick="showHistory('${entry.id}')" title="История">
+            <i data-lucide="history"></i>
+          </button>
           <button onclick="archiveEntry('${entry.id}')" title="Архивировать">
             <i data-lucide="archive"></i>
           </button>
@@ -696,6 +748,32 @@ window.togglePin = async function(id) {
   }
 };
 
+window.showHistory = async function(id) {
+  try {
+    const response = await fetch(`${API_BASE}/memory/${id}/history`);
+    const result = await response.json();
+
+    if (!result.success) {
+      showToast(result.error || 'Ошибка загрузки истории', 'error');
+      return;
+    }
+
+    if (result.versions.length === 0) {
+      showToast('Запись ещё не обновлялась — история пуста', 'info');
+      return;
+    }
+
+    const text = result.versions.map(v =>
+      `v${v.version} [${new Date(v.createdAt).toLocaleString()}]\n  ${v.title} (${v.status})`
+    ).join('\n\n');
+
+    alert(`История версий:\n\n${text}`);
+  } catch (error) {
+    showToast('Ошибка загрузки истории', 'error');
+    console.error(error);
+  }
+};
+
 // === WebSocket ===
 
 function initWebSocket() {
@@ -769,12 +847,6 @@ function formatDate(dateString) {
   if (diff < 604800000) return `${Math.floor(diff / 86400000)} дн назад`;
 
   return date.toLocaleDateString('ru-RU');
-}
-
-function escapeHtml(text) {
-  const div = document.createElement('div');
-  div.textContent = text;
-  return div.innerHTML;
 }
 
 // === Graph View Toggle ===

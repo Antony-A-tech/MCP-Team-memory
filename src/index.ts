@@ -28,7 +28,11 @@ if (config.transport === 'http') {
 
   try {
     const storage = new PgStorage(config.databaseUrl);
-    const memoryManager = new MemoryManager(storage);
+    const { AuditLogger } = await import('./storage/audit.js');
+    const auditLogger = new AuditLogger(storage.getPool());
+    const { VersionManager } = await import('./storage/versioning.js');
+    const versionManager = new VersionManager(storage.getPool());
+    const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
     await memoryManager.initialize();
 
     const mcpServer = new TeamMemoryMCPServer(memoryManager);
