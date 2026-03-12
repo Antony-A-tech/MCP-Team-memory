@@ -19,6 +19,20 @@ import type {
   DeleteParams,
   SyncParams
 } from './memory/types.js';
+import {
+  ReadParamsSchema,
+  WriteParamsSchema,
+  UpdateParamsSchema,
+  DeleteParamsSchema,
+  SyncParamsSchema,
+  PinParamsSchema,
+  ProjectActionSchema,
+  AuditParamsSchema,
+  HistoryParamsSchema,
+  ExportParamsSchema,
+  formatZodError,
+} from './memory/validation.js';
+import { exportEntries, type ExportFormat } from './export/exporter.js';
 
 export function buildMcpServer(memoryManager: MemoryManager): Server {
   const server = new Server(
@@ -78,7 +92,8 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
               description: 'Приоритет записи'
             },
             author: { type: 'string', description: 'Автор записи' },
-            pinned: { type: 'boolean', default: false, description: 'Закрепить запись' }
+            pinned: { type: 'boolean', default: false, description: 'Закрепить запись' },
+            relatedIds: { type: 'array', items: { type: 'string' }, description: 'UUID связанных записей для построения графа знаний' }
           },
           required: ['category', 'title', 'content']
         }
@@ -96,7 +111,8 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
             status: { type: 'string', enum: ['active', 'completed', 'archived'], description: 'Новый статус' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Новые теги' },
             priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Новый приоритет' },
-            pinned: { type: 'boolean', description: 'Закрепить/открепить' }
+            pinned: { type: 'boolean', description: 'Закрепить/открепить' },
+            relatedIds: { type: 'array', items: { type: 'string' }, description: 'UUID связанных записей для построения графа знаний' }
           },
           required: ['id']
         }
@@ -159,24 +175,77 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
           },
           required: ['action']
         }
+      },
+      {
+        name: 'memory_audit',
+        description: 'Просмотр истории изменений записи или проекта (аудит-лог).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entry_id: { type: 'string', description: 'ID записи для просмотра истории' },
+            project_id: { type: 'string', description: 'ID проекта для просмотра истории' },
+            limit: { type: 'number', default: 20, description: 'Макс. записей' },
+          },
+        },
+      },
+      {
+        name: 'memory_history',
+        description: 'Показывает историю версий записи. Используйте для отслеживания изменений.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            entry_id: { type: 'string', description: 'ID записи' },
+            version: { type: 'number', description: 'Конкретная версия (опционально)' },
+          },
+          required: ['entry_id'],
+        },
+      },
+      {
+        name: 'memory_export',
+        description: 'Экспортирует записи в формат Markdown или JSON.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', description: 'ID проекта' },
+            format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown', description: 'Формат экспорта' },
+            category: { type: 'string', enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'all'], description: 'Категория' },
+          },
+        },
       }
     ];
     return { tools };
   });
 
+  // Some MCP clients serialize arrays as JSON strings — parse them back
+  function coerceArrayFields(obj: Record<string, unknown> | undefined): Record<string, unknown> | undefined {
+    if (!obj) return obj;
+    const result = { ...obj };
+    for (const [key, value] of Object.entries(result)) {
+      if (typeof value === 'string' && value.startsWith('[')) {
+        try { result[key] = JSON.parse(value); } catch { /* keep as string */ }
+      }
+    }
+    return result;
+  }
+
   server.setRequestHandler(CallToolRequestSchema, async (request) => {
-    const { name, arguments: args } = request.params;
+    const { name, arguments: rawArgs } = request.params;
+    const args = coerceArrayFields(rawArgs);
 
     try {
       switch (name) {
         case 'memory_read': {
+          const parsed = ReadParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
           const params: ReadParams = {
-            projectId: (args?.project_id as string) || undefined,
-            category: (args?.category as Category | 'all') || 'all',
-            domain: args?.domain as string | undefined,
-            search: args?.search as string | undefined,
-            limit: (args?.limit as number) || 50,
-            status: args?.status as Status | undefined
+            projectId: parsed.data.project_id || undefined,
+            category: parsed.data.category,
+            domain: parsed.data.domain,
+            search: parsed.data.search,
+            limit: parsed.data.limit,
+            status: parsed.data.status
           };
           const entries = await memoryManager.read(params);
           if (entries.length === 0) {
@@ -186,56 +255,56 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
             const pi = e.priority === 'critical' ? '🔴' : e.priority === 'high' ? '🟠' : e.priority === 'medium' ? '🟡' : '🟢';
             const pin = e.pinned ? '📌 ' : '';
             const dom = e.domain ? ` | **Домен**: ${e.domain}` : '';
-            return `## ${pin}${pi} ${e.title}\n**ID**: ${e.id}\n**Категория**: ${e.category}${dom} | **Статус**: ${e.status} | **Автор**: ${e.author}${e.pinned ? ' | 📌' : ''}\n**Теги**: ${e.tags.join(', ') || 'нет'}\n**Обновлено**: ${new Date(e.updatedAt).toLocaleString()}\n\n${e.content}\n\n---`;
+            const rel = e.relatedIds && e.relatedIds.length > 0 ? `\n**Связи**: ${e.relatedIds.join(', ')}` : '';
+            return `## ${pin}${pi} ${e.title}\n**ID**: ${e.id}\n**Категория**: ${e.category}${dom} | **Статус**: ${e.status} | **Автор**: ${e.author}${e.pinned ? ' | 📌' : ''}\n**Теги**: ${e.tags.join(', ') || 'нет'}${rel}\n**Обновлено**: ${new Date(e.updatedAt).toLocaleString()}\n\n${e.content}\n\n---`;
           }).join('\n\n');
           return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей)\n\n${formatted}` }] };
         }
 
         case 'memory_write': {
-          const params: WriteParams = {
-            projectId: (args?.project_id as string) || undefined,
-            category: args?.category as Category,
-            domain: args?.domain as string | undefined,
-            title: args?.title as string,
-            content: args?.content as string,
-            tags: (args?.tags as string[]) || [],
-            priority: (args?.priority as Priority) || 'medium',
-            author: (args?.author as string) || 'claude-agent',
-            pinned: (args?.pinned as boolean) || false
-          };
+          const parsed = WriteParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { project_id, ...writeData } = parsed.data;
+          const params: WriteParams = { ...writeData, projectId: project_id };
           const entry = await memoryManager.write(params);
           const domTxt = entry.domain ? `\n**Домен**: ${entry.domain}` : '';
           const pinTxt = entry.pinned ? '\n📌 Закреплена' : '';
+          const relTxt = entry.relatedIds && entry.relatedIds.length > 0 ? `\n**Связи**: ${entry.relatedIds.length} записей` : '';
           return {
-            content: [{ type: 'text', text: `✅ Запись добавлена!\n\n**ID**: ${entry.id}\n**Заголовок**: ${entry.title}\n**Категория**: ${entry.category}${domTxt}\n**Приоритет**: ${entry.priority}${pinTxt}` }]
+            content: [{ type: 'text', text: `✅ Запись добавлена!\n\n**ID**: ${entry.id}\n**Заголовок**: ${entry.title}\n**Категория**: ${entry.category}${domTxt}\n**Приоритет**: ${entry.priority}${pinTxt}${relTxt}` }]
           };
         }
 
         case 'memory_update': {
-          const params: UpdateParams = {
-            id: args?.id as string,
-            title: args?.title as string | undefined,
-            content: args?.content as string | undefined,
-            domain: args?.domain as string | undefined,
-            status: args?.status as Status | undefined,
-            tags: args?.tags as string[] | undefined,
-            priority: args?.priority as Priority | undefined,
-            pinned: args?.pinned as boolean | undefined
-          };
+          const parsed = UpdateParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const params = parsed.data;
           const updated = await memoryManager.update(params);
           if (!updated) return { content: [{ type: 'text', text: `❌ Запись с ID "${params.id}" не найдена.` }] };
           return { content: [{ type: 'text', text: `✅ Запись обновлена!\n\n**ID**: ${updated.id}\n**Заголовок**: ${updated.title}\n**Статус**: ${updated.status}` }] };
         }
 
         case 'memory_delete': {
-          const params: DeleteParams = { id: args?.id as string, archive: args?.archive !== false };
+          const parsed = DeleteParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const params = parsed.data;
           const success = await memoryManager.delete(params);
           if (!success) return { content: [{ type: 'text', text: `❌ Запись с ID "${params.id}" не найдена.` }] };
           return { content: [{ type: 'text', text: params.archive ? `📦 Запись архивирована (ID: ${params.id})` : `🗑️ Запись удалена (ID: ${params.id})` }] };
         }
 
         case 'memory_sync': {
-          const params: SyncParams = { projectId: (args?.project_id as string) || undefined, since: args?.since as string | undefined };
+          const parsed = SyncParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const params: SyncParams = { projectId: parsed.data.project_id || undefined, since: parsed.data.since };
           const result = await memoryManager.sync(params);
           if (result.entries.length === 0) {
             return { content: [{ type: 'text', text: `✅ Синхронизировано. Новых изменений нет.\nПоследнее обновление: ${result.lastUpdated}` }] };
@@ -253,17 +322,23 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
         }
 
         case 'memory_pin': {
-          const id = args?.id as string;
-          const pinned = args?.pinned !== false;
-          if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID записи.' }], isError: true };
+          const parsed = PinParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { id, pinned } = parsed.data;
           const updated = await memoryManager.pin(id, pinned);
           if (!updated) return { content: [{ type: 'text', text: `❌ Запись "${id}" не найдена.` }] };
           return { content: [{ type: 'text', text: `${pinned ? '📌' : '📍'} Запись ${pinned ? 'закреплена' : 'откреплена'}!\n\n**ID**: ${updated.id}\n**Заголовок**: ${updated.title}` }] };
         }
 
         case 'memory_projects': {
-          const action = args?.action as string;
-          switch (action) {
+          const parsed = ProjectActionSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const projectAction = parsed.data;
+          switch (projectAction.action) {
             case 'list': {
               const projects = await memoryManager.listProjects();
               if (projects.length === 0) return { content: [{ type: 'text', text: 'Проектов не найдено.' }] };
@@ -271,27 +346,101 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
               return { content: [{ type: 'text', text: `# Проекты (${projects.length})\n\n${list}` }] };
             }
             case 'create': {
-              const n = args?.name as string;
-              if (!n) return { content: [{ type: 'text', text: '❌ Укажите название проекта.' }], isError: true };
-              const p = await memoryManager.createProject({ name: n, description: args?.description as string | undefined, domains: args?.domains as string[] | undefined });
+              const p = await memoryManager.createProject({ name: projectAction.name, description: projectAction.description, domains: projectAction.domains });
               return { content: [{ type: 'text', text: `✅ Проект создан!\n\n**ID**: ${p.id}\n**Название**: ${p.name}\n**Домены**: ${p.domains.join(', ')}` }] };
             }
             case 'update': {
-              const id = args?.id as string;
-              if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID проекта.' }], isError: true };
-              const u = await memoryManager.updateProject(id, { name: args?.name as string | undefined, description: args?.description as string | undefined, domains: args?.domains as string[] | undefined });
-              if (!u) return { content: [{ type: 'text', text: `❌ Проект "${id}" не найден.` }] };
+              const u = await memoryManager.updateProject(projectAction.id, { name: projectAction.name, description: projectAction.description, domains: projectAction.domains });
+              if (!u) return { content: [{ type: 'text', text: `❌ Проект "${projectAction.id}" не найден.` }] };
               return { content: [{ type: 'text', text: `✅ Проект обновлён!\n\n**ID**: ${u.id}\n**Название**: ${u.name}` }] };
             }
             case 'delete': {
-              const id = args?.id as string;
-              if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID проекта.' }], isError: true };
-              const d = await memoryManager.deleteProject(id);
-              return { content: [{ type: 'text', text: d ? `🗑️ Проект удалён (${id})` : `❌ Не найден или default.` }] };
+              const d = await memoryManager.deleteProject(projectAction.id);
+              return { content: [{ type: 'text', text: d ? `🗑️ Проект удалён (${projectAction.id})` : `❌ Не найден или default.` }] };
             }
-            default:
-              return { content: [{ type: 'text', text: `❌ Неизвестное действие: ${action}` }], isError: true };
           }
+          // All cases return above; this is a safety break
+          break;
+        }
+
+        case 'memory_audit': {
+          const auditLogger = memoryManager.getAuditLogger();
+          if (!auditLogger) {
+            return { content: [{ type: 'text', text: '❌ Аудит-лог не подключён.' }], isError: true };
+          }
+          const parsed = AuditParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { entry_id: auditEntryId, project_id: auditProjectId, limit: auditLimit } = parsed.data;
+
+          let auditEntries;
+          if (auditEntryId) {
+            auditEntries = await auditLogger.getByEntry(auditEntryId, auditLimit);
+          } else if (auditProjectId) {
+            auditEntries = await auditLogger.getByProject(auditProjectId, auditLimit);
+          } else {
+            auditEntries = await auditLogger.getRecent(auditLimit);
+          }
+
+          if (auditEntries.length === 0) {
+            return { content: [{ type: 'text', text: 'История изменений пуста.' }] };
+          }
+
+          const auditFormatted = auditEntries.map(a =>
+            `- **${a.action}** [${new Date(a.createdAt).toLocaleString()}] by ${a.actor}` +
+            (a.entryId ? ` (entry: ${a.entryId})` : '') +
+            (Object.keys(a.changes).length > 0 ? `\n  Изменения: ${JSON.stringify(a.changes)}` : '')
+          ).join('\n');
+
+          return { content: [{ type: 'text', text: `# Аудит-лог (${auditEntries.length} записей)\n\n${auditFormatted}` }] };
+        }
+
+        case 'memory_history': {
+          const vm = memoryManager.getVersionManager();
+          if (!vm) {
+            return { content: [{ type: 'text', text: '❌ Версионирование не подключено.' }], isError: true };
+          }
+          const parsed = HistoryParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { entry_id: histEntryId, version: histVersion } = parsed.data;
+
+          if (histVersion !== undefined) {
+            const v = await vm.getVersion(histEntryId, histVersion);
+            if (!v) return { content: [{ type: 'text', text: `❌ Версия ${histVersion} не найдена.` }] };
+            return { content: [{ type: 'text', text: `# Версия ${v.version}\n\n**Заголовок**: ${v.title}\n**Категория**: ${v.category}\n**Статус**: ${v.status}\n**Автор**: ${v.author}\n**Дата**: ${new Date(v.createdAt).toLocaleString()}\n\n${v.content}` }] };
+          }
+
+          const versions = await vm.getVersions(histEntryId);
+          if (versions.length === 0) {
+            return { content: [{ type: 'text', text: 'История версий пуста (запись ещё не обновлялась).' }] };
+          }
+
+          const vFormatted = versions.map(v =>
+            `- **v${v.version}** [${new Date(v.createdAt).toLocaleString()}] — ${v.title} (${v.status})`
+          ).join('\n');
+
+          return { content: [{ type: 'text', text: `# История версий (${versions.length})\n\n${vFormatted}` }] };
+        }
+
+        case 'memory_export': {
+          const parsed = ExportParamsSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          const { project_id: expProjectId, format: expFormat, category: expCategory } = parsed.data;
+
+          const expEntries = await memoryManager.read({
+            projectId: expProjectId,
+            category: expCategory as any,
+            limit: 500,
+            status: 'active',
+          });
+
+          const exported = exportEntries(expEntries, expFormat);
+          return { content: [{ type: 'text', text: exported }] };
         }
 
         default:
@@ -326,8 +475,9 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
         : 'Нет изменений за 24 часа.';
       return { contents: [{ uri, mimeType: 'text/markdown', text: `# Последние изменения\n\n${text}` }] };
     }
+    const VALID_CATEGORIES = ['architecture', 'tasks', 'decisions', 'issues', 'progress'];
     const m = uri.match(/^memory:\/\/(\w+)$/);
-    if (m) {
+    if (m && VALID_CATEGORIES.includes(m[1])) {
       const category = m[1] as Category;
       const entries = await memoryManager.read({ category, status: 'active' });
       const text = entries.length > 0 ? entries.map(e => `## ${e.title}\n${e.content}\n\n---`).join('\n\n') : `Нет записей.`;

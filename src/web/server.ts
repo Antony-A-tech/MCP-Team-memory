@@ -4,6 +4,8 @@ import { fileURLToPath } from 'url';
 import type { MemoryManager } from '../memory/manager.js';
 import type { SyncWebSocketServer } from '../sync/websocket.js';
 import type { Category, Priority, Status } from '../memory/types.js';
+import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError } from '../memory/validation.js';
+import { exportEntries, type ExportFormat } from '../export/exporter.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -15,6 +17,10 @@ export class WebServer {
 
   constructor(memoryManager: MemoryManager, wsServer: SyncWebSocketServer | null = null) {
     this.memoryManager = memoryManager;
+    this.wsServer = wsServer;
+  }
+
+  setWsServer(wsServer: SyncWebSocketServer): void {
     this.wsServer = wsServer;
   }
 
@@ -45,7 +51,8 @@ export class WebServer {
         const projects = await this.memoryManager.listProjects();
         res.json({ success: true, projects });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -59,7 +66,8 @@ export class WebServer {
         const project = await this.memoryManager.createProject({ name, description, domains });
         res.json({ success: true, project });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -74,7 +82,8 @@ export class WebServer {
         }
         res.json({ success: true, project });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -88,7 +97,8 @@ export class WebServer {
         }
         res.json({ success: true });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -96,25 +106,34 @@ export class WebServer {
 
     app.get('/api/memory', async (req: Request, res: Response) => {
       try {
-        const projectId = req.query.project_id as string | undefined;
-        const category = req.query.category as Category | 'all' | undefined;
-        const domain = req.query.domain as string | undefined;
-        const search = req.query.search as string | undefined;
-        const status = req.query.status as Status | undefined;
-        const limit = req.query.limit ? parseInt(req.query.limit as string, 10) : 100;
+        const parsed = ReadParamsSchema.safeParse({
+          project_id: req.query.project_id,
+          category: req.query.category || 'all',
+          domain: req.query.domain,
+          search: req.query.search,
+          status: req.query.status,
+          limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+        });
 
+        if (!parsed.success) {
+          res.status(400).json({ success: false, error: formatZodError(parsed.error) });
+          return;
+        }
+
+        const { project_id, category, domain, search, status, limit } = parsed.data;
         const entries = await this.memoryManager.read({
-          projectId,
-          category: category || 'all',
+          projectId: project_id,
+          category,
           domain,
           search,
           status,
-          limit
+          limit,
         });
 
         res.json({ success: true, entries });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -129,7 +148,8 @@ export class WebServer {
 
         res.json({ success: true, stats });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -138,51 +158,37 @@ export class WebServer {
         const agents = this.wsServer?.getConnectedClientsInfo() || [];
         res.json({ success: true, agents });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
     app.post('/api/memory', async (req: Request, res: Response) => {
       try {
-        const { project_id, category, domain, title, content, tags, priority, author } = req.body;
-
-        if (!category || !title || !content) {
-          res.status(400).json({ success: false, error: 'Missing required: category, title, content' });
+        const parsed = WriteParamsSchema.safeParse(req.body);
+        if (!parsed.success) {
+          res.status(400).json({ success: false, error: formatZodError(parsed.error) });
           return;
         }
 
-        const entry = await this.memoryManager.write({
-          projectId: project_id,
-          category: category as Category,
-          domain,
-          title,
-          content,
-          tags: tags || [],
-          priority: (priority as Priority) || 'medium',
-          author: author || 'web-ui'
-        });
-
+        const { project_id, ...writeData } = parsed.data;
+        const entry = await this.memoryManager.write({ ...writeData, projectId: project_id });
         res.json({ success: true, entry });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
     app.put('/api/memory/:id', async (req: Request, res: Response) => {
       try {
-        const { id } = req.params;
-        const { title, content, domain, status, tags, priority } = req.body;
+        const parsed = UpdateParamsSchema.safeParse({ id: req.params.id, ...req.body });
+        if (!parsed.success) {
+          res.status(400).json({ success: false, error: formatZodError(parsed.error) });
+          return;
+        }
 
-        const updated = await this.memoryManager.update({
-          id,
-          title,
-          content,
-          domain,
-          status: status as Status | undefined,
-          tags,
-          priority: priority as Priority | undefined
-        });
-
+        const updated = await this.memoryManager.update(parsed.data);
         if (!updated) {
           res.status(404).json({ success: false, error: 'Entry not found' });
           return;
@@ -190,7 +196,8 @@ export class WebServer {
 
         res.json({ success: true, entry: updated });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -207,7 +214,8 @@ export class WebServer {
 
         res.json({ success: true, archived: archive });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
 
@@ -224,7 +232,99 @@ export class WebServer {
 
         res.json({ success: true, entry: updated });
       } catch (error) {
-        res.status(500).json({ success: false, error: (error as Error).message });
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Audit API ===
+
+    app.get('/api/audit/:entryId', async (req: Request, res: Response) => {
+      try {
+        const auditLogger = this.memoryManager.getAuditLogger();
+        if (!auditLogger) {
+          res.status(501).json({ success: false, error: 'Audit logging not enabled' });
+          return;
+        }
+        const entries = await auditLogger.getByEntry(req.params.entryId);
+        res.json({ success: true, audit: entries });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.get('/api/audit', async (req: Request, res: Response) => {
+      try {
+        const auditLogger = this.memoryManager.getAuditLogger();
+        if (!auditLogger) {
+          res.status(501).json({ success: false, error: 'Audit logging not enabled' });
+          return;
+        }
+        const projectId = req.query.project_id as string | undefined;
+        const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10), 200) : 50;
+
+        const entries = projectId
+          ? await auditLogger.getByProject(projectId, limit)
+          : await auditLogger.getRecent(limit);
+
+        res.json({ success: true, audit: entries });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Version History API ===
+
+    app.get('/api/memory/:id/history', async (req: Request, res: Response) => {
+      try {
+        const vm = this.memoryManager.getVersionManager();
+        if (!vm) {
+          res.status(501).json({ success: false, error: 'Versioning not enabled' });
+          return;
+        }
+        const versions = await vm.getVersions(req.params.id);
+        res.json({ success: true, versions });
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Export API ===
+
+    app.get('/api/export', async (req: Request, res: Response) => {
+      try {
+        const projectId = req.query.project_id as string | undefined;
+        const format = (req.query.format as string) || 'markdown';
+        if (format !== 'markdown' && format !== 'json') {
+          res.status(400).json({ success: false, error: 'Invalid format. Supported: markdown, json' });
+          return;
+        }
+        const category = (req.query.category as string) || 'all';
+
+        const entries = await this.memoryManager.read({
+          projectId,
+          category: category as any,
+          limit: 500,
+          status: 'active',
+        });
+
+        const exported = exportEntries(entries, format);
+
+        if (format === 'json') {
+          res.setHeader('Content-Type', 'application/json');
+          res.setHeader('Content-Disposition', 'attachment; filename="team-memory-export.json"');
+        } else {
+          res.setHeader('Content-Type', 'text/markdown');
+          res.setHeader('Content-Disposition', 'attachment; filename="team-memory-export.md"');
+        }
+
+        res.send(exported);
+      } catch (error) {
+        console.error('API error:', error);
+        res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
   }

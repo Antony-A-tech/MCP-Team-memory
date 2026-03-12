@@ -1,5 +1,8 @@
-import { v4 as uuidv4 } from 'uuid';
+import crypto from 'crypto';
 import { PgStorage } from '../storage/pg-storage.js';
+import { AuditLogger } from '../storage/audit.js';
+import { VersionManager } from '../storage/versioning.js';
+import { DEFAULT_PROJECT_ID } from './types.js';
 import type {
   MemoryEntry,
   Project,
@@ -15,17 +18,19 @@ import type {
   WSEventType
 } from './types.js';
 
-const DEFAULT_PROJECT_ID = '00000000-0000-0000-0000-000000000000';
-
 type EventListener = (event: WSEvent) => void;
 
 export class MemoryManager {
   private storage: PgStorage;
+  private auditLogger: AuditLogger | null = null;
+  private versionManager: VersionManager | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
 
-  constructor(storage: PgStorage) {
+  constructor(storage: PgStorage, auditLogger?: AuditLogger, versionManager?: VersionManager) {
     this.storage = storage;
+    this.auditLogger = auditLogger || null;
+    this.versionManager = versionManager || null;
   }
 
   async initialize(): Promise<void> {
@@ -87,7 +92,13 @@ export class MemoryManager {
     const { category = 'all', domain, search, limit = 50, status, tags } = params;
 
     if (search) {
-      return this.storage.search(projectId, search, limit);
+      return this.storage.search(projectId, search, {
+        category: category === 'all' ? undefined : category,
+        domain,
+        status,
+        tags,
+        limit,
+      });
     }
 
     return this.storage.getAll(projectId, {
@@ -103,7 +114,7 @@ export class MemoryManager {
     const now = new Date().toISOString();
 
     const entry: MemoryEntry = {
-      id: uuidv4(),
+      id: crypto.randomUUID(),
       projectId: params.projectId || DEFAULT_PROJECT_ID,
       category: params.category,
       domain: params.domain || null,
@@ -121,6 +132,13 @@ export class MemoryManager {
 
     const created = await this.storage.add(entry);
     this.emit('memory:created', created);
+    this.auditLogger?.log({
+      entryId: created.id,
+      projectId: created.projectId,
+      action: 'create',
+      actor: created.author,
+      changes: { title: created.title, category: created.category },
+    }).catch(err => console.error('Audit log failed:', err));
     return created;
   }
 
@@ -131,10 +149,29 @@ export class MemoryManager {
       Object.entries(updates).filter(([_, value]) => value !== undefined)
     ) as Partial<MemoryEntry>;
 
+    // Save current version before updating
+    if (this.versionManager) {
+      const current = await this.storage.getById(id);
+      if (current) {
+        await this.versionManager.saveVersion(current).catch(err =>
+          console.error('Version save failed:', err)
+        );
+      }
+    }
+
     const updated = await this.storage.update(id, filteredUpdates);
 
     if (updated) {
       this.emit('memory:updated', updated);
+      this.auditLogger?.log({
+        entryId: updated.id,
+        projectId: updated.projectId,
+        action: 'update',
+        actor: updated.author,
+        changes: Object.fromEntries(
+          Object.entries(params).filter(([k]) => k !== 'id')
+        ),
+      }).catch(err => console.error('Audit log failed:', err));
       return updated;
     }
 
@@ -148,14 +185,28 @@ export class MemoryManager {
       const archived = await this.storage.archive(id);
       if (archived) {
         this.emit('memory:updated', archived);
+        this.auditLogger?.log({
+          entryId: id,
+          projectId: archived.projectId,
+          action: 'archive',
+          actor: archived.author,
+        }).catch(err => console.error('Audit log failed:', err));
         return true;
       }
       return false;
     }
 
+    // Fetch entry before hard-delete to get projectId for audit
+    const existing = await this.storage.getById(id);
     const deleted = await this.storage.delete(id);
     if (deleted) {
       this.emit('memory:deleted', { id });
+      this.auditLogger?.log({
+        entryId: id,
+        projectId: existing?.projectId,
+        action: 'delete',
+        actor: existing?.author || 'system',
+      }).catch(err => console.error('Audit log failed:', err));
       return true;
     }
     return false;
@@ -165,9 +216,23 @@ export class MemoryManager {
     const updated = await this.storage.update(id, { pinned });
     if (updated) {
       this.emit('memory:updated', updated);
+      this.auditLogger?.log({
+        entryId: updated.id,
+        projectId: updated.projectId,
+        action: pinned ? 'pin' : 'unpin',
+        actor: updated.author,
+      }).catch(err => console.error('Audit log failed:', err));
       return updated;
     }
     return null;
+  }
+
+  getAuditLogger(): AuditLogger | null {
+    return this.auditLogger;
+  }
+
+  getVersionManager(): VersionManager | null {
+    return this.versionManager;
   }
 
   // === Sync ===
@@ -210,7 +275,7 @@ export class MemoryManager {
     if (byCategory.architecture.length > 0) {
       overview += `## 🏗️ Архитектура (${byCategory.architecture.length})\n`;
       byCategory.architecture.slice(0, 5).forEach(e => {
-        overview += `- **${e.title}**${e.domain ? ` [${e.domain}]` : ''}: ${e.content.substring(0, 100)}...\n`;
+        overview += `- **${e.title}**${e.domain ? ` [${e.domain}]` : ''}: ${e.content.length > 100 ? e.content.substring(0, 100) + '...' : e.content}\n`;
       });
       overview += '\n';
     }
@@ -229,7 +294,7 @@ export class MemoryManager {
     if (byCategory.issues.length > 0) {
       overview += `## 🐛 Известные проблемы (${byCategory.issues.length})\n`;
       byCategory.issues.slice(0, 5).forEach(e => {
-        overview += `- **${e.title}**: ${e.content.substring(0, 80)}...\n`;
+        overview += `- **${e.title}**: ${e.content.length > 80 ? e.content.substring(0, 80) + '...' : e.content}\n`;
       });
       overview += '\n';
     }
