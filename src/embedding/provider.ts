@@ -9,6 +9,9 @@ export interface EmbeddingProvider {
   /** Whether the provider is initialized and ready to generate embeddings */
   isReady(): boolean;
 
+  /** Release native resources (ONNX session, etc.) */
+  close?(): Promise<void>;
+
   /** Dimensionality of the output vectors */
   readonly dimensions: number;
 }
