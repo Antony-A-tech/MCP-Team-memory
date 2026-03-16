@@ -112,4 +112,16 @@ export class LocalEmbeddingProvider implements EmbeddingProvider {
     if (norm === 0) return result;
     return result.map(v => v / norm);
   }
+
+  async close(): Promise<void> {
+    if (this.session) {
+      try {
+        await this.session.release?.();
+      } catch { /* best effort */ }
+      this.session = null;
+    }
+    this.tokenizer = null;
+    this.ort = null;
+    this.ready = false;
+  }
 }

@@ -44,6 +44,7 @@ export class MemoryManager {
 
   async close(): Promise<void> {
     this.stopAutoArchive();
+    await this.embeddingProvider?.close?.();
     await this.storage.close();
   }
 

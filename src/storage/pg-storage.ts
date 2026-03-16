@@ -204,6 +204,7 @@ export class PgStorage {
       values
     );
     const allEntries = rows.map(rowToEntry);
+    this.trackReads(allEntries.map(e => e.id));
     return this.attachVersions(allEntries);
   }
 
@@ -412,7 +413,8 @@ export class PgStorage {
       `SELECT * FROM entries WHERE project_id = $1 AND updated_at > $2 ORDER BY updated_at DESC`,
       [projectId, since]
     );
-    return rows.map(rowToEntry);
+    const entries = rows.map(rowToEntry);
+    return this.attachVersions(entries);
   }
 
   async getStats(projectId: string): Promise<{
@@ -513,7 +515,7 @@ export class PgStorage {
       return this.search(projectId, query, filters);
     }
 
-    const conditions: string[] = ['project_id = $1', "status = 'active'"];
+    const conditions: string[] = ['project_id = $1'];
     const values: unknown[] = [projectId];
     let paramIdx = 2;
 
@@ -535,7 +537,7 @@ export class PgStorage {
       values.push(filters.domain);
     }
     if (filters?.status) {
-      conditions[1] = `status = $${paramIdx++}`;
+      conditions.push(`status = $${paramIdx++}`);
       values.push(filters.status);
     }
     if (filters?.tags && filters.tags.length > 0) {
