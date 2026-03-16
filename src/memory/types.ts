@@ -54,6 +54,7 @@ export interface MemoryEntry {
   createdAt: string;
   updatedAt: string;
   relatedIds: string[];
+  currentVersion?: number; // Текущая версия записи (optimistic locking)
 }
 
 // Хранилище памяти (legacy, для миграции)
@@ -124,6 +125,7 @@ export interface WriteParams {
 // Параметры для обновления записи
 export interface UpdateParams {
   id: string;
+  expectedVersion?: number; // Optimistic locking: обновление только если версия совпадает
   title?: string;
   content?: string;
   domain?: string | null;
@@ -132,6 +134,14 @@ export interface UpdateParams {
   priority?: Priority;
   pinned?: boolean;
   relatedIds?: string[];
+}
+
+// Ошибка конфликта версий (optimistic locking)
+export interface ConflictError {
+  conflict: true;
+  currentVersion: number;
+  currentEntry: MemoryEntry;
+  message: string;
 }
 
 // Параметры для удаления/архивации
