@@ -4,6 +4,7 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Team Memory - Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <link rel="stylesheet" href="styles.css?v=4">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <!-- Graph visualization: force-graph (2D canvas, d3-force) -->
@@ -76,6 +77,10 @@
         <button class="nav-item nav-item-graph" id="btn-graph-view">
           <i data-lucide="network" class="nav-icon"></i>
           <span>Граф знаний</span>
+        </button>
+        <button class="nav-item nav-item-agents" id="btn-agents-view" style="display:none">
+          <i data-lucide="users" class="nav-icon"></i>
+          <span>Агенты</span>
         </button>
       </nav>
 
@@ -207,7 +212,67 @@
           </div>
         </div>
       </div>
+
+      <!-- Agents Panel (admin-only, hidden by default) -->
+      <div class="agents-panel" id="agents-panel" style="display:none">
+        <div class="agents-header">
+          <h2>Управление агентами</h2>
+          <button class="btn btn-primary btn-sm" id="btn-create-agent">
+            <i data-lucide="user-plus"></i> Создать токен
+          </button>
+        </div>
+        <div class="agents-table-wrap">
+          <table class="agents-table">
+            <thead>
+              <tr>
+                <th>Статус</th>
+                <th>Имя</th>
+                <th>Роль</th>
+                <th>Создан</th>
+                <th>Последняя активность</th>
+                <th>Действия</th>
+              </tr>
+            </thead>
+            <tbody id="agents-tbody"></tbody>
+          </table>
+        </div>
+      </div>
     </main>
+
+    <!-- Agent create modal (outside main for proper fixed positioning) -->
+    <div class="agents-create-modal" id="agents-create-modal" style="display:none">
+      <div class="agents-create-form">
+        <h3>Новый токен агента</h3>
+        <label>Имя агента
+          <input type="text" id="new-agent-name" placeholder="Иван Иванов" maxlength="64" />
+        </label>
+        <label>Роль
+          <select id="new-agent-role">
+            <option value="member">Member</option>
+            <option value="admin">Admin</option>
+          </select>
+        </label>
+        <div class="agents-create-actions">
+          <button class="btn btn-secondary btn-sm" id="btn-cancel-agent">Отмена</button>
+          <button class="btn btn-primary btn-sm" id="btn-confirm-agent">Создать</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Token reveal modal -->
+    <div class="agents-token-reveal" id="agents-token-reveal" style="display:none">
+      <div class="agents-token-card">
+        <h3>Токен создан!</h3>
+        <p>Скопируйте токен — он показывается только один раз.</p>
+        <div class="token-display">
+          <code id="revealed-token"></code>
+          <button class="btn btn-secondary btn-sm" id="btn-copy-token" title="Копировать">
+            <i data-lucide="copy"></i>
+          </button>
+        </div>
+        <button class="btn btn-primary btn-sm" id="btn-close-reveal">Готово</button>
+      </div>
+    </div>
 
     <!-- Add/Edit Entry Modal -->
     <div class="modal" id="entry-modal">
