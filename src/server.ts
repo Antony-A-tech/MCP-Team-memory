@@ -40,18 +40,19 @@ import {
   formatZodError,
 } from './memory/validation.js';
 import { exportEntries, type ExportFormat } from './export/exporter.js';
+import type { AgentTokenStore } from './auth/agent-tokens.js';
 
-export function buildMcpServer(memoryManager: MemoryManager): Server {
+export function buildMcpServer(memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore): Server {
   const server = new Server(
     { name: 'team-memory', version: '2.0.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
-  setupHandlers(server, memoryManager);
+  setupHandlers(server, memoryManager, agentTokenStore);
   return server;
 }
 
-function setupHandlers(server: Server, memoryManager: MemoryManager): void {
+function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Tool[] = [
       {
@@ -269,7 +270,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
             project_id: { type: 'string', description: 'ID проекта (по умолчанию "default")' },
           },
         }
-      }
+      },
     ];
     return { tools };
   });
@@ -286,9 +287,14 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
     return result;
   }
 
-  server.setRequestHandler(CallToolRequestSchema, async (request) => {
+  server.setRequestHandler(CallToolRequestSchema, async (request, extra) => {
     const { name, arguments: rawArgs } = request.params;
     const args = coerceArrayFields(rawArgs);
+
+    // Extract agent identity from auth context (HTTP transport with agent token)
+    const callerAgent = (extra as any)?.authInfo?.clientId as string | undefined;
+    const callerScopes = (extra as any)?.authInfo?.scopes as string[] | undefined;
+    const isAgentToken = callerAgent && callerAgent !== 'master';
 
     try {
       switch (name) {
@@ -325,6 +331,8 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
           const { project_id, ...writeData } = parsed.data;
+          // Override author if agent token was used (HTTP transport — identity from token, not params)
+          if (isAgentToken) writeData.author = callerAgent;
           const params: WriteParams = { ...writeData, projectId: project_id };
           const entry = await memoryManager.write(params);
           const domTxt = entry.domain ? `\n**Домен**: ${entry.domain}` : '';
@@ -578,6 +586,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager): void {
               tags: (args?.tags as string[]) || [],
               priority: 'high',
               pinned: true,
+              author: isAgentToken ? callerAgent : undefined,
             });
             return { content: [{ type: 'text', text: `✅ Конвенция добавлена!\n\n**ID**: ${entry.id}\n**Заголовок**: ${entry.title}\n📌 Автоматически закреплена` }] };
           }

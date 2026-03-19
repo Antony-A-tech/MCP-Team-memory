@@ -3,12 +3,14 @@ import type http from 'http';
 import crypto from 'crypto';
 import type { MemoryManager } from '../memory/manager.js';
 import type { WSEvent } from '../memory/types.js';
+import type { AgentTokenStore } from '../auth/agent-tokens.js';
 import logger from '../logger.js';
 
 interface ConnectedClient {
   ws: WebSocket;
   id: string;
   name: string;
+  agentName?: string;  // Token-derived identity, immutable
   connectedAt: Date;
 }
 
@@ -17,11 +19,13 @@ export class SyncWebSocketServer {
   private clients: Map<string, ConnectedClient> = new Map();
   private memoryManager: MemoryManager;
   private apiToken: string | undefined;
+  private agentTokenStore?: AgentTokenStore;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(memoryManager: MemoryManager, apiToken?: string) {
+  constructor(memoryManager: MemoryManager, apiToken?: string, agentTokenStore?: AgentTokenStore) {
     this.memoryManager = memoryManager;
     this.apiToken = apiToken;
+    this.agentTokenStore = agentTokenStore;
   }
 
   /** Start WebSocket on a standalone port */
@@ -44,6 +48,8 @@ export class SyncWebSocketServer {
     this.wss.on('connection', (ws, req) => {
       // Verify token if auth is enabled
       const effectiveToken = this.apiToken?.trim();
+      let resolvedAgentName: string | undefined;
+
       if (effectiveToken) {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
         // SECURITY NOTE: query param token may leak to access logs, proxies, browser history.
@@ -53,21 +59,31 @@ export class SyncWebSocketServer {
           ws.close(4401, 'Unauthorized');
           return;
         }
-        const tokenBuf = Buffer.from(token);
-        const expectedBuf = Buffer.from(effectiveToken);
-        if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
-          ws.close(4401, 'Unauthorized');
-          return;
+
+        // Try agent token first
+        const agentInfo = this.agentTokenStore?.resolve(token);
+        if (agentInfo) {
+          resolvedAgentName = agentInfo.agentName;
+          this.agentTokenStore!.trackLastUsed(agentInfo.id);
+        } else {
+          // Fallback: master token (timing-safe)
+          const tokenBuf = Buffer.from(token);
+          const expectedBuf = Buffer.from(effectiveToken);
+          if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+            ws.close(4401, 'Unauthorized');
+            return;
+          }
         }
       }
 
       const clientId = this.generateClientId();
-      const clientName = req.headers['x-agent-name']?.toString() || `agent-${clientId.slice(0, 8)}`;
+      const clientName = resolvedAgentName || req.headers['x-agent-name']?.toString() || `agent-${clientId.slice(0, 8)}`;
 
       const client: ConnectedClient = {
         ws,
         id: clientId,
         name: clientName,
+        agentName: resolvedAgentName,
         connectedAt: new Date()
       };
 
@@ -86,7 +102,7 @@ export class SyncWebSocketServer {
 
       this.broadcastExcept(clientId, {
         type: 'agent:connected',
-        payload: { clientId, clientName },
+        payload: { clientId, clientName, agentName: resolvedAgentName },
         timestamp: new Date().toISOString()
       });
 
@@ -140,6 +156,8 @@ export class SyncWebSocketServer {
         break;
 
       case 'rename': {
+        // Token-authenticated agents have immutable names — ignore rename attempts
+        if (client.agentName) break;
         const rawName = (msg.payload as { name?: string })?.name;
         // Sanitize: limit length, strip HTML-unsafe chars to prevent XSS in broadcast/UI
         const newName = rawName?.slice(0, 64).replace(/[<>"'&]/g, '').trim();
@@ -209,10 +227,11 @@ export class SyncWebSocketServer {
     return crypto.randomUUID();
   }
 
-  getConnectedClientsInfo(): Array<{ id: string; name: string; connectedAt: string }> {
+  getConnectedClientsInfo(): Array<{ id: string; name: string; agentName?: string; connectedAt: string }> {
     return Array.from(this.clients.values()).map(c => ({
       id: c.id,
       name: c.name,
+      agentName: c.agentName,
       connectedAt: c.connectedAt.toISOString()
     }));
   }

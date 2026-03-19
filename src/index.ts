@@ -7,6 +7,7 @@
  * - http:  for remote server with Web UI (set MEMORY_TRANSPORT=http)
  */
 
+import 'dotenv/config';
 import { loadConfig } from './config.js';
 import { createLogger } from './logger.js';
 

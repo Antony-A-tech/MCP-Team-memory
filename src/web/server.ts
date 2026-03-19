@@ -6,6 +6,7 @@ import type { SyncWebSocketServer } from '../sync/websocket.js';
 import type { Category, Priority, Status } from '../memory/types.js';
 import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError } from '../memory/validation.js';
 import { exportEntries, type ExportFormat } from '../export/exporter.js';
+import type { AgentTokenStore } from '../auth/agent-tokens.js';
 import logger from '../logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -15,10 +16,12 @@ export class WebServer {
   private app: Express | null = null;
   private memoryManager: MemoryManager;
   private wsServer: SyncWebSocketServer | null;
+  private agentTokenStore?: AgentTokenStore;
 
-  constructor(memoryManager: MemoryManager, wsServer: SyncWebSocketServer | null = null) {
+  constructor(memoryManager: MemoryManager, wsServer: SyncWebSocketServer | null = null, agentTokenStore?: AgentTokenStore) {
     this.memoryManager = memoryManager;
     this.wsServer = wsServer;
+    this.agentTokenStore = agentTokenStore;
   }
 
   setWsServer(wsServer: SyncWebSocketServer): void {
@@ -174,6 +177,8 @@ export class WebServer {
         }
 
         const { project_id, ...writeData } = parsed.data;
+        // Override author if agent token was used
+        if (req.agentName) writeData.author = req.agentName;
         const entry = await this.memoryManager.write({ ...writeData, projectId: project_id });
         res.json({ success: true, entry });
       } catch (error) {
@@ -324,6 +329,101 @@ export class WebServer {
         }
 
         res.send(exported);
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Agent Tokens REST API ===
+
+    const requireAdmin = (req: Request, res: Response): boolean => {
+      // Only master token (MEMORY_API_TOKEN) can manage agent tokens.
+      // Agent tokens — even with role 'admin' — cannot create/delete other tokens.
+      if (!req.agentName) return true; // master token has no agentName
+      res.status(403).json({ success: false, error: 'Forbidden: only master token can manage agents' });
+      return false;
+    };
+
+    app.get('/api/agent-tokens', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.json({ success: true, tokens: [] });
+          return;
+        }
+        const tokens = await this.agentTokenStore.list();
+        res.json({ success: true, tokens });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.post('/api/agent-tokens', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const { agent_name, role } = req.body;
+        if (!agent_name || typeof agent_name !== 'string' || agent_name.trim().length === 0 || agent_name.length > 64) {
+          res.status(400).json({ success: false, error: 'agent_name is required (1-64 characters)' });
+          return;
+        }
+        const validRoles = ['admin', 'member'];
+        if (role && !validRoles.includes(role)) {
+          res.status(400).json({ success: false, error: 'Invalid role. Must be: admin or member' });
+          return;
+        }
+        const result = await this.agentTokenStore.create(agent_name.trim(), role || 'member');
+        res.json({ success: true, ...result });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.post('/api/agent-tokens/:id/revoke', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const success = await this.agentTokenStore.revoke(req.params.id);
+        res.json({ success });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.post('/api/agent-tokens/:id/activate', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const success = await this.agentTokenStore.activate(req.params.id);
+        res.json({ success });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.delete('/api/agent-tokens/:id', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const success = await this.agentTokenStore.remove(req.params.id);
+        res.json({ success });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });

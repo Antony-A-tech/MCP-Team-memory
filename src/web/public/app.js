@@ -2,6 +2,33 @@
 
 const API_BASE = '/api';
 
+// Auth: Bearer token from localStorage (set via ?token= query param or manual input)
+const AUTH_TOKEN = new URLSearchParams(window.location.search).get('token') || localStorage.getItem('auth-token') || '';
+if (AUTH_TOKEN) {
+  localStorage.setItem('auth-token', AUTH_TOKEN);
+  // Remove token from URL to prevent leaking via browser history / Referer
+  const url = new URL(window.location);
+  if (url.searchParams.has('token')) {
+    url.searchParams.delete('token');
+    window.history.replaceState({}, '', url);
+  }
+}
+
+function authHeaders() {
+  return AUTH_TOKEN ? { 'Authorization': `Bearer ${AUTH_TOKEN}` } : {};
+}
+
+async function authFetch(url, options = {}) {
+  const headers = { ...authHeaders(), ...(options.headers || {}) };
+  const res = await fetch(url, { ...options, headers });
+  if (res.status === 401 || res.status === 403) {
+    localStorage.removeItem('auth-token');
+    window.location.href = '/login';
+    throw new Error('Unauthorized');
+  }
+  return res;
+}
+
 // State
 let currentCategory = 'all';
 let currentSearch = '';
@@ -12,6 +39,7 @@ let entries = [];
 let projects = [];
 let ws = null;
 let isGraphView = false;
+let isAgentsView = false;
 
 // Domain display info
 const domainInfo = {
@@ -54,6 +82,35 @@ const categoryConfig = {
 
 // Initialize
 document.addEventListener('DOMContentLoaded', async () => {
+  // Check if auth is required and redirect to login if needed
+  try {
+    const checkRes = await fetch('/api/auth/check');
+    const { authEnabled } = await checkRes.json();
+    if (authEnabled && !AUTH_TOKEN) {
+      window.location.href = '/login';
+      return;
+    }
+    if (authEnabled && AUTH_TOKEN) {
+      const verifyRes = await authFetch('/api/auth/verify');
+      const authInfo = await verifyRes.json();
+      if (authInfo.agentName) {
+        document.querySelector('.logo-text').textContent = `Team Memory`;
+        const badge = document.createElement('span');
+        badge.className = 'agent-badge';
+        badge.textContent = authInfo.agentName;
+        badge.title = `Role: ${authInfo.role}`;
+        document.querySelector('.logo').appendChild(badge);
+      }
+      // Show Agents tab only for master token holder
+      if (authInfo.isMaster) {
+        const agentsBtn = document.getElementById('btn-agents-view');
+        if (agentsBtn) agentsBtn.style.display = '';
+      }
+    }
+  } catch (e) {
+    // If check fails, proceed without auth
+  }
+
   lucide.createIcons();
   initSidebarToggle();
   initNavigation();
@@ -70,7 +127,7 @@ document.addEventListener('DOMContentLoaded', async () => {
 
 async function loadProjects() {
   try {
-    const response = await fetch(`${API_BASE}/projects`);
+    const response = await authFetch(`${API_BASE}/projects`);
     const result = await response.json();
 
     if (result.success) {
@@ -202,6 +259,7 @@ function initNavigation() {
   document.querySelectorAll('.nav-item[data-category]').forEach(item => {
     item.addEventListener('click', () => {
       if (isGraphView) toggleGraphView(false);
+      if (isAgentsView) toggleAgentsView(false);
 
       document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
       item.classList.add('active');
@@ -228,6 +286,13 @@ function initNavigation() {
   document.getElementById('btn-graph-view').addEventListener('click', () => {
     toggleGraphView(true);
   });
+
+  // Agents view toggle (admin only)
+  const agentsBtn = document.getElementById('btn-agents-view');
+  if (agentsBtn) {
+    agentsBtn.addEventListener('click', () => toggleAgentsView(true));
+  }
+  initAgentsPanel();
 
   // Custom project dropdown toggle
   projectSelectTrigger.addEventListener('click', (e) => {
@@ -363,13 +428,13 @@ async function handleFormSubmit(e) {
   try {
     let response;
     if (id) {
-      response = await fetch(`${API_BASE}/memory/${id}`, {
+      response = await authFetch(`${API_BASE}/memory/${id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
       });
     } else {
-      response = await fetch(`${API_BASE}/memory`, {
+      response = await authFetch(`${API_BASE}/memory`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify(data)
@@ -462,7 +527,7 @@ async function createProject() {
   }
 
   try {
-    const response = await fetch(`${API_BASE}/projects`, {
+    const response = await authFetch(`${API_BASE}/projects`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ name, description })
@@ -492,7 +557,7 @@ window.deleteProject = async function(id) {
   if (!confirm(`Удалить проект "${project.name}" и все его записи?`)) return;
 
   try {
-    const response = await fetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' });
+    const response = await authFetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' });
     const result = await response.json();
 
     if (result.success) {
@@ -537,7 +602,7 @@ async function loadEntries() {
     if (currentSearch) params.append('search', currentSearch);
     if (currentStatus) params.append('status', currentStatus);
 
-    const response = await fetch(`${API_BASE}/memory?${params}`);
+    const response = await authFetch(`${API_BASE}/memory?${params}`);
     const result = await response.json();
 
     if (result.success) {
@@ -564,7 +629,7 @@ async function loadEntries() {
 async function loadStats() {
   try {
     const params = currentProjectId ? `?project_id=${currentProjectId}` : '';
-    const response = await fetch(`${API_BASE}/stats${params}`);
+    const response = await authFetch(`${API_BASE}/stats${params}`);
     const result = await response.json();
 
     if (result.success) {
@@ -592,7 +657,7 @@ async function loadStats() {
     // Load pinned count
     const pinnedParams = new URLSearchParams();
     if (currentProjectId) pinnedParams.append('project_id', currentProjectId);
-    const allResponse = await fetch(`${API_BASE}/memory?${pinnedParams}`);
+    const allResponse = await authFetch(`${API_BASE}/memory?${pinnedParams}`);
     const allResult = await allResponse.json();
     if (allResult.success) {
       const pinnedCount = allResult.entries.filter(e => e.pinned === true).length;
@@ -685,7 +750,7 @@ window.archiveEntry = async function(id) {
   if (!confirm('Архивировать эту запись?')) return;
 
   try {
-    const response = await fetch(`${API_BASE}/memory/${id}`, {
+    const response = await authFetch(`${API_BASE}/memory/${id}`, {
       method: 'DELETE',
       headers: { 'Content-Type': 'application/json' }
     });
@@ -708,7 +773,7 @@ window.deleteEntry = async function(id) {
   if (!confirm('Удалить эту запись навсегда?')) return;
 
   try {
-    const response = await fetch(`${API_BASE}/memory/${id}?archive=false`, {
+    const response = await authFetch(`${API_BASE}/memory/${id}?archive=false`, {
       method: 'DELETE'
     });
 
@@ -733,7 +798,7 @@ window.togglePin = async function(id) {
   const newPinned = !entry.pinned;
 
   try {
-    const response = await fetch(`${API_BASE}/memory/${id}/pin`, {
+    const response = await authFetch(`${API_BASE}/memory/${id}/pin`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ pinned: newPinned })
@@ -755,7 +820,7 @@ window.togglePin = async function(id) {
 
 window.showHistory = async function(id) {
   try {
-    const response = await fetch(`${API_BASE}/memory/${id}/history`);
+    const response = await authFetch(`${API_BASE}/memory/${id}/history`);
     const result = await response.json();
 
     if (!result.success) {
@@ -783,7 +848,8 @@ window.showHistory = async function(id) {
 
 function initWebSocket() {
   const protocol = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-  const wsUrl = `${protocol}//${window.location.host}/ws`;
+  const tokenParam = AUTH_TOKEN ? `?token=${encodeURIComponent(AUTH_TOKEN)}` : '';
+  const wsUrl = `${protocol}//${window.location.host}/ws${tokenParam}`;
 
   try {
     ws = new WebSocket(wsUrl);
@@ -858,6 +924,7 @@ function formatDate(dateString) {
 
 function toggleGraphView(show) {
   isGraphView = show;
+  if (show && isAgentsView) toggleAgentsView(false);
 
   const entriesEl = document.getElementById('entries-container');
   const domainEl = document.getElementById('domain-filters');
@@ -891,7 +958,7 @@ async function loadGraphEntries() {
     if (currentProjectId) params.append('project_id', currentProjectId);
     params.append('limit', '500');
 
-    const response = await fetch(`${API_BASE}/memory?${params}`);
+    const response = await authFetch(`${API_BASE}/memory?${params}`);
     const result = await response.json();
 
     if (result.success && typeof renderGraph === 'function') {
@@ -1033,4 +1100,226 @@ function showToast(message, type = 'info') {
     toast.style.opacity = '0';
     setTimeout(() => toast.remove(), 300);
   }, 3000);
+}
+
+// === Agents Panel ===
+
+function toggleAgentsView(show) {
+  isAgentsView = show;
+  if (show && isGraphView) toggleGraphView(false);
+
+  const entriesEl = document.getElementById('entries-container');
+  const domainEl = document.getElementById('domain-filters');
+  const agentsEl = document.getElementById('agents-panel');
+  const headerRight = document.querySelector('.header-right');
+
+  if (show) {
+    entriesEl.style.display = 'none';
+    domainEl.style.display = 'none';
+    agentsEl.style.display = '';
+    headerRight.style.visibility = 'hidden';
+
+    document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+    document.getElementById('btn-agents-view').classList.add('active');
+    pageTitle.textContent = 'Агенты';
+
+    loadAgents();
+  } else {
+    agentsEl.style.display = 'none';
+    entriesEl.style.display = '';
+    domainEl.style.display = '';
+    headerRight.style.visibility = '';
+  }
+}
+
+function initAgentsPanel() {
+  const createBtn = document.getElementById('btn-create-agent');
+  const cancelBtn = document.getElementById('btn-cancel-agent');
+  const confirmBtn = document.getElementById('btn-confirm-agent');
+  const closeRevealBtn = document.getElementById('btn-close-reveal');
+  const copyBtn = document.getElementById('btn-copy-token');
+
+  if (createBtn) createBtn.addEventListener('click', () => {
+    document.getElementById('agents-create-modal').style.display = 'flex';
+    document.getElementById('new-agent-name').value = '';
+    document.getElementById('new-agent-name').focus();
+  });
+
+  if (cancelBtn) cancelBtn.addEventListener('click', () => {
+    document.getElementById('agents-create-modal').style.display = 'none';
+  });
+
+  if (confirmBtn) confirmBtn.addEventListener('click', createAgent);
+
+  if (closeRevealBtn) closeRevealBtn.addEventListener('click', () => {
+    document.getElementById('agents-token-reveal').style.display = 'none';
+  });
+
+  if (copyBtn) copyBtn.addEventListener('click', () => {
+    const token = document.getElementById('revealed-token').textContent;
+    navigator.clipboard.writeText(token).then(() => showToast('Токен скопирован', 'success'));
+  });
+
+  // Event delegation for agents table (CSP-compatible, no inline handlers)
+  const tbody = document.getElementById('agents-tbody');
+  if (tbody) tbody.addEventListener('click', async (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (btn) {
+      e.stopPropagation();
+      const action = btn.dataset.action;
+      const id = btn.dataset.id;
+      const name = btn.dataset.name;
+      const token = btn.dataset.token;
+
+      if (action === 'copy' && token) {
+        navigator.clipboard.writeText(token).then(() => showToast('Токен скопирован', 'success'));
+        return;
+      }
+      if (action === 'revoke') { await revokeAgent(id, name); return; }
+      if (action === 'activate') { await activateAgent(id, name); return; }
+      if (action === 'delete') { await deleteAgent(id, name); return; }
+    }
+
+    // Row click — toggle token row
+    const row = e.target.closest('[data-toggle]');
+    if (row) {
+      const tokenRow = document.getElementById(row.dataset.toggle);
+      if (tokenRow) {
+        const isVisible = tokenRow.style.display !== 'none';
+        tokenRow.style.display = isVisible ? 'none' : '';
+        if (!isVisible) lucide.createIcons();
+      }
+    }
+  });
+}
+
+async function loadAgents() {
+  const tbody = document.getElementById('agents-tbody');
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens`);
+    const data = await res.json();
+
+    if (!data.success || !data.tokens?.length) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px">Нет агентов. Создайте первый токен.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.tokens.map(t => {
+      const statusDot = t.isActive ? '<span class="agent-status-dot active"></span>Активен' : '<span class="agent-status-dot inactive"></span>Отключён';
+      const roleBadge = `<span class="agent-role-badge ${escapeHtml(t.role)}">${escapeHtml(t.role)}</span>`;
+      const created = t.createdAt ? new Date(t.createdAt).toLocaleDateString('ru-RU') : '—';
+      const lastUsed = t.lastUsedAt ? formatDate(t.lastUsedAt) : 'никогда';
+
+      const actions = [];
+      if (t.isActive) {
+        actions.push(`<button class="btn-revoke" data-action="revoke" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Отключить</button>`);
+      } else {
+        actions.push(`<button class="btn-activate" data-action="activate" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Включить</button>`);
+      }
+      actions.push(`<button class="btn-delete" data-action="delete" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Удалить</button>`);
+
+      const rowId = `agent-row-${escapeHtml(t.id)}`;
+      return `<tr class="agent-row" data-toggle="${rowId}">
+        <td>${statusDot}</td>
+        <td><strong>${escapeHtml(t.agentName)}</strong></td>
+        <td>${roleBadge}</td>
+        <td>${created}</td>
+        <td>${lastUsed}</td>
+        <td class="agents-actions">${actions.join(' ')}</td>
+      </tr>
+      <tr class="agent-token-row" id="${rowId}" style="display:none">
+        <td colspan="6">
+          <div class="agent-token-inline">
+            <code>${escapeHtml(t.token)}</code>
+            <button class="btn-copy-inline" data-action="copy" data-token="${escapeHtml(t.token)}" title="Копировать">
+              <i data-lucide="copy"></i>
+            </button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    console.error('Failed to load agents:', e);
+    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red)">Ошибка загрузки агентов</td></tr>';
+  }
+}
+
+async function createAgent() {
+  const name = document.getElementById('new-agent-name').value.trim();
+  const role = document.getElementById('new-agent-role').value;
+
+  if (!name) {
+    showToast('Введите имя агента', 'error');
+    return;
+  }
+
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ agent_name: name, role })
+    });
+    const data = await res.json();
+
+    if (!data.success) {
+      showToast(data.error || 'Ошибка создания', 'error');
+      return;
+    }
+
+    document.getElementById('agents-create-modal').style.display = 'none';
+    document.getElementById('revealed-token').textContent = data.token;
+    document.getElementById('agents-token-reveal').style.display = 'flex';
+    lucide.createIcons();
+
+    loadAgents();
+  } catch (e) {
+    showToast('Ошибка сети', 'error');
+  }
+}
+
+async function revokeAgent(id, name) {
+  if (!confirm(`Отключить токен для "${name}"?`)) return;
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens/${id}/revoke`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Токен ${name} отключён`, 'success');
+      loadAgents();
+    } else {
+      showToast(data.error || 'Ошибка', 'error');
+    }
+  } catch (e) {
+    showToast('Ошибка сети', 'error');
+  }
+}
+
+async function activateAgent(id, name) {
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens/${id}/activate`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Токен ${name} активирован`, 'success');
+      loadAgents();
+    } else {
+      showToast(data.error || 'Ошибка', 'error');
+    }
+  } catch (e) {
+    showToast('Ошибка сети', 'error');
+  }
+}
+
+async function deleteAgent(id, name) {
+  if (!confirm(`Удалить токен "${name}" навсегда? Это действие нельзя отменить.`)) return;
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`Токен ${name} удалён`, 'success');
+      loadAgents();
+    } else {
+      showToast(data.error || 'Ошибка', 'error');
+    }
+  } catch (e) {
+    showToast('Ошибка сети', 'error');
+  }
 }
