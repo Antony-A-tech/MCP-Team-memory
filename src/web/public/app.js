@@ -624,18 +624,18 @@ function renderEntries() {
       : '';
 
     return `
-    <div class="entry-card ${entry.status}${entry.pinned ? ' pinned' : ''}" data-id="${entry.id}">
+    <div class="entry-card ${escapeHtml(entry.status)}${entry.pinned ? ' pinned' : ''}" data-id="${escapeHtml(entry.id)}">
       <div class="entry-header">
         <div class="entry-title">
           ${entry.pinned ? '<i data-lucide="pin" class="pin-indicator"></i>' : ''}
-          <span class="priority-dot priority-${entry.priority}"></span>
+          <span class="priority-dot priority-${escapeHtml(entry.priority)}"></span>
           ${escapeHtml(entry.title)}
         </div>
         <div class="entry-badges">
           ${domainBadge}
           <span class="entry-category">
             <i data-lucide="${categoryConfig[entry.category]?.icon || 'file'}"></i>
-            ${entry.category}
+            ${escapeHtml(entry.category)}
           </span>
         </div>
       </div>
