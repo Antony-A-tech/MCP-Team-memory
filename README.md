@@ -360,6 +360,50 @@ npm start
 
 ---
 
+## Безопасность
+
+### Credentials
+
+**Не используйте дефолтные пароли в production!** Скопируйте `.env.example` в `.env` и измените `POSTGRES_PASSWORD`:
+
+```bash
+cp .env.example .env
+# Отредактируйте .env — обязательно смените POSTGRES_PASSWORD
+```
+
+### HTTPS (reverse proxy)
+
+Для production рекомендуется nginx reverse proxy с TLS:
+
+```nginx
+server {
+    listen 443 ssl;
+    server_name memory.your-domain.com;
+
+    ssl_certificate     /etc/letsencrypt/live/memory.your-domain.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/memory.your-domain.com/privkey.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:3846;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /ws {
+        proxy_pass http://127.0.0.1:3846;
+        proxy_http_version 1.1;
+        proxy_set_header Upgrade $http_upgrade;
+        proxy_set_header Connection "upgrade";
+    }
+}
+```
+
+### WebSocket authentication
+
+Предпочитайте `Authorization: Bearer <token>` header. Query parameter `?token=` поддерживается как fallback для клиентов, не умеющих устанавливать заголовки, но токен может попасть в access-логи.
+
+---
+
 ## Troubleshooting
 
 ### MCP сервер не запускается

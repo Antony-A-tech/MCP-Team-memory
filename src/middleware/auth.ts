@@ -1,13 +1,21 @@
 import type { Request, Response, NextFunction } from 'express';
 import crypto from 'crypto';
 import logger from '../logger.js';
+import type { AgentTokenStore } from '../auth/agent-tokens.js';
 
 /**
  * Creates Bearer token auth middleware.
  * If token is undefined — auth is disabled (all requests pass through).
  * Static files and health checks are excluded from auth.
+ *
+ * With agentTokenStore: resolves per-agent tokens first, then falls back to master token.
+ * Sets req.agentName and req.agentRole for downstream handlers.
+ * Sets (req as any).auth for MCP SDK StreamableHTTPServerTransport compatibility.
  */
-export function createAuthMiddleware(token: string | undefined) {
+export function createAuthMiddleware(
+  token: string | undefined,
+  agentTokenStore?: AgentTokenStore
+) {
   const trimmedToken = token?.trim() || undefined;
   if (token !== undefined && !trimmedToken) {
     logger.warn('MEMORY_API_TOKEN is empty/whitespace — auth is disabled');
@@ -40,7 +48,21 @@ export function createAuthMiddleware(token: string | undefined) {
 
     const provided = match[1];
 
-    // Timing-safe comparison to prevent timing attacks
+    // 1. Try agent token store (per-agent identity)
+    if (agentTokenStore) {
+      const agentInfo = agentTokenStore.resolve(provided);
+      if (agentInfo) {
+        req.agentName = agentInfo.agentName;
+        req.agentRole = agentInfo.role;
+        // MCP SDK reads req.auth for StreamableHTTPServerTransport → extra.authInfo
+        (req as any).auth = { clientId: agentInfo.agentName, scopes: [agentInfo.role] };
+        agentTokenStore.trackLastUsed(agentInfo.id);
+        next();
+        return;
+      }
+    }
+
+    // 2. Fallback: master token (MEMORY_API_TOKEN) — timing-safe comparison
     const tokenBuffer = Buffer.from(trimmedToken);
     const providedBuffer = Buffer.from(provided);
 
@@ -50,6 +72,8 @@ export function createAuthMiddleware(token: string | undefined) {
       return;
     }
 
+    // Master token — full admin access, no agentName (author comes from params)
+    (req as any).auth = { clientId: 'master', scopes: ['admin'] };
     next();
   };
 }

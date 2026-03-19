@@ -2,6 +2,7 @@
  * Unified Express application: MCP + REST API + Web UI + WebSocket
  * Entry point for HTTP mode (remote server).
  */
+import 'dotenv/config';
 import http from 'http';
 import express from 'express';
 import path from 'path';
@@ -21,6 +22,7 @@ import { createLogger } from './logger.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
 import { AuditLogger } from './storage/audit.js';
 import { VersionManager } from './storage/versioning.js';
+import { AgentTokenStore } from './auth/agent-tokens.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -58,6 +60,8 @@ async function main(): Promise<void> {
     res.setHeader('Access-Control-Allow-Origin', allowedOrigin);
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
+    // CSP: restrict script/style sources to prevent XSS
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https://unpkg.com; img-src 'self' data:; font-src 'self'");
     if (_req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -68,17 +72,39 @@ async function main(): Promise<void> {
   // Health check — no auth required
   app.get('/health', createHealthHandler(storage.getPool()));
 
+  // Auth check — no auth required, tells UI if login is needed
+  const authEnabled = !!config.apiToken?.trim();
+  app.get('/api/auth/check', (_req, res) => {
+    res.json({ authEnabled });
+  });
+
+  // Agent token store — per-agent identity (gracefully degrades if table doesn't exist)
+  const agentTokenStore = new AgentTokenStore(storage.getPool());
+  await agentTokenStore.initialize();
+
   // Auth middleware (optional — set MEMORY_API_TOKEN to enable)
-  app.use(createAuthMiddleware(config.apiToken));
+  app.use(createAuthMiddleware(config.apiToken, agentTokenStore));
+
+  // Auth verify — after auth middleware, returns agent info if token is valid
+  // isMaster: true only for MEMORY_API_TOKEN holder (the one who deployed the server)
+  app.get('/api/auth/verify', (req, res) => {
+    const isMaster = !req.agentName; // master token has no agentName
+    res.json({
+      authenticated: true,
+      agentName: req.agentName || null,
+      role: req.agentRole || (isMaster ? 'admin' : 'member'),
+      isMaster,
+    });
+  });
 
   // Rate limiting
   app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
 
   // Mount MCP StreamableHTTP transport
-  mountMcpTransport(app, () => buildMcpServer(memoryManager));
+  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore));
 
   // Mount REST API routes
-  const webServer = new WebServer(memoryManager, null);
+  const webServer = new WebServer(memoryManager, null, agentTokenStore);
   webServer.mountRoutes(app);
 
   // Serve static Web UI files
@@ -87,12 +113,15 @@ async function main(): Promise<void> {
   app.get('/', (_req, res) => {
     res.sendFile(path.join(publicPath, 'index.html'));
   });
+  app.get('/login', (_req, res) => {
+    res.sendFile(path.join(publicPath, 'login.html'));
+  });
 
   // Create HTTP server
   const server = http.createServer(app);
 
   // Attach WebSocket to the same HTTP server
-  const wsServer = new SyncWebSocketServer(memoryManager, config.apiToken);
+  const wsServer = new SyncWebSocketServer(memoryManager, config.apiToken, agentTokenStore);
   wsServer.attachToServer(server);
   webServer.setWsServer(wsServer);
 
