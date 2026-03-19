@@ -46,7 +46,9 @@ export class SyncWebSocketServer {
       const effectiveToken = this.apiToken?.trim();
       if (effectiveToken) {
         const url = new URL(req.url || '/', `http://${req.headers.host}`);
-        const token = url.searchParams.get('token') || req.headers.authorization?.replace(/^Bearer\s+/i, '');
+        // SECURITY NOTE: query param token may leak to access logs, proxies, browser history.
+        // Prefer Authorization: Bearer header. Query param kept for WebSocket clients that can't set headers.
+        const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || url.searchParams.get('token');
         if (!token) {
           ws.close(4401, 'Unauthorized');
           return;
@@ -138,7 +140,9 @@ export class SyncWebSocketServer {
         break;
 
       case 'rename': {
-        const newName = (msg.payload as { name?: string })?.name;
+        const rawName = (msg.payload as { name?: string })?.name;
+        // Sanitize: limit length, strip HTML-unsafe chars to prevent XSS in broadcast/UI
+        const newName = rawName?.slice(0, 64).replace(/[<>"'&]/g, '').trim();
         if (newName) {
           client.name = newName;
           this.broadcast({
