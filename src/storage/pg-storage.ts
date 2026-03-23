@@ -576,7 +576,9 @@ export class PgStorage {
     }
 
     const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
     values.push(limit);
+    values.push(offset);
 
     const sql = `
       SELECT *,
@@ -588,7 +590,7 @@ export class PgStorage {
         0.4 * COALESCE(ts_rank(search_vector, plainto_tsquery(current_setting('app.fts_language')::regconfig, $${textParamIdx})), 0)
         + 0.6 * COALESCE(1 - (embedding <=> $${vectorParamIdx}::vector), 0)
       ) DESC
-      LIMIT $${paramIdx}
+      LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
     `;
 
     const { rows } = await this.pool.query(sql, values);
