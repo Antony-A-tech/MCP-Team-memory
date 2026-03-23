@@ -453,13 +453,15 @@ h1, h2, h3, h4 {
 }
 
 .header {
-  height: 68px;
-  padding: 0 32px;
+  min-height: 68px;
+  padding: 12px 32px;
   background: var(--bg-secondary);
   border-bottom: 1px solid var(--border-color);
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
+  gap: 12px;
   position: sticky;
   top: 0;
   z-index: 50;
@@ -706,7 +708,8 @@ h1, h2, h3, h4 {
 .header-right {
   display: flex;
   align-items: center;
-  gap: 12px;
+  gap: 8px;
+  flex-wrap: wrap;
 }
 
 .search-box {

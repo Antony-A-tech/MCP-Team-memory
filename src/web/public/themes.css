@@ -256,6 +256,14 @@
   color: #0A0A0A;
 }
 
+[data-theme="sport"] .btn-secondary {
+  color: var(--text-primary);
+}
+
+[data-theme="sport"] .filter-pill.active {
+  color: #0A0A0A;
+}
+
 [data-theme="sport"] .btn-primary:hover,
 [data-theme="sport"] .btn-add:hover {
   background: var(--accent-hover);
