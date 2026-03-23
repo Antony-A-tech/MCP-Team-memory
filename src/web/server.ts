@@ -123,6 +123,7 @@ export class WebServer {
           search: req.query.search,
           status: req.query.status,
           limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+          offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
         });
 
         if (!parsed.success) {
@@ -130,7 +131,7 @@ export class WebServer {
           return;
         }
 
-        const { project_id, category, domain, search, status, limit } = parsed.data;
+        const { project_id, category, domain, search, status, limit, offset } = parsed.data;
         const entries = await this.memoryManager.read({
           projectId: project_id,
           category,
@@ -138,9 +139,10 @@ export class WebServer {
           search,
           status,
           limit,
+          offset,
         });
 
-        res.json({ success: true, entries });
+        res.json({ success: true, entries, offset, limit, hasMore: entries.length === limit });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });

@@ -94,7 +94,7 @@ export class MemoryManager {
 
   async read(params: ReadParams): Promise<MemoryEntry[]> {
     const projectId = params.projectId || DEFAULT_PROJECT_ID;
-    const { category = 'all', domain, search, limit = 50, status, tags } = params;
+    const { category = 'all', domain, search, limit = 50, offset = 0, status, tags } = params;
 
     if (search) {
       // Use hybrid search when embedding provider is available
@@ -107,6 +107,7 @@ export class MemoryManager {
             status,
             tags,
             limit,
+            offset,
           });
         } catch (err) {
           logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
@@ -119,6 +120,7 @@ export class MemoryManager {
         status,
         tags,
         limit,
+        offset,
       });
     }
 
@@ -128,6 +130,7 @@ export class MemoryManager {
       status,
       tags,
       limit,
+      offset,
     });
   }
 
@@ -599,6 +602,7 @@ export class MemoryManager {
 
     return {
       totalEntries: dbStats.totalEntries,
+      pinnedCount: dbStats.pinnedCount || 0,
       byCategory: {
         architecture: dbStats.byCategory.architecture || 0,
         tasks: dbStats.byCategory.tasks || 0,
