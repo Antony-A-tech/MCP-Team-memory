@@ -678,7 +678,7 @@ function renderProjectsList() {
       </div>
       <div class="project-item-actions">
         ${p.name !== 'default' && isMasterUser ? `
-          <button class="btn-icon" data-action="deleteProject" data-id="${p.id}" title="Удалить проект">
+          <button class="btn-icon" data-action="deleteProject" data-id="${escapeHtml(p.id)}" title="Удалить проект">
             <i data-lucide="trash-2"></i>
           </button>
         ` : ''}

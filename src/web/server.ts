@@ -353,7 +353,7 @@ export class WebServer {
           return;
         }
 
-        const { execSync } = await import('child_process');
+        const { execFileSync } = await import('child_process');
         const fs = await import('fs');
         const backupDir = path.join(__dirname, '../../data/backups/pg');
         fs.mkdirSync(backupDir, { recursive: true });
@@ -361,19 +361,22 @@ export class WebServer {
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         const backupFile = path.join(backupDir, `team-memory-${timestamp}.sql`);
 
-        // Try local pg_dump first, fall back to docker exec
         const dbUrl = process.env.DATABASE_URL || 'postgresql://memory:memory@localhost:5432/team_memory';
         const container = process.env.PG_CONTAINER || 'team-memory-pg';
-        let cmd: string;
+        const fd = fs.openSync(backupFile, 'w');
         try {
-          execSync('pg_dump --version', { stdio: 'pipe' });
-          cmd = `pg_dump "${dbUrl}" > "${backupFile}"`;
-        } catch {
-          // pg_dump not in PATH — use docker exec
-          const url = new URL(dbUrl);
-          cmd = `docker exec ${container} pg_dump -U ${url.username} ${url.pathname.slice(1)} > "${backupFile}"`;
+          try {
+            execFileSync('pg_dump', ['--version'], { stdio: 'pipe' });
+            execFileSync('pg_dump', [dbUrl], { stdio: ['pipe', fd, 'pipe'] });
+          } catch {
+            // pg_dump not in PATH — use docker exec
+            const url = new URL(dbUrl);
+            execFileSync('docker', ['exec', container, 'pg_dump', '-U', url.username, url.pathname.slice(1)],
+              { stdio: ['pipe', fd, 'pipe'] });
+          }
+        } finally {
+          fs.closeSync(fd);
         }
-        execSync(cmd, { stdio: 'pipe' });
 
         // Get file size
         const stats = fs.statSync(backupFile);
