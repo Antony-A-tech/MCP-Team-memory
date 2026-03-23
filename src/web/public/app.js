@@ -787,6 +787,7 @@ async function loadEntries() {
       }
 
       renderEntries();
+      renderLoadMoreButton(result);
     }
   } catch (error) {
     entriesContainer.innerHTML = `
@@ -797,6 +798,43 @@ async function loadEntries() {
     `;
     lucide.createIcons();
     console.error(error);
+  }
+}
+
+function renderLoadMoreButton(result) {
+  const existing = document.getElementById('load-more-btn');
+  if (existing) existing.remove();
+  if (result.hasMore) {
+    const btn = document.createElement('button');
+    btn.id = 'load-more-btn';
+    btn.className = 'btn btn-secondary load-more';
+    btn.innerHTML = '<i data-lucide="chevrons-down"></i> Загрузить ещё';
+    btn.addEventListener('click', () => loadMoreEntries(result.offset + result.limit));
+    entriesContainer.after(btn);
+    lucide.createIcons();
+  }
+}
+
+async function loadMoreEntries(offset) {
+  try {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    if (currentCategory !== 'all' && currentCategory !== 'pinned') params.append('category', currentCategory);
+    if (currentDomain) params.append('domain', currentDomain);
+    if (currentSearch) params.append('search', currentSearch);
+    if (currentStatus) params.append('status', currentStatus);
+    params.append('offset', String(offset));
+
+    const response = await authFetch(`${API_BASE}/memory?${params}`);
+    const result = await response.json();
+
+    if (result.success) {
+      entries = entries.concat(result.entries);
+      renderEntries();
+      renderLoadMoreButton(result);
+    }
+  } catch (e) {
+    showToast('Ошибка загрузки', 'error');
   }
 }
 
@@ -822,20 +860,13 @@ async function loadStats() {
       document.getElementById('agents-count').textContent =
         `${stats.connectedAgents || 0} агентов онлайн`;
 
+      // Pinned count from stats (server-side, accurate)
+      document.getElementById('count-pinned').textContent = stats.pinnedCount || 0;
+
       // Embedding stats
       if (result.embedding) {
         renderEmbeddingIndicator(result.embedding);
       }
-    }
-
-    // Load pinned count
-    const pinnedParams = new URLSearchParams();
-    if (currentProjectId) pinnedParams.append('project_id', currentProjectId);
-    const allResponse = await authFetch(`${API_BASE}/memory?${pinnedParams}`);
-    const allResult = await allResponse.json();
-    if (allResult.success) {
-      const pinnedCount = allResult.entries.filter(e => e.pinned === true).length;
-      document.getElementById('count-pinned').textContent = pinnedCount;
     }
   } catch (error) {
     console.error('Failed to load stats:', error);

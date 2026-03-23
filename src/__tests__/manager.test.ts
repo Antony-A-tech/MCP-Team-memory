@@ -85,6 +85,7 @@ describe('MemoryManager', () => {
           status: undefined,
           tags: undefined,
           limit: 50,
+          offset: 0,
         },
       );
     });
@@ -107,6 +108,7 @@ describe('MemoryManager', () => {
           status: 'active',
           tags: ['bug'],
           limit: 10,
+          offset: 0,
         },
       );
     });

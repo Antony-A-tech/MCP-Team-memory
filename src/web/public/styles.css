@@ -849,6 +849,16 @@ select:focus {
   overflow-y: auto;
 }
 
+.load-more {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  width: calc(100% - 64px);
+  margin: 0 32px 24px;
+  padding: 12px;
+}
+
 .loading {
   grid-column: 1 / -1;
   display: flex;
