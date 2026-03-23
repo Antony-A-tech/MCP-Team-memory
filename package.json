@@ -34,6 +34,7 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "clean": "rimraf dist",
+    "backup": "bash scripts/backup.sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

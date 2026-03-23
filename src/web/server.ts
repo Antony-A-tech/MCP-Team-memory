@@ -94,6 +94,11 @@ export class WebServer {
 
     app.delete('/api/projects/:id', async (req: Request, res: Response) => {
       try {
+        // Only master token holder can delete projects
+        if ((req as any).agentName) {
+          res.status(403).json({ success: false, error: 'Only administrator can delete projects' });
+          return;
+        }
         const { id } = req.params;
         const deleted = await this.memoryManager.deleteProject(id);
         if (!deleted) {

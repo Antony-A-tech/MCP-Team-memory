@@ -40,6 +40,7 @@ let projects = [];
 let ws = null;
 let isGraphView = false;
 let isAgentsView = false;
+let isMasterUser = false;
 
 // Theme configuration
 const THEMES = [
@@ -137,6 +138,7 @@ document.addEventListener('DOMContentLoaded', async () => {
       }
       // Show Agents tab only for master token holder
       if (authInfo.isMaster) {
+        isMasterUser = true;
         const agentsBtn = document.getElementById('btn-agents-view');
         if (agentsBtn) agentsBtn.style.display = '';
       }
@@ -315,14 +317,27 @@ function initNavigation() {
 
   document.getElementById('btn-add').addEventListener('click', () => openModal());
 
-  document.getElementById('btn-export').addEventListener('click', () => {
+  document.getElementById('btn-export').addEventListener('click', async () => {
     const params = new URLSearchParams();
     if (currentProjectId) params.append('project_id', currentProjectId);
     params.append('format', 'markdown');
     if (currentCategory !== 'all' && currentCategory !== 'pinned') {
       params.append('category', currentCategory);
     }
-    window.open(`${API_BASE}/export?${params}`, '_blank');
+    try {
+      const res = await authFetch(`${API_BASE}/export?${params}`);
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'team-memory-export.md';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Экспорт загружен', 'success');
+    } catch (e) {
+      showToast('Ошибка экспорта', 'error');
+    }
   });
 
   // Graph view toggle
@@ -637,7 +652,7 @@ function renderProjectsList() {
         </div>
       </div>
       <div class="project-item-actions">
-        ${p.name !== 'default' ? `
+        ${p.name !== 'default' && isMasterUser ? `
           <button class="btn-icon" data-action="deleteProject" data-id="${p.id}" title="Удалить проект">
             <i data-lucide="trash-2"></i>
           </button>
