@@ -40,6 +40,41 @@ let projects = [];
 let ws = null;
 let isGraphView = false;
 let isAgentsView = false;
+let isMasterUser = false;
+
+// Theme configuration
+const THEMES = [
+  {
+    id: 'default',
+    name: 'Default',
+    desc: 'Тёмная тема с indigo-акцентом',
+    colors: { bg: '#0f0f0f', sidebar: '#1a1a1a', sidebarBorder: '1px solid #333', accent: '#6366f1', line1: '#333', line2: '#6366f1', line3: '#252525', line4: '#252525' }
+  },
+  {
+    id: 'brutalist',
+    name: 'Brutalist',
+    desc: 'Жёсткий геометричный стиль, толстые рамки',
+    colors: { bg: '#F8F6F1', sidebar: '#fff', sidebarBorder: '3px solid #111', accent: '#D42B2B', line1: '#D8D4CC', line2: '#D42B2B', line3: '#EDEAE4', line4: '#EDEAE4' }
+  },
+  {
+    id: 'gazette',
+    name: 'Gazette',
+    desc: 'Газетный editorial-стиль, тёплые тона',
+    colors: { bg: '#F6F1E9', sidebar: '#FAF7F1', sidebarBorder: '2px solid #2A241C', accent: '#8B2020', line1: '#D4C9B8', line2: '#8B2020', line3: '#E2D9CA', line4: '#E2D9CA' }
+  },
+  {
+    id: 'sport',
+    name: 'Sport',
+    desc: 'Тёмный спортивный с неоновым акцентом',
+    colors: { bg: '#0A0A0A', sidebar: '#161616', sidebarBorder: '1px solid #3A3A3A', accent: '#CCFF00', line1: '#3A3A3A', line2: '#CCFF00', line3: '#1C1C1C', line4: '#1C1C1C' }
+  },
+  {
+    id: 'dashboard',
+    name: 'Dashboard',
+    desc: 'Aurora-градиенты, тёплые и холодные тона',
+    colors: { bg: '#07070B', sidebar: '#0D0D14', sidebarBorder: '1px solid rgba(255,255,255,0.05)', accent: '#FF8C42', line1: '#2A2A34', line2: 'linear-gradient(90deg, #FF8C42, #FF3B6C)', line3: '#15151E', line4: '#15151E' }
+  }
+];
 
 // Domain display info
 const domainInfo = {
@@ -101,10 +136,13 @@ document.addEventListener('DOMContentLoaded', async () => {
         badge.title = `Role: ${authInfo.role}`;
         document.querySelector('.logo').appendChild(badge);
       }
-      // Show Agents tab only for master token holder
+      // Show admin-only UI for master token holder
       if (authInfo.isMaster) {
+        isMasterUser = true;
         const agentsBtn = document.getElementById('btn-agents-view');
         if (agentsBtn) agentsBtn.style.display = '';
+        const backupBtn = document.getElementById('btn-backup');
+        if (backupBtn) backupBtn.style.display = '';
       }
     }
   } catch (e) {
@@ -116,7 +154,10 @@ document.addEventListener('DOMContentLoaded', async () => {
   initNavigation();
   initSearch();
   initModal();
+  initFormSelects();
+  initThemeSwitcher();
   initProjectsModal();
+  initEntryActions();
   initWebSocket();
   await loadProjects();
   loadEntries();
@@ -240,18 +281,24 @@ function switchProject(projectId) {
 }
 
 function populateEntryDomainSelect() {
-  const domainSelect = document.getElementById('entry-domain');
+  const optionsContainer = document.getElementById('domain-options');
   const project = projects.find(p => p.id === currentProjectId);
   const domains = project ? project.domains : [];
 
-  domainSelect.innerHTML = '<option value="">Без домена</option>';
+  optionsContainer.innerHTML = '<div class="custom-select-option selected" data-value=""><span class="custom-select-option-name">Без домена</span></div>';
   for (const d of domains) {
-    const opt = document.createElement('option');
-    opt.value = d;
     const info = domainInfo[d];
-    opt.textContent = info ? info.name : d;
-    domainSelect.appendChild(opt);
+    const label = info ? info.name : d;
+    const optEl = document.createElement('div');
+    optEl.className = 'custom-select-option';
+    optEl.dataset.value = d;
+    optEl.innerHTML = `<span class="custom-select-option-name">${escapeHtml(label)}</span>`;
+    optionsContainer.appendChild(optEl);
   }
+
+  // Re-bind click handlers for new options
+  initFormSelect('domain-select', 'entry-domain');
+  setFormSelectValue('domain-select', 'entry-domain', '');
 }
 
 // Navigation
@@ -272,14 +319,50 @@ function initNavigation() {
 
   document.getElementById('btn-add').addEventListener('click', () => openModal());
 
-  document.getElementById('btn-export').addEventListener('click', () => {
+  document.getElementById('btn-export').addEventListener('click', async () => {
     const params = new URLSearchParams();
     if (currentProjectId) params.append('project_id', currentProjectId);
     params.append('format', 'markdown');
     if (currentCategory !== 'all' && currentCategory !== 'pinned') {
       params.append('category', currentCategory);
     }
-    window.open(`${API_BASE}/export?${params}`, '_blank');
+    try {
+      const res = await authFetch(`${API_BASE}/export?${params}`);
+      if (!res.ok) throw new Error('Export failed');
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const a = document.createElement('a');
+      a.href = url;
+      a.download = 'team-memory-export.md';
+      a.click();
+      URL.revokeObjectURL(url);
+      showToast('Экспорт загружен', 'success');
+    } catch (e) {
+      showToast('Ошибка экспорта', 'error');
+    }
+  });
+
+  // Backup button (admin only)
+  document.getElementById('btn-backup').addEventListener('click', async () => {
+    const btn = document.getElementById('btn-backup');
+    btn.disabled = true;
+    btn.innerHTML = '<i data-lucide="loader"></i> Бэкап...';
+    lucide.createIcons();
+    try {
+      const res = await authFetch(`${API_BASE}/backup`, { method: 'POST' });
+      const data = await res.json();
+      if (data.success) {
+        showToast(`Бэкап создан: ${data.file} (${data.sizeMB} MB)`, 'success');
+      } else {
+        showToast(data.error || 'Ошибка бэкапа', 'error');
+      }
+    } catch (e) {
+      showToast('Ошибка сети', 'error');
+    } finally {
+      btn.disabled = false;
+      btn.innerHTML = '<i data-lucide="database-backup"></i> Бэкап';
+      lucide.createIcons();
+    }
   });
 
   // Graph view toggle
@@ -359,6 +442,93 @@ function initSearch() {
 
 }
 
+// === Form Custom Selects ===
+
+function initFormSelect(selectId, hiddenInputId) {
+  const wrapper = document.getElementById(selectId);
+  if (!wrapper || wrapper._formSelectInit) return;
+  wrapper._formSelectInit = true;
+  const trigger = wrapper.querySelector('.custom-select-trigger');
+  const valueEl = wrapper.querySelector('.custom-select-value');
+  const hidden = document.getElementById(hiddenInputId);
+
+  trigger.addEventListener('click', (e) => {
+    e.stopPropagation();
+    document.querySelectorAll('.custom-select.open').forEach(s => {
+      if (s !== wrapper) s.classList.remove('open');
+    });
+    wrapper.classList.toggle('open');
+  });
+
+  // Event delegation — works for dynamically added options
+  wrapper.addEventListener('click', (e) => {
+    const opt = e.target.closest('.custom-select-option');
+    if (!opt) return;
+    e.stopPropagation();
+    wrapper.querySelectorAll('.custom-select-option').forEach(o => o.classList.remove('selected'));
+    opt.classList.add('selected');
+    valueEl.textContent = opt.querySelector('.custom-select-option-name').textContent;
+    hidden.value = opt.dataset.value;
+    wrapper.classList.remove('open');
+  });
+}
+
+function setFormSelectValue(selectId, hiddenInputId, value) {
+  const wrapper = document.getElementById(selectId);
+  const hidden = document.getElementById(hiddenInputId);
+  if (!wrapper || !hidden) return;
+  hidden.value = value;
+  const options = wrapper.querySelectorAll('.custom-select-option');
+  options.forEach(opt => {
+    opt.classList.toggle('selected', opt.dataset.value === value);
+    if (opt.dataset.value === value) {
+      wrapper.querySelector('.custom-select-value').textContent =
+        opt.querySelector('.custom-select-option-name').textContent;
+    }
+  });
+}
+
+function initFormSelects() {
+  initFormSelect('category-select', 'entry-category');
+  initFormSelect('domain-select', 'entry-domain');
+  initFormSelect('priority-select', 'entry-priority');
+  initFormSelect('entry-status-select', 'entry-status');
+
+  // Close all selects on outside click
+  document.addEventListener('click', () => {
+    document.querySelectorAll('.custom-select.open').forEach(s => s.classList.remove('open'));
+  });
+}
+
+// === Entry & Project Action Delegation (CSP-safe, no inline handlers) ===
+
+function initEntryActions() {
+  // Entry card actions (delegated on entries container)
+  entriesContainer.addEventListener('click', (e) => {
+    const btn = e.target.closest('[data-action]');
+    if (!btn) return;
+    e.stopPropagation();
+    const action = btn.dataset.action;
+    const id = btn.dataset.id;
+    if (action === 'togglePin') togglePin(id);
+    else if (action === 'editEntry') editEntry(id);
+    else if (action === 'showHistory') showHistory(id);
+    else if (action === 'archiveEntry') archiveEntry(id);
+    else if (action === 'deleteEntry') deleteEntry(id);
+  });
+
+  // Project delete action (delegated on projects modal)
+  const projectsList = document.getElementById('projects-list');
+  if (projectsList) {
+    projectsList.addEventListener('click', (e) => {
+      const btn = e.target.closest('[data-action="deleteProject"]');
+      if (!btn) return;
+      e.stopPropagation();
+      deleteProject(btn.dataset.id);
+    });
+  }
+}
+
 // === Entry Modal ===
 
 function initModal() {
@@ -379,23 +549,27 @@ function openModal(entry = null) {
   if (entry) {
     modalTitle.textContent = 'Редактировать запись';
     document.getElementById('entry-id').value = entry.id;
-    document.getElementById('entry-category').value = entry.category;
-    document.getElementById('entry-domain').value = entry.domain || '';
+    setFormSelectValue('category-select', 'entry-category', entry.category);
+    setFormSelectValue('domain-select', 'entry-domain', entry.domain || '');
     document.getElementById('entry-title').value = entry.title;
     document.getElementById('entry-content').value = entry.content;
-    document.getElementById('entry-priority').value = entry.priority;
-    document.getElementById('entry-status').value = entry.status;
+    setFormSelectValue('priority-select', 'entry-priority', entry.priority);
+    setFormSelectValue('entry-status-select', 'entry-status', entry.status);
     document.getElementById('entry-tags').value = entry.tags.join(', ');
     document.getElementById('entry-author').value = entry.author;
   } else {
     modalTitle.textContent = 'Добавить запись';
     entryForm.reset();
     document.getElementById('entry-id').value = '';
+    setFormSelectValue('category-select', 'entry-category', 'architecture');
+    setFormSelectValue('priority-select', 'entry-priority', 'medium');
+    setFormSelectValue('entry-status-select', 'entry-status', 'active');
+    setFormSelectValue('domain-select', 'entry-domain', '');
     if (currentCategory !== 'all' && currentCategory !== 'pinned') {
-      document.getElementById('entry-category').value = currentCategory;
+      setFormSelectValue('category-select', 'entry-category', currentCategory);
     }
     if (currentDomain) {
-      document.getElementById('entry-domain').value = currentDomain;
+      setFormSelectValue('domain-select', 'entry-domain', currentDomain);
     }
   }
 
@@ -503,8 +677,8 @@ function renderProjectsList() {
         </div>
       </div>
       <div class="project-item-actions">
-        ${p.name !== 'default' ? `
-          <button class="btn-icon" onclick="deleteProject('${p.id}')" title="Удалить проект">
+        ${p.name !== 'default' && isMasterUser ? `
+          <button class="btn-icon" data-action="deleteProject" data-id="${escapeHtml(p.id)}" title="Удалить проект">
             <i data-lucide="trash-2"></i>
           </button>
         ` : ''}
@@ -613,6 +787,7 @@ async function loadEntries() {
       }
 
       renderEntries();
+      renderLoadMoreButton(result);
     }
   } catch (error) {
     entriesContainer.innerHTML = `
@@ -623,6 +798,43 @@ async function loadEntries() {
     `;
     lucide.createIcons();
     console.error(error);
+  }
+}
+
+function renderLoadMoreButton(result) {
+  const existing = document.getElementById('load-more-btn');
+  if (existing) existing.remove();
+  if (result.hasMore) {
+    const btn = document.createElement('button');
+    btn.id = 'load-more-btn';
+    btn.className = 'btn btn-secondary load-more';
+    btn.innerHTML = '<i data-lucide="chevrons-down"></i> Загрузить ещё';
+    btn.addEventListener('click', () => loadMoreEntries(result.offset + result.limit));
+    entriesContainer.after(btn);
+    lucide.createIcons();
+  }
+}
+
+async function loadMoreEntries(offset) {
+  try {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    if (currentCategory !== 'all' && currentCategory !== 'pinned') params.append('category', currentCategory);
+    if (currentDomain) params.append('domain', currentDomain);
+    if (currentSearch) params.append('search', currentSearch);
+    if (currentStatus) params.append('status', currentStatus);
+    params.append('offset', String(offset));
+
+    const response = await authFetch(`${API_BASE}/memory?${params}`);
+    const result = await response.json();
+
+    if (result.success) {
+      entries = entries.concat(result.entries);
+      renderEntries();
+      renderLoadMoreButton(result);
+    }
+  } catch (e) {
+    showToast('Ошибка загрузки', 'error');
   }
 }
 
@@ -648,20 +860,13 @@ async function loadStats() {
       document.getElementById('agents-count').textContent =
         `${stats.connectedAgents || 0} агентов онлайн`;
 
+      // Pinned count from stats (server-side, accurate)
+      document.getElementById('count-pinned').textContent = stats.pinnedCount || 0;
+
       // Embedding stats
       if (result.embedding) {
         renderEmbeddingIndicator(result.embedding);
       }
-    }
-
-    // Load pinned count
-    const pinnedParams = new URLSearchParams();
-    if (currentProjectId) pinnedParams.append('project_id', currentProjectId);
-    const allResponse = await authFetch(`${API_BASE}/memory?${pinnedParams}`);
-    const allResult = await allResponse.json();
-    if (allResult.success) {
-      const pinnedCount = allResult.entries.filter(e => e.pinned === true).length;
-      document.getElementById('count-pinned').textContent = pinnedCount;
     }
   } catch (error) {
     console.error('Failed to load stats:', error);
@@ -716,19 +921,19 @@ function renderEntries() {
           <span><i data-lucide="calendar"></i> ${formatDate(entry.updatedAt)}</span>
         </div>
         <div class="entry-actions">
-          <button onclick="togglePin('${entry.id}')" title="${entry.pinned ? 'Открепить' : 'Закрепить'}" class="${entry.pinned ? 'active' : ''}">
+          <button data-action="togglePin" data-id="${entry.id}" title="${entry.pinned ? 'Открепить' : 'Закрепить'}" class="${entry.pinned ? 'active' : ''}">
             <i data-lucide="pin"></i>
           </button>
-          <button onclick="editEntry('${entry.id}')" title="Редактировать">
+          <button data-action="editEntry" data-id="${entry.id}" title="Редактировать">
             <i data-lucide="pencil"></i>
           </button>
-          <button onclick="showHistory('${entry.id}')" title="История">
+          <button data-action="showHistory" data-id="${entry.id}" title="История">
             <i data-lucide="history"></i>
           </button>
-          <button onclick="archiveEntry('${entry.id}')" title="Архивировать">
+          <button data-action="archiveEntry" data-id="${entry.id}" title="Архивировать">
             <i data-lucide="archive"></i>
           </button>
-          <button onclick="deleteEntry('${entry.id}')" title="Удалить">
+          <button data-action="deleteEntry" data-id="${entry.id}" title="Удалить">
             <i data-lucide="trash-2"></i>
           </button>
         </div>
@@ -1359,4 +1564,105 @@ async function deleteAgent(id, name) {
   } catch (e) {
     showToast('Ошибка сети', 'error');
   }
+}
+
+// ============================================
+// Theme Switching
+// ============================================
+
+function getCurrentTheme() {
+  return document.documentElement.dataset.theme || 'default';
+}
+
+function applyTheme(themeId) {
+  if (themeId === 'default') {
+    document.documentElement.removeAttribute('data-theme');
+    localStorage.removeItem('tm-theme');
+  } else {
+    document.documentElement.dataset.theme = themeId;
+    localStorage.setItem('tm-theme', themeId);
+  }
+}
+
+function renderThemePreview(colors) {
+  return `<div class="theme-preview">
+    <div class="theme-preview-inner" style="background:${colors.bg}">
+      <div class="theme-preview-sidebar" style="background:${colors.sidebar};border-right:${colors.sidebarBorder}"></div>
+      <div class="theme-preview-main">
+        <div class="theme-preview-line" style="width:80%;background:${colors.line1}"></div>
+        <div class="theme-preview-line" style="width:60%;background:${colors.line2}"></div>
+        <div class="theme-preview-line" style="width:80%;background:${colors.line3}"></div>
+        <div class="theme-preview-line" style="width:40%;background:${colors.line4}"></div>
+      </div>
+    </div>
+  </div>`;
+}
+
+function openThemeModal() {
+  const current = getCurrentTheme();
+  const list = document.getElementById('theme-list');
+
+  list.innerHTML = THEMES.map(t => `
+    <div class="theme-row ${t.id === current ? 'active' : ''}" data-theme-id="${t.id}">
+      ${renderThemePreview(t.colors)}
+      <div class="theme-info">
+        <div class="theme-name">${t.name}</div>
+        <div class="theme-desc">${t.desc}</div>
+      </div>
+      <div class="theme-check">\u2713</div>
+    </div>
+  `).join('');
+
+  let selectedId = null;
+  list.querySelectorAll('.theme-row').forEach(row => {
+    row.addEventListener('click', () => {
+      list.querySelectorAll('.theme-row').forEach(r => r.classList.remove('selected'));
+      row.classList.add('selected');
+      selectedId = row.dataset.themeId;
+    });
+  });
+
+  const themeModal = document.getElementById('theme-modal');
+  themeModal.classList.add('active');
+
+  const applyBtn = document.getElementById('theme-apply');
+  const cancelBtn = document.getElementById('theme-cancel');
+  const closeBtn = document.getElementById('theme-modal-close');
+
+  const handleApply = () => {
+    if (selectedId) {
+      applyTheme(selectedId);
+    }
+    closeThemeModal();
+  };
+
+  const handleClose = () => closeThemeModal();
+
+  applyBtn.onclick = handleApply;
+  cancelBtn.onclick = handleClose;
+  closeBtn.onclick = handleClose;
+
+  themeModal.onclick = (e) => {
+    if (e.target === themeModal) handleClose();
+  };
+}
+
+function closeThemeModal() {
+  document.getElementById('theme-modal').classList.remove('active');
+}
+
+function initThemeSwitcher() {
+  const btn = document.getElementById('btn-theme');
+  if (btn) {
+    btn.addEventListener('click', openThemeModal);
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const themeModal = document.getElementById('theme-modal');
+      if (themeModal && themeModal.classList.contains('active')) {
+        closeThemeModal();
+      }
+    }
+  });
 }

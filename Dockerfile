@@ -1,5 +1,7 @@
 FROM node:20-alpine
 
+RUN apk add --no-cache postgresql16-client
+
 WORKDIR /app
 
 COPY package*.json ./
@@ -12,4 +14,4 @@ ENV MEMORY_PORT=3846
 
 EXPOSE 3846
 
-CMD ["node", "dist/app.js"]
+CMD ["node", "dist/index.js"]

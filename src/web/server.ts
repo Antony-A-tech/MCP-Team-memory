@@ -94,6 +94,11 @@ export class WebServer {
 
     app.delete('/api/projects/:id', async (req: Request, res: Response) => {
       try {
+        // Only master token holder can delete projects
+        if ((req as any).agentName) {
+          res.status(403).json({ success: false, error: 'Only administrator can delete projects' });
+          return;
+        }
         const { id } = req.params;
         const deleted = await this.memoryManager.deleteProject(id);
         if (!deleted) {
@@ -118,6 +123,7 @@ export class WebServer {
           search: req.query.search,
           status: req.query.status,
           limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
+          offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
         });
 
         if (!parsed.success) {
@@ -125,7 +131,7 @@ export class WebServer {
           return;
         }
 
-        const { project_id, category, domain, search, status, limit } = parsed.data;
+        const { project_id, category, domain, search, status, limit, offset } = parsed.data;
         const entries = await this.memoryManager.read({
           projectId: project_id,
           category,
@@ -133,9 +139,10 @@ export class WebServer {
           search,
           status,
           limit,
+          offset,
         });
 
-        res.json({ success: true, entries });
+        res.json({ success: true, entries, offset, limit, hasMore: entries.length === limit });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -333,6 +340,62 @@ export class WebServer {
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Backup API (admin only) ===
+
+    app.post('/api/backup', async (req: Request, res: Response) => {
+      try {
+        // Only master token holder can create backups
+        if ((req as any).agentName) {
+          res.status(403).json({ success: false, error: 'Only administrator can create backups' });
+          return;
+        }
+
+        const { execFileSync } = await import('child_process');
+        const fs = await import('fs');
+        const backupDir = path.join(__dirname, '../../data/backups/pg');
+        fs.mkdirSync(backupDir, { recursive: true });
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
+        const backupFile = path.join(backupDir, `team-memory-${timestamp}.sql`);
+
+        const dbUrl = process.env.DATABASE_URL || 'postgresql://memory:memory@localhost:5432/team_memory';
+        const container = process.env.PG_CONTAINER || 'team-memory-pg';
+        const fd = fs.openSync(backupFile, 'w');
+        try {
+          try {
+            execFileSync('pg_dump', ['--version'], { stdio: 'pipe' });
+            execFileSync('pg_dump', [dbUrl], { stdio: ['pipe', fd, 'pipe'] });
+          } catch {
+            // pg_dump not in PATH — use docker exec
+            const url = new URL(dbUrl);
+            execFileSync('docker', ['exec', container, 'pg_dump', '-U', url.username, url.pathname.slice(1)],
+              { stdio: ['pipe', fd, 'pipe'] });
+          }
+        } finally {
+          fs.closeSync(fd);
+        }
+
+        // Get file size
+        const stats = fs.statSync(backupFile);
+        const sizeMB = (stats.size / 1024 / 1024).toFixed(2);
+
+        // Clean old backups (keep last 30)
+        const files = fs.readdirSync(backupDir)
+          .filter((f: string) => f.startsWith('team-memory-') && f.endsWith('.sql'))
+          .sort()
+          .reverse();
+        for (const f of files.slice(30)) {
+          fs.unlinkSync(path.join(backupDir, f));
+        }
+
+        logger.info({ backupFile, sizeMB }, 'Database backup created');
+        res.json({ success: true, file: path.basename(backupFile), sizeMB, totalBackups: Math.min(files.length, 30) });
+      } catch (error) {
+        logger.error({ err: error }, 'Backup failed');
+        res.status(500).json({ success: false, error: 'Backup failed' });
       }
     });
 
