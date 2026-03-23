@@ -61,7 +61,7 @@ async function main(): Promise<void> {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id');
     // CSP: restrict script/style sources to prevent XSS
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline'; connect-src 'self' ws: wss: https://unpkg.com; img-src 'self' data:; font-src 'self'");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ws: wss: https://unpkg.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com");
     if (_req.method === 'OPTIONS') {
       res.status(204).end();
       return;
