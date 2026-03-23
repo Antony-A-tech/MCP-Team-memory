@@ -247,7 +247,14 @@
 }
 
 [data-theme="sport"] .nav-item.active {
+  background: var(--accent-primary);
+  color: #0A0A0A;
   border-left: 3px solid var(--accent-primary);
+}
+
+[data-theme="sport"] .nav-item.active .nav-count {
+  background: rgba(0, 0, 0, 0.15);
+  color: #0A0A0A;
 }
 
 [data-theme="sport"] .btn-primary,
