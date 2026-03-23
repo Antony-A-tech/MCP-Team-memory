@@ -125,6 +125,7 @@ export interface ReadParams {
   domain?: string;
   search?: string;
   limit?: number;
+  offset?: number;
   status?: Status;
   tags?: string[];
 }
@@ -202,6 +203,7 @@ export interface WSEvent {
 // Статистика для UI
 export interface MemoryStats {
   totalEntries: number;
+  pinnedCount: number;
   byCategory: Record<Category, number>;
   byDomain: Record<string, number>;
   byStatus: Record<Status, number>;

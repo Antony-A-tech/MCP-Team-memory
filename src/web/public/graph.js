@@ -25,6 +25,7 @@ const EDGE_COLORS = {
 let graphRef = null;
 let graphEntries = [];
 let selectedNode = null;
+let graphSearchMatchIds = null; // Set of matched entry IDs, null = no search active
 
 // Trigger a canvas repaint without reheating the d3-force simulation.
 // pauseAnimation/resumeAnimation restarts the render loop for one cycle
@@ -183,13 +184,23 @@ function renderGraph(entries) {
       const r = Math.sqrt(node.size * node.size * 0.5) * 1.2;
       const isSelected = selectedNode && selectedNode.id === node.id;
       const isNeighbor = selectedNode && isLinked(selectedNode.id, node.id);
-      const dimmed = selectedNode && !isSelected && !isNeighbor;
+      const isSearchMatch = graphSearchMatchIds && graphSearchMatchIds.has(node.id);
+      const dimmedBySelection = selectedNode && !isSelected && !isNeighbor;
+      const dimmedBySearch = graphSearchMatchIds && !isSearchMatch;
+      const dimmed = dimmedBySelection || dimmedBySearch;
 
       // Node circle
       ctx.beginPath();
       ctx.arc(node.x, node.y, r, 0, 2 * Math.PI);
-      ctx.fillStyle = dimmed ? (node.color + '30') : node.color;
+      ctx.fillStyle = dimmed ? (node.color + '20') : node.color;
       ctx.fill();
+
+      // Search match glow
+      if (isSearchMatch && !dimmedBySelection) {
+        ctx.strokeStyle = '#06b6d4';
+        ctx.lineWidth = 2.5;
+        ctx.stroke();
+      }
 
       if (isSelected) {
         ctx.strokeStyle = '#06b6d4';
@@ -197,14 +208,14 @@ function renderGraph(entries) {
         ctx.stroke();
       }
 
-      // Label
-      if (!dimmed && globalScale > 0.6) {
+      // Label — always show for search matches
+      if ((!dimmed || isSearchMatch) && (globalScale > 0.6 || isSearchMatch)) {
         const label = node.label;
         const fontSize = Math.max(10 / globalScale, 3);
         ctx.font = `${fontSize}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = dimmed ? '#33333330' : '#e5e5e5';
+        ctx.fillStyle = dimmed ? '#33333320' : '#e5e5e5';
         ctx.fillText(label, node.x, node.y + r + 2);
       }
     })
@@ -302,6 +313,59 @@ function renderGraph(entries) {
 
   updateGraphLegend();
   updateGraphStats(data);
+  initGraphSearch();
+}
+
+// ── Graph Search ─────────────────────────────────────
+
+function initGraphSearch() {
+  const input = document.getElementById('graph-search-input');
+  if (!input || input._graphSearchInit) return;
+  input._graphSearchInit = true;
+
+  let timeout;
+  input.addEventListener('input', () => {
+    clearTimeout(timeout);
+    timeout = setTimeout(() => {
+      const term = input.value.trim().toLowerCase();
+      if (!term) {
+        graphSearchMatchIds = null;
+        refreshGraph();
+        if (graphRef) graphRef.zoomToFit(400, 40);
+        return;
+      }
+
+      const matched = graphEntries.filter(e =>
+        e.title.toLowerCase().includes(term) ||
+        (e.content && e.content.toLowerCase().includes(term)) ||
+        (e.tags && e.tags.some(t => t.toLowerCase().includes(term)))
+      );
+
+      graphSearchMatchIds = new Set(matched.map(e => e.id));
+      selectedNode = null;
+      refreshGraph();
+
+      // Zoom to fit matched nodes
+      if (matched.length > 0 && graphRef) {
+        const matchedNodes = graphRef.graphData().nodes.filter(n => graphSearchMatchIds.has(n.id));
+        if (matchedNodes.length === 1) {
+          graphRef.centerAt(matchedNodes[0].x, matchedNodes[0].y, 400);
+          graphRef.zoom(4, 400);
+        } else {
+          graphRef.zoomToFit(400, 40, n => graphSearchMatchIds.has(n.id));
+        }
+      }
+    }, 200);
+  });
+
+  input.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      input.value = '';
+      graphSearchMatchIds = null;
+      refreshGraph();
+      if (graphRef) graphRef.zoomToFit(400, 40);
+    }
+  });
 }
 
 // ── helpers for link detection ───────────────────────
@@ -345,7 +409,7 @@ function showNodeDetail(nodeId) {
     <div class="graph-detail-header">
       <span class="priority-dot priority-${entry.priority}"></span>
       <h3>${escapeHtml(entry.title)}</h3>
-      <button onclick="hideNodeDetail()" class="graph-detail-close"><i data-lucide="x"></i></button>
+      <button data-graph-action="hideNodeDetail" class="graph-detail-close"><i data-lucide="x"></i></button>
     </div>
     <div class="graph-detail-badges">
       <span class="graph-detail-cat" style="background:${CATEGORY_COLORS[entry.category]}20;color:${CATEGORY_COLORS[entry.category]};border:1px solid ${CATEGORY_COLORS[entry.category]}50">${categoryLabel(entry.category)}</span>
@@ -359,7 +423,7 @@ function showNodeDetail(nodeId) {
       </div>
     ` : ''}
     <div class="graph-detail-actions">
-      <button class="btn btn-primary btn-sm" onclick="openEntryFromGraph('${entry.id}')">
+      <button class="btn btn-primary btn-sm" data-graph-action="openEntryFromGraph" data-id="${entry.id}">
         <i data-lucide="pencil"></i> Редактировать
       </button>
     </div>
@@ -372,7 +436,7 @@ function showNodeDetail(nodeId) {
       <div class="graph-detail-neighbors">
         <h4>\u0421\u0432\u044f\u0437\u0430\u043d\u043d\u044b\u0435 \u0437\u0430\u043f\u0438\u0441\u0438</h4>
         ${neighborEntries.map(n => `
-          <div class="graph-neighbor-item" onclick="focusNode('${n.id}')">
+          <div class="graph-neighbor-item" data-graph-action="focusNode" data-id="${n.id}">
             <span class="priority-dot priority-${n.priority}"></span>
             <span>${escapeHtml(truncate(n.title, 50))}</span>
             <span class="graph-neighbor-cat" style="color:${CATEGORY_COLORS[n.category] || '#999'}">${categoryLabel(n.category)}</span>
@@ -492,7 +556,10 @@ window.toggleLayout = toggleLayout;
 
 function resetGraphFilters() {
   selectedNode = null;
+  graphSearchMatchIds = null;
   hideNodeDetail();
+  const searchInput = document.getElementById('graph-search-input');
+  if (searchInput) searchInput.value = '';
   if (graphRef) {
     refreshGraph();
     graphRef.zoomToFit(400, 40);
@@ -508,6 +575,7 @@ function destroyGraph() {
     graphRef = null;
   }
   selectedNode = null;
+  graphSearchMatchIds = null;
   const container = document.getElementById('graph-container');
   if (container) container.innerHTML = '';
 }
@@ -537,6 +605,28 @@ function toggleGraphSidebar() {
   }
 }
 window.toggleGraphSidebar = toggleGraphSidebar;
+
+// ── Graph toolbar delegation (CSP-safe) ─────────────
+const graphActions = {
+  toggleLayout,
+  graphZoomIn,
+  graphZoomOut,
+  graphZoomFit,
+  resetGraphFilters,
+  toggleGraphSidebar,
+  hideNodeDetail,
+  openEntryFromGraph: (id) => openEntryFromGraph(id),
+  focusNode: (id) => focusNode(id),
+};
+
+document.addEventListener('click', (e) => {
+  const el = e.target.closest('[data-graph-action]');
+  if (!el) return;
+  const action = el.dataset.graphAction;
+  const id = el.dataset.id;
+  const fn = graphActions[action];
+  if (fn) fn(id);
+});
 
 // ── Public API ───────────────────────────────────────
 

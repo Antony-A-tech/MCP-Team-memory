@@ -18,6 +18,7 @@ export const ReadParamsSchema = z.object({
   domain: z.string().max(100).optional(),
   search: z.string().max(500).optional(),
   limit: z.number().int().min(1).default(50).transform(v => Math.min(v, 500)),
+  offset: z.number().int().min(0).default(0).transform(v => Math.min(v, 10000)),
   status: StatusEnum.optional(),
 });
 

@@ -1,6 +1,6 @@
 {
   "name": "@malinkaboy/team-memory-mcp",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "MCP Server for team memory - shared knowledge base for Claude Code agents (PostgreSQL, multi-project)",
   "type": "module",
   "main": "dist/index.js",
@@ -34,6 +34,7 @@
     "docker:up": "docker compose up -d",
     "docker:down": "docker compose down",
     "clean": "rimraf dist",
+    "backup": "bash scripts/backup.sh",
     "test": "vitest run",
     "test:watch": "vitest",
     "test:coverage": "vitest run --coverage"

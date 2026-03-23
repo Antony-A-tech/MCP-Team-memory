@@ -77,7 +77,7 @@ export class PgStorage {
 
     // Set FTS language for EVERY new connection (including those created during migrations)
     this.pool.on('connect', (client: pg.PoolClient) => {
-      client.query(`SET app.fts_language = '${this.ftsLanguage}'`).catch(() => {});
+      client.query('SET app.fts_language = $1', [this.ftsLanguage]).catch(() => {});
     });
 
     // Prevent unhandled error crash when idle clients lose connection
@@ -193,6 +193,7 @@ export class PgStorage {
     status?: string;
     tags?: string[];
     limit?: number;
+    offset?: number;
   }): Promise<MemoryEntry[]> {
     const conditions: string[] = ['project_id = $1'];
     const values: unknown[] = [projectId];
@@ -215,12 +216,14 @@ export class PgStorage {
       values.push(filters.tags);
     }
 
-    const limit = filters?.limit || 100;
+    const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
     values.push(limit);
+    values.push(offset);
 
     const { rows } = await this.pool.query(
       `SELECT * FROM entries WHERE ${conditions.join(' AND ')}
-       ORDER BY updated_at DESC LIMIT $${paramIdx}`,
+       ORDER BY updated_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       values
     );
     const allEntries = rows.map(rowToEntry);
@@ -243,6 +246,7 @@ export class PgStorage {
     status?: string;
     tags?: string[];
     limit?: number;
+    offset?: number;
   }): Promise<MemoryEntry[]> {
     const conditions: string[] = ['project_id = $1'];
     const values: unknown[] = [projectId];
@@ -271,11 +275,13 @@ export class PgStorage {
     }
 
     const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
     values.push(limit);
+    values.push(offset);
 
     const { rows } = await this.pool.query(
       `SELECT * FROM entries WHERE ${conditions.join(' AND ')}
-       ORDER BY updated_at DESC LIMIT $${paramIdx}`,
+       ORDER BY updated_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       values
     );
     const entries = rows.map(rowToEntry);
@@ -439,6 +445,7 @@ export class PgStorage {
 
   async getStats(projectId: string): Promise<{
     totalEntries: number;
+    pinnedCount: number;
     byCategory: Record<string, number>;
     byDomain: Record<string, number>;
     byStatus: Record<string, number>;
@@ -467,6 +474,7 @@ export class PgStorage {
         `SELECT
            COUNT(*) FILTER (WHERE updated_at > NOW() - INTERVAL '24 hours')::int as last24h,
            COUNT(*) FILTER (WHERE updated_at > NOW() - INTERVAL '7 days')::int as last7d,
+           COUNT(*) FILTER (WHERE pinned = true)::int as pinned,
            COUNT(*)::int as total
          FROM entries WHERE project_id = $1`,
         [projectId]
@@ -487,6 +495,7 @@ export class PgStorage {
 
     return {
       totalEntries: recentResult.rows[0]?.total || 0,
+      pinnedCount: recentResult.rows[0]?.pinned || 0,
       byCategory,
       byDomain,
       byStatus,
@@ -528,6 +537,7 @@ export class PgStorage {
       status?: string;
       tags?: string[];
       limit?: number;
+      offset?: number;
     }
   ): Promise<MemoryEntry[]> {
     // Fall back to regular search when no embedding available
@@ -566,7 +576,9 @@ export class PgStorage {
     }
 
     const limit = filters?.limit || 50;
+    const offset = filters?.offset || 0;
     values.push(limit);
+    values.push(offset);
 
     const sql = `
       SELECT *,
@@ -578,7 +590,7 @@ export class PgStorage {
         0.4 * COALESCE(ts_rank(search_vector, plainto_tsquery(current_setting('app.fts_language')::regconfig, $${textParamIdx})), 0)
         + 0.6 * COALESCE(1 - (embedding <=> $${vectorParamIdx}::vector), 0)
       ) DESC
-      LIMIT $${paramIdx}
+      LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
     `;
 
     const { rows } = await this.pool.query(sql, values);

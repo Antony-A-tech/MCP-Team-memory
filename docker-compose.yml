@@ -34,8 +34,11 @@ services:
       MEMORY_DECAY_WEIGHTS: ${MEMORY_DECAY_WEIGHTS:-0.3,0.2,0.3,0.2}
       MEMORY_EMBEDDING_PROVIDER: ${MEMORY_EMBEDDING_PROVIDER:-}
       MEMORY_EMBEDDING_MODEL_DIR: ${MEMORY_EMBEDDING_MODEL_DIR:-data/models}
+      PG_CONTAINER: ${COMPOSE_PROJECT_NAME:-team-memory-mcp}-postgres-1
     ports:
       - "3846:3846"
+    volumes:
+      - backups:/app/data/backups
     healthcheck:
       test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3846/health || exit 1"]
       interval: 30s
@@ -46,3 +49,4 @@ services:
 
 volumes:
   pgdata:
+  backups:
