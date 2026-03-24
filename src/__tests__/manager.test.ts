@@ -79,14 +79,15 @@ describe('MemoryManager', () => {
       expect(storage.search).toHaveBeenCalledWith(
         '00000000-0000-0000-0000-000000000000',
         'test',
-        {
+        expect.objectContaining({
           category: undefined,
           domain: undefined,
           status: undefined,
           tags: undefined,
           limit: 50,
           offset: 0,
-        },
+          compact: true,
+        }),
       );
     });
 
@@ -102,15 +103,51 @@ describe('MemoryManager', () => {
       expect(storage.search).toHaveBeenCalledWith(
         '00000000-0000-0000-0000-000000000000',
         'test',
-        {
+        expect.objectContaining({
           category: 'issues',
           domain: 'backend',
           status: 'active',
           tags: ['bug'],
           limit: 10,
           offset: 0,
-        },
+          compact: true,
+        }),
       );
+    });
+
+    it('delegates to storage.getByIds when ids param provided', async () => {
+      storage.getByIds = vi.fn().mockResolvedValue([storage._mockEntry]);
+      const ids = ['550e8400-e29b-41d4-a716-446655440000'];
+      const entries = await manager.read({ ids });
+      expect(storage.getByIds).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000000',
+        ids
+      );
+      expect(entries).toHaveLength(1);
+    });
+
+    it('passes compact=true to storage.getAll when mode is compact', async () => {
+      await manager.read({ category: 'tasks', mode: 'compact' });
+      expect(storage.getAll).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000000',
+        expect.objectContaining({ compact: true })
+      );
+    });
+
+    it('passes compact=false to storage.getAll when mode is full', async () => {
+      await manager.read({ category: 'tasks', mode: 'full' });
+      expect(storage.getAll).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000000',
+        expect.objectContaining({ compact: false })
+      );
+    });
+
+    it('ignores filters when ids is provided', async () => {
+      storage.getByIds = vi.fn().mockResolvedValue([storage._mockEntry]);
+      await manager.read({ ids: ['550e8400-e29b-41d4-a716-446655440000'], search: 'test', category: 'tasks' });
+      expect(storage.getByIds).toHaveBeenCalled();
+      expect(storage.search).not.toHaveBeenCalled();
+      expect(storage.getAll).not.toHaveBeenCalled();
     });
   });
 
