@@ -59,6 +59,9 @@ const MCP_PROTOCOL_VERSION = '2025-03-26';
  * Perform transparent session re-initialization.
  * Creates a new transport, runs synthetic init handshake via Web Standard API
  * (bypassing hono Node.js adapter), then forwards the original request.
+ *
+ * Uses private SDK field `_webStandardTransport` (tested with @modelcontextprotocol/sdk ^1.0.0).
+ * If the SDK restructures internals, the runtime guard below will throw a clear error.
  */
 async function performTransparentReinit(
   req: Request,
@@ -67,7 +70,6 @@ async function performTransparentReinit(
 ): Promise<void> {
   const oldSessionId = req.headers['mcp-session-id'] as string;
 
-  // Create new transport
   const transport = new StreamableHTTPServerTransport({
     sessionIdGenerator: () => crypto.randomUUID(),
     onsessioninitialized: (id: string) => {
@@ -83,83 +85,100 @@ async function performTransparentReinit(
     }
   };
 
-  // Connect MCP server
   const mcpServer = createMcpServer();
   await mcpServer.connect(transport);
 
-  // Access underlying Web Standard transport to bypass hono Node.js adapter
-  // This avoids needing real Node.js sockets for mock req/res
-  const webTransport = (transport as any)._webStandardTransport;
+  try {
+    // Access underlying Web Standard transport to bypass hono Node.js adapter.
+    // Runtime guard: if SDK internals change, fail fast with a clear message.
+    const webTransport = (transport as any)._webStandardTransport;
+    if (!webTransport || typeof webTransport.handleRequest !== 'function') {
+      throw new Error(
+        'SDK internal structure changed: _webStandardTransport.handleRequest not found. ' +
+        'Session recovery requires @modelcontextprotocol/sdk with WebStandardStreamableHTTPServerTransport.',
+      );
+    }
 
-  // --- Step 1: Synthetic initialize handshake ---
-  const initBody = {
-    jsonrpc: '2.0',
-    id: `synthetic-init-${crypto.randomUUID()}`,
-    method: 'initialize',
-    params: {
-      protocolVersion: MCP_PROTOCOL_VERSION,
-      capabilities: {},
-      clientInfo: { name: 'recovered-client', version: '1.0.0' },
-    },
-  };
+    // --- Step 1: Synthetic initialize handshake ---
+    const initBody = {
+      jsonrpc: '2.0',
+      id: `synthetic-init-${crypto.randomUUID()}`,
+      method: 'initialize',
+      params: {
+        protocolVersion: MCP_PROTOCOL_VERSION,
+        capabilities: {},
+        clientInfo: { name: 'recovered-client', version: '1.0.0' },
+      },
+    };
 
-  const initReq = new globalThis.Request('http://localhost/mcp', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
-    },
-    body: JSON.stringify(initBody),
-  });
+    const initReq = new globalThis.Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+      },
+      body: JSON.stringify(initBody),
+    });
 
-  await webTransport.handleRequest(initReq, { parsedBody: initBody });
+    const initRes = await webTransport.handleRequest(initReq, { parsedBody: initBody });
+    if (initRes.status !== 200) {
+      const errorText = await initRes.text();
+      throw new Error(`Synthetic init failed with status ${initRes.status}: ${errorText}`);
+    }
 
-  const newSessionId = transport.sessionId;
-  if (!newSessionId) {
-    throw new Error('Transport did not generate session ID after synthetic init');
-  }
+    const newSessionId = transport.sessionId;
+    if (!newSessionId) {
+      throw new Error('Transport did not generate session ID after synthetic init');
+    }
 
-  // --- Step 2: Synthetic notifications/initialized ---
-  const notifBody = { jsonrpc: '2.0', method: 'notifications/initialized' };
-  const notifReq = new globalThis.Request('http://localhost/mcp', {
-    method: 'POST',
-    headers: {
-      'content-type': 'application/json',
-      accept: 'application/json, text/event-stream',
+    // --- Step 2: Synthetic notifications/initialized ---
+    const notifBody = { jsonrpc: '2.0', method: 'notifications/initialized' };
+    const notifReq = new globalThis.Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: {
+        'content-type': 'application/json',
+        accept: 'application/json, text/event-stream',
+        'mcp-session-id': newSessionId,
+      },
+      body: JSON.stringify(notifBody),
+    });
+
+    await webTransport.handleRequest(notifReq, { parsedBody: notifBody });
+
+    // --- Step 3: Forward original request via Web Standard API ---
+    // We must use webTransport directly because hono's Node.js adapter
+    // reads raw headers from IncomingMessage which we cannot reliably override.
+    // Note: webRes.text() buffers the response — safe for JSON-RPC but would
+    // not work for SSE streams. Tool calls always return JSON.
+    const forwardHeaders: Record<string, string> = {
+      'content-type': req.headers['content-type'] as string || 'application/json',
+      accept: req.headers['accept'] as string || 'application/json, text/event-stream',
       'mcp-session-id': newSessionId,
-    },
-    body: JSON.stringify(notifBody),
-  });
+    };
 
-  await webTransport.handleRequest(notifReq, { parsedBody: notifBody });
+    const forwardReq = new globalThis.Request('http://localhost/mcp', {
+      method: 'POST',
+      headers: forwardHeaders,
+      body: JSON.stringify(req.body),
+    });
 
-  // --- Step 3: Forward original request via Web Standard API ---
-  // We must use webTransport directly because hono's Node.js adapter
-  // reads raw headers from IncomingMessage which we cannot reliably override
-  const forwardHeaders: Record<string, string> = {
-    'content-type': req.headers['content-type'] as string || 'application/json',
-    accept: req.headers['accept'] as string || 'application/json, text/event-stream',
-    'mcp-session-id': newSessionId,
-  };
+    const webRes: globalThis.Response = await webTransport.handleRequest(forwardReq, {
+      parsedBody: req.body,
+      authInfo: (req as any).auth,
+    });
 
-  const forwardReq = new globalThis.Request('http://localhost/mcp', {
-    method: 'POST',
-    headers: forwardHeaders,
-    body: JSON.stringify(req.body),
-  });
-
-  const webRes: globalThis.Response = await webTransport.handleRequest(forwardReq, {
-    parsedBody: req.body,
-    authInfo: (req as any).auth,
-  });
-
-  // Write Web Standard Response back to Express ServerResponse
-  res.status(webRes.status);
-  webRes.headers.forEach((value: string, key: string) => {
-    res.setHeader(key, value);
-  });
-  const body = await webRes.text();
-  res.end(body);
+    // Write Web Standard Response back to Express ServerResponse
+    res.status(webRes.status);
+    webRes.headers.forEach((value: string, key: string) => {
+      res.setHeader(key, value);
+    });
+    const body = await webRes.text();
+    res.end(body);
+  } catch (err) {
+    // Clean up orphaned transport/server on failure
+    await mcpServer.close().catch(() => {});
+    throw err;
+  }
 }
 
 /** Check if a JSON-RPC body contains an initialize request */
