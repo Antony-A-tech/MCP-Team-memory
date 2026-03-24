@@ -28,6 +28,15 @@ setInterval(() => {
   }
 }, CLEANUP_INTERVAL_MS).unref();
 
+/** Check if a JSON-RPC body contains an initialize request */
+export function isInitializeRequest(body: unknown): boolean {
+  if (body == null) return false;
+  const messages = Array.isArray(body) ? body : [body];
+  return messages.some(
+    (msg: any) => msg && typeof msg === 'object' && msg.method === 'initialize',
+  );
+}
+
 export function mountMcpTransport(app: Express, createMcpServer: () => Server): void {
   // POST /mcp — JSON-RPC requests
   app.post('/mcp', async (req: Request, res: Response) => {
