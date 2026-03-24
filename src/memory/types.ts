@@ -78,6 +78,20 @@ export interface MemoryEntry {
   lastReadAt?: string;     // Последнее чтение (ISO string)
 }
 
+// Compact view — metadata only, no content
+export interface CompactMemoryEntry {
+  id: string;
+  projectId: string;
+  title: string;
+  category: Category;
+  domain: string | null;
+  status: Status;
+  priority: Priority;
+  tags: string[];
+  pinned: boolean;
+  updatedAt: string;
+}
+
 // Хранилище памяти (legacy, для миграции)
 export interface MemoryStore {
   version: string;
@@ -128,6 +142,8 @@ export interface ReadParams {
   offset?: number;
   status?: Status;
   tags?: string[];
+  ids?: string[];
+  mode?: 'compact' | 'full';
 }
 
 // Параметры для записи в память
