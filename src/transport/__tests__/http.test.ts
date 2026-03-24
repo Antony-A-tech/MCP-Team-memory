@@ -1,6 +1,4 @@
 import { describe, it, expect, beforeEach } from 'vitest';
-import http from 'node:http';
-import net from 'node:net';
 import crypto from 'crypto';
 import express from 'express';
 import request from 'supertest';
