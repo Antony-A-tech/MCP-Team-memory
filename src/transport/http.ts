@@ -85,10 +85,11 @@ async function performTransparentReinit(
     }
   };
 
-  const mcpServer = createMcpServer();
-  await mcpServer.connect(transport);
-
+  let mcpServer: Server | undefined;
   try {
+    mcpServer = createMcpServer();
+    await mcpServer.connect(transport);
+
     // Access underlying Web Standard transport to bypass hono Node.js adapter.
     // Runtime guard: if SDK internals change, fail fast with a clear message.
     const webTransport = (transport as any)._webStandardTransport;
@@ -154,6 +155,7 @@ async function performTransparentReinit(
       'content-type': req.headers['content-type'] as string || 'application/json',
       accept: req.headers['accept'] as string || 'application/json, text/event-stream',
       'mcp-session-id': newSessionId,
+      'mcp-protocol-version': MCP_PROTOCOL_VERSION,
     };
 
     const forwardReq = new globalThis.Request('http://localhost/mcp', {
@@ -176,7 +178,7 @@ async function performTransparentReinit(
     res.end(body);
   } catch (err) {
     // Clean up orphaned transport/server on failure
-    await mcpServer.close().catch(() => {});
+    if (mcpServer) await mcpServer.close().catch(() => {});
     throw err;
   }
 }
@@ -218,7 +220,7 @@ export function mountMcpTransport(app: Express, createMcpServer: () => Server): 
 
         reinitInProgress.add(sessionId);
         try {
-          logger.info({ sessionId }, 'MCP transparent re-init started');
+          logger.info({ sessionId, method: (req.body as any)?.method, toolName: (req.body as any)?.params?.name }, 'MCP transparent re-init started');
           await performTransparentReinit(req, res, createMcpServer);
           recentlyExpired.delete(sessionId);
         } catch (err) {
