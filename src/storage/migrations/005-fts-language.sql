@@ -8,11 +8,7 @@ DECLARE
     lang TEXT;
 BEGIN
     -- Read language from session variable, fall back to 'simple'
-    BEGIN
-        lang := current_setting('app.fts_language');
-    EXCEPTION WHEN OTHERS THEN
-        lang := 'simple';
-    END;
+    lang := COALESCE(current_setting('app.fts_language', true), 'simple');
 
     NEW.search_vector :=
         setweight(to_tsvector(lang::regconfig, coalesce(NEW.title, '')), 'A') ||
