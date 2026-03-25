@@ -4,6 +4,7 @@ import { fileURLToPath } from 'url';
 import type { MemoryManager } from '../memory/manager.js';
 import type { SyncWebSocketServer } from '../sync/websocket.js';
 import { PROJECT_ROLES } from '../memory/types.js';
+import type { MemoryEntry } from '../memory/types.js';
 import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError } from '../memory/validation.js';
 import { exportEntries, type ExportFormat } from '../export/exporter.js';
 import type { AgentTokenStore } from '../auth/agent-tokens.js';
@@ -329,9 +330,10 @@ export class WebServer {
           category: category as any,
           limit: 500,
           status: 'active',
+          mode: 'full',
         });
 
-        const exported = exportEntries(entries, format);
+        const exported = exportEntries(entries as MemoryEntry[], format);
 
         if (format === 'json') {
           res.setHeader('Content-Type', 'application/json');
