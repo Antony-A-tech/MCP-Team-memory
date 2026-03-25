@@ -7,6 +7,7 @@ import logger from '../logger.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type {
   MemoryEntry,
+  CompactMemoryEntry,
   Project,
   Category,
   ReadParams,
@@ -92,46 +93,46 @@ export class MemoryManager {
 
   // === Entries ===
 
-  async read(params: ReadParams): Promise<MemoryEntry[]> {
+  async read(params: ReadParams): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
     const projectId = params.projectId || DEFAULT_PROJECT_ID;
-    const { category = 'all', domain, search, limit = 50, offset = 0, status, tags } = params;
+    const { category = 'all', domain, search, limit = 50, offset = 0, status, tags, ids, mode = 'compact' } = params;
 
+    // Branch 1: batch fetch by IDs → always full
+    if (ids && ids.length > 0) {
+      return this.storage.getByIds(projectId, ids);
+    }
+
+    const cat = category === 'all' ? undefined : category;
+    const filters = { category: cat, domain, status, tags, limit, offset };
+
+    if (mode === 'compact') {
+      if (search) {
+        if (this.embeddingProvider?.isReady()) {
+          try {
+            const queryEmbedding = await this.embeddingProvider.embed(search, 'query');
+            return this.storage.hybridSearch(projectId, search, queryEmbedding, { ...filters, compact: true as const });
+          } catch (err) {
+            logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
+          }
+        }
+        return this.storage.search(projectId, search, { ...filters, compact: true as const });
+      }
+      return this.storage.getAll(projectId, { ...filters, compact: true as const });
+    }
+
+    // mode === 'full'
     if (search) {
-      // Use hybrid search when embedding provider is available
       if (this.embeddingProvider?.isReady()) {
         try {
           const queryEmbedding = await this.embeddingProvider.embed(search, 'query');
-          return this.storage.hybridSearch(projectId, search, queryEmbedding, {
-            category: category === 'all' ? undefined : category,
-            domain,
-            status,
-            tags,
-            limit,
-            offset,
-          });
+          return this.storage.hybridSearch(projectId, search, queryEmbedding, filters);
         } catch (err) {
           logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
         }
       }
-
-      return this.storage.search(projectId, search, {
-        category: category === 'all' ? undefined : category,
-        domain,
-        status,
-        tags,
-        limit,
-        offset,
-      });
+      return this.storage.search(projectId, search, filters);
     }
-
-    return this.storage.getAll(projectId, {
-      category: category === 'all' ? undefined : category,
-      domain,
-      status,
-      tags,
-      limit,
-      offset,
-    });
+    return this.storage.getAll(projectId, filters);
   }
 
   async write(params: WriteParams): Promise<MemoryEntry> {
