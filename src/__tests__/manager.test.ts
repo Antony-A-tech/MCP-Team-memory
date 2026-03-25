@@ -134,11 +134,11 @@ describe('MemoryManager', () => {
       );
     });
 
-    it('passes compact=false to storage.getAll when mode is full', async () => {
+    it('does not pass compact flag to storage.getAll when mode is full', async () => {
       await manager.read({ category: 'tasks', mode: 'full' });
       expect(storage.getAll).toHaveBeenCalledWith(
         '00000000-0000-0000-0000-000000000000',
-        expect.objectContaining({ compact: false })
+        expect.not.objectContaining({ compact: expect.anything() })
       );
     });
 

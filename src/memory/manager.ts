@@ -102,29 +102,37 @@ export class MemoryManager {
       return this.storage.getByIds(projectId, ids);
     }
 
-    const compact = mode === 'compact';
     const cat = category === 'all' ? undefined : category;
+    const filters = { category: cat, domain, status, tags, limit, offset };
 
+    if (mode === 'compact') {
+      if (search) {
+        if (this.embeddingProvider?.isReady()) {
+          try {
+            const queryEmbedding = await this.embeddingProvider.embed(search, 'query');
+            return this.storage.hybridSearch(projectId, search, queryEmbedding, { ...filters, compact: true as const });
+          } catch (err) {
+            logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
+          }
+        }
+        return this.storage.search(projectId, search, { ...filters, compact: true as const });
+      }
+      return this.storage.getAll(projectId, { ...filters, compact: true as const });
+    }
+
+    // mode === 'full'
     if (search) {
       if (this.embeddingProvider?.isReady()) {
         try {
           const queryEmbedding = await this.embeddingProvider.embed(search, 'query');
-          return this.storage.hybridSearch(projectId, search, queryEmbedding, {
-            category: cat, domain, status, tags, limit, offset, compact,
-          });
+          return this.storage.hybridSearch(projectId, search, queryEmbedding, filters);
         } catch (err) {
           logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
         }
       }
-
-      return this.storage.search(projectId, search, {
-        category: cat, domain, status, tags, limit, offset, compact,
-      });
+      return this.storage.search(projectId, search, filters);
     }
-
-    return this.storage.getAll(projectId, {
-      category: cat, domain, status, tags, limit, offset, compact,
-    });
+    return this.storage.getAll(projectId, filters);
   }
 
   async write(params: WriteParams): Promise<MemoryEntry> {
