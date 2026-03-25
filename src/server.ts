@@ -23,7 +23,8 @@ import type {
   DeleteParams,
   SyncParams,
   ConflictError,
-  MemoryEntry
+  MemoryEntry,
+  CompactMemoryEntry
 } from './memory/types.js';
 import {
   ReadParamsSchema,
@@ -57,7 +58,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
     const tools: Tool[] = [
       {
         name: 'memory_read',
-        description: 'Читает командную память. Используйте для получения информации о текущем состоянии проекта, архитектурных решениях, задачах и проблемах.',
+        description: 'Читает командную память. Используйте для получения информации о текущем состоянии проекта, архитектурных решениях, задачах и проблемах. По умолчанию возвращает компактный список (без content). Для получения полного содержимого используйте ids или mode="full".',
         inputSchema: {
           type: 'object',
           properties: {
@@ -70,10 +71,26 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             domain: { type: 'string', description: 'Фильтр по домену (backend, frontend, infrastructure, и т.д.)' },
             search: { type: 'string', description: 'Поиск по ключевым словам' },
             limit: { type: 'number', default: 50, description: 'Максимальное количество записей' },
+            offset: { type: 'number', default: 0, description: 'Смещение для пагинации' },
             status: {
               type: 'string',
               enum: ['active', 'completed', 'archived'],
               description: 'Фильтр по статусу'
+            },
+            ids: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Список UUID записей для получения полного содержимого (batch). Игнорирует другие фильтры кроме project_id. Макс 100.'
+            },
+            mode: {
+              type: 'string',
+              enum: ['compact', 'full'],
+              description: 'Режим вывода: compact (по умолчанию) — только метаданные без content; full — полные записи с content'
+            },
+            tags: {
+              type: 'array',
+              items: { type: 'string' },
+              description: 'Фильтр по тегам (пересечение — запись должна содержать хотя бы один из указанных тегов)'
             }
           }
         }
@@ -309,13 +326,31 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             domain: parsed.data.domain,
             search: parsed.data.search,
             limit: parsed.data.limit,
-            status: parsed.data.status
+            offset: parsed.data.offset,
+            status: parsed.data.status,
+            ids: parsed.data.ids,
+            mode: parsed.data.mode,
+            tags: parsed.data.tags,
           };
           const entries = await memoryManager.read(params);
           if (entries.length === 0) {
             return { content: [{ type: 'text', text: 'Записи не найдены по заданным критериям.' }] };
           }
-          const formatted = entries.map(e => {
+
+          const isCompact = !params.ids && params.mode !== 'full';
+
+          if (isCompact) {
+            const formatted = (entries as CompactMemoryEntry[]).map(e => {
+              const pi = e.priority === 'critical' ? '🔴' : e.priority === 'high' ? '🟠' : e.priority === 'medium' ? '🟡' : '🟢';
+              const pin = e.pinned ? '📌 ' : '';
+              const dom = e.domain ? ` | ${e.domain}` : '';
+              const tags = e.tags.length > 0 ? ` | 🏷️ ${e.tags.join(', ')}` : '';
+              return `${pin}${pi} **${e.title}**\n  ID: ${e.id} | ${e.category}${dom} | ${e.status}${tags} | 🕐 ${new Date(e.updatedAt).toLocaleDateString()}`;
+            }).join('\n\n');
+            return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей, compact)\n\n${formatted}` }] };
+          }
+
+          const formatted = (entries as MemoryEntry[]).map(e => {
             const pi = e.priority === 'critical' ? '🔴' : e.priority === 'high' ? '🟠' : e.priority === 'medium' ? '🟡' : '🟢';
             const pin = e.pinned ? '📌 ' : '';
             const dom = e.domain ? ` | **Домен**: ${e.domain}` : '';
@@ -519,9 +554,10 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             category: expCategory as any,
             limit: 500,
             status: 'active',
+            mode: 'full',
           });
 
-          const exported = exportEntries(expEntries, expFormat);
+          const exported = exportEntries(expEntries as MemoryEntry[], expFormat);
           return { content: [{ type: 'text', text: exported }] };
         }
 
@@ -561,11 +597,12 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
               category: 'conventions',
               status: 'active',
               limit: 100,
+              mode: 'full',
             });
             if (entries.length === 0) {
               return { content: [{ type: 'text', text: 'Конвенции не заданы. Используйте action: "add" для добавления.' }] };
             }
-            const formatted = entries.map(e => {
+            const formatted = (entries as MemoryEntry[]).map(e => {
               const dom = e.domain ? ` [${e.domain}]` : '';
               const tags = e.tags.length > 0 ? ` (${e.tags.join(', ')})` : '';
               return `### 📏 ${e.title}${dom}${tags}\n${e.content}\n`;
@@ -645,8 +682,8 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
     const m = uri.match(/^memory:\/\/(\w+)$/);
     if (m && VALID_CATEGORIES.includes(m[1])) {
       const category = m[1] as Category;
-      const entries = await memoryManager.read({ category, status: 'active' });
-      const text = entries.length > 0 ? entries.map(e => `## ${e.title}\n${e.content}\n\n---`).join('\n\n') : `Нет записей.`;
+      const entries = await memoryManager.read({ category, status: 'active', mode: 'full' });
+      const text = entries.length > 0 ? (entries as MemoryEntry[]).map(e => `## ${e.title}\n${e.content}\n\n---`).join('\n\n') : `Нет записей.`;
       return { contents: [{ uri, mimeType: 'text/markdown', text }] };
     }
     throw new Error(`Unknown resource: ${uri}`);

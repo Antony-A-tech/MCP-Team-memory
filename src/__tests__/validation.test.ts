@@ -41,6 +41,50 @@ describe('ReadParamsSchema', () => {
       expect(result.data.category).toBe('all');
     }
   });
+
+  it('accepts mode parameter', () => {
+    const result = ReadParamsSchema.safeParse({ mode: 'compact' });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.mode).toBe('compact');
+    }
+  });
+
+  it('defaults mode to compact', () => {
+    const result = ReadParamsSchema.safeParse({});
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.mode).toBe('compact');
+    }
+  });
+
+  it('rejects invalid mode', () => {
+    const result = ReadParamsSchema.safeParse({ mode: 'invalid' });
+    expect(result.success).toBe(false);
+  });
+
+  it('accepts ids parameter with valid UUIDs', () => {
+    const result = ReadParamsSchema.safeParse({
+      ids: ['550e8400-e29b-41d4-a716-446655440000', '550e8400-e29b-41d4-a716-446655440001'],
+    });
+    expect(result.success).toBe(true);
+    if (result.success) {
+      expect(result.data.ids).toHaveLength(2);
+    }
+  });
+
+  it('rejects ids with invalid UUIDs', () => {
+    const result = ReadParamsSchema.safeParse({ ids: ['not-a-uuid'] });
+    expect(result.success).toBe(false);
+  });
+
+  it('rejects ids array exceeding 100', () => {
+    const ids = Array.from({ length: 101 }, (_, i) =>
+      `550e8400-e29b-41d4-a716-${String(i).padStart(12, '0')}`
+    );
+    const result = ReadParamsSchema.safeParse({ ids });
+    expect(result.success).toBe(false);
+  });
 });
 
 describe('WriteParamsSchema', () => {
