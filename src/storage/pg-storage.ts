@@ -96,7 +96,9 @@ export class PgStorage {
 
     // Set FTS language for EVERY new connection (including those created during migrations)
     this.pool.on('connect', (client: pg.PoolClient) => {
-      client.query('SET app.fts_language = $1', [this.ftsLanguage]).catch(() => {});
+      client.query('SET app.fts_language = $1', [this.ftsLanguage]).catch((err) => {
+        logger.warn({ err, ftsLanguage: this.ftsLanguage }, 'Failed to SET app.fts_language — queries will fall back to simple');
+      });
     });
 
     // Prevent unhandled error crash when idle clients lose connection
@@ -309,7 +311,7 @@ export class PgStorage {
     let paramIdx = 2;
 
     // Full-text search + ILIKE fallback (WHERE can reference content even when SELECT omits it)
-    conditions.push(`(search_vector @@ plainto_tsquery(current_setting('app.fts_language')::regconfig, $${paramIdx}) OR title ILIKE $${paramIdx + 1} OR content ILIKE $${paramIdx + 1})`);
+    conditions.push(`(search_vector @@ plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${paramIdx}) OR title ILIKE $${paramIdx + 1} OR content ILIKE $${paramIdx + 1})`);
     values.push(query, `%${escapeIlike(query)}%`);
     paramIdx += 2;
 
@@ -622,7 +624,7 @@ export class PgStorage {
 
     // Text + vector match condition
     conditions.push(
-      `(search_vector @@ plainto_tsquery(current_setting('app.fts_language')::regconfig, $${paramIdx}) OR embedding <=> $${paramIdx + 1}::vector < 0.7)`
+      `(search_vector @@ plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${paramIdx}) OR embedding <=> $${paramIdx + 1}::vector < 0.7)`
     );
     values.push(query, `[${queryEmbedding.join(',')}]`);
     const textParamIdx = paramIdx;
@@ -654,12 +656,12 @@ export class PgStorage {
     const columns = filters?.compact ? COMPACT_COLUMNS : '*';
     const sql = `
       SELECT ${columns},
-        ts_rank(search_vector, plainto_tsquery(current_setting('app.fts_language')::regconfig, $${textParamIdx})) AS text_score,
+        ts_rank(search_vector, plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${textParamIdx})) AS text_score,
         1 - (embedding <=> $${vectorParamIdx}::vector) AS vector_score
       FROM entries
       WHERE ${conditions.join(' AND ')}
       ORDER BY (
-        0.4 * COALESCE(ts_rank(search_vector, plainto_tsquery(current_setting('app.fts_language')::regconfig, $${textParamIdx})), 0)
+        0.4 * COALESCE(ts_rank(search_vector, plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${textParamIdx})), 0)
         + 0.6 * COALESCE(1 - (embedding <=> $${vectorParamIdx}::vector), 0)
       ) DESC
       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}
@@ -774,7 +776,7 @@ export class PgStorage {
     let paramIdx = 1;
 
     // FTS with stemming + ILIKE fallback (ILIKE is intentionally raw — no stemming needed for fuzzy substring match)
-    conditions.push(`(e.search_vector @@ plainto_tsquery(current_setting('app.fts_language')::regconfig, $${paramIdx}) OR e.title ILIKE $${paramIdx + 1} OR e.content ILIKE $${paramIdx + 1})`);
+    conditions.push(`(e.search_vector @@ plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${paramIdx}) OR e.title ILIKE $${paramIdx + 1} OR e.content ILIKE $${paramIdx + 1})`);
     values.push(query, `%${escapeIlike(query)}%`);
     const textParamIdx = paramIdx;
     paramIdx += 2;
@@ -803,7 +805,7 @@ export class PgStorage {
 
     const { rows } = await this.pool.query(
       `SELECT e.*, p.name as project_name,
-         ts_rank(e.search_vector, plainto_tsquery(current_setting('app.fts_language')::regconfig, $${textParamIdx})) AS relevance
+         ts_rank(e.search_vector, plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${textParamIdx})) AS relevance
        FROM entries e
        JOIN projects p ON e.project_id = p.id
        ${whereClause}
