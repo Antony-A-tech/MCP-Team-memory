@@ -26,7 +26,7 @@ export function createAuthMiddleware(
     if (!trimmedToken) {
       const projectId = req.headers['x-project-id'] as string | undefined;
       if (projectId) {
-        (req as any).auth = { clientId: 'anonymous', scopes: [], projectId };
+        (req as any).auth = { clientId: 'master', scopes: [], projectId };
       }
       next();
       return;
