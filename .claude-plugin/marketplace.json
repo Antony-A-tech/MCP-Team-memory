@@ -1,0 +1,20 @@
+{
+  "name": "team-memory-marketplace",
+  "description": "Marketplace for Team Memory MCP plugin — shared knowledge base for Claude Code agents",
+  "owner": {
+    "name": "Antony Nozhenko",
+    "email": "a.nozhenko@moorinet.com"
+  },
+  "plugins": [
+    {
+      "name": "team-memory",
+      "description": "Session lifecycle skills for Team Memory MCP: mandatory memory read at start, write before end",
+      "version": "2.2.0",
+      "source": "./",
+      "author": {
+        "name": "Antony Nozhenko",
+        "email": "a.nozhenko@moorinet.com"
+      }
+    }
+  ]
+}
