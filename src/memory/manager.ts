@@ -19,7 +19,8 @@ import type {
   MemoryStats,
   WSEvent,
   WSEventType,
-  ConflictError
+  ConflictError,
+  ProjectDomain
 } from './types.js';
 
 type EventListener = (event: WSEvent) => void;
@@ -89,6 +90,42 @@ export class MemoryManager {
 
   async deleteProject(id: string): Promise<boolean> {
     return this.storage.deleteProject(id);
+  }
+
+  // === Project Domains ===
+
+  async getProjectDomains(projectId: string): Promise<ProjectDomain[]> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.getProjectDomains(pid);
+  }
+
+  async addProjectDomain(projectId: string, params: {
+    slug: string;
+    name: string;
+    description?: string;
+    icon?: string;
+  }): Promise<ProjectDomain> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.addProjectDomain(pid, params);
+  }
+
+  async updateProjectDomain(projectId: string, slug: string, updates: {
+    name?: string;
+    description?: string;
+    icon?: string;
+  }): Promise<ProjectDomain | undefined> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.updateProjectDomain(pid, slug, updates);
+  }
+
+  async removeProjectDomain(projectId: string, slug: string): Promise<{ deleted: boolean; entriesAffected: number }> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.removeProjectDomain(pid, slug);
+  }
+
+  async countEntriesByDomain(projectId: string, slug: string): Promise<number> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.countEntriesByDomain(pid, slug);
   }
 
   // === Entries ===
@@ -529,7 +566,20 @@ export class MemoryManager {
 
     if (project?.description) {
       lines.push(`**Описание:** ${project.description}`);
-      lines.push(`**Домены:** ${project.domains.join(', ')}`);
+      lines.push('');
+    }
+
+    // Rich domain list for agents
+    const projectDomains = await this.storage.getProjectDomains(pid);
+    if (projectDomains.length > 0) {
+      lines.push('## Домены проекта');
+      lines.push('При записи в память используйте один из этих доменов (поле `domain`):');
+      for (const d of projectDomains) {
+        const desc = d.description ? ` — ${d.description}` : '';
+        lines.push(`- \`${d.slug}\` (${d.name})${desc}`);
+      }
+      lines.push('');
+      lines.push('Если запись не относится к конкретному домену — оставьте domain пустым.');
       lines.push('');
     }
 
