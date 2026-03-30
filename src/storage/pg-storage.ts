@@ -4,7 +4,7 @@ import { fileURLToPath } from 'url';
 import crypto from 'crypto';
 import { Migrator } from './migrator.js';
 import { DEFAULT_PROJECT_ID } from '../memory/types.js';
-import type { MemoryEntry, CompactMemoryEntry, Project, ReadParams, ConflictError } from '../memory/types.js';
+import type { MemoryEntry, CompactMemoryEntry, Project, ProjectDomain, ReadParams, ConflictError } from '../memory/types.js';
 import { buildArchiveByScoreQuery } from '../memory/decay.js';
 import { toISOString } from './utils.js';
 import logger from '../logger.js';
@@ -70,6 +70,20 @@ function rowToProject(row: Record<string, unknown>): Project {
   };
 }
 
+function rowToProjectDomain(row: Record<string, unknown>): ProjectDomain {
+  return {
+    id: row.id as string,
+    projectId: row.project_id as string,
+    slug: row.slug as string,
+    name: row.name as string,
+    description: (row.description as string) || '',
+    icon: (row.icon as string) || 'tag',
+    sortOrder: (row.sort_order as number) || 0,
+    isDefault: (row.is_default as boolean) || false,
+    createdAt: toISOString(row.created_at),
+  };
+}
+
 export class PgStorage {
   private pool: pg.Pool;
 
@@ -131,11 +145,22 @@ export class PgStorage {
       [DEFAULT_PROJECT_ID]
     );
     if (rows.length === 0) {
-      const { DEFAULT_DOMAINS: domains } = await import('../memory/types.js');
+      const { DEFAULT_DOMAINS: domains, DEFAULT_DOMAIN_META: meta } = await import('../memory/types.js');
       await this.pool.query(
         `INSERT INTO projects (id, name, description, domains) VALUES ($1, $2, $3, $4)`,
         [DEFAULT_PROJECT_ID, 'default', 'Default project for team memory', domains]
       );
+      // Seed project_domains for the default project
+      for (let i = 0; i < domains.length; i++) {
+        const slug = domains[i];
+        const m = meta[slug];
+        await this.pool.query(
+          `INSERT INTO project_domains (project_id, slug, name, description, icon, sort_order, is_default)
+           VALUES ($1, $2, $3, $4, $5, $6, true)
+           ON CONFLICT (project_id, slug) DO NOTHING`,
+          [DEFAULT_PROJECT_ID, slug, m?.name || slug, m?.description || '', m?.icon || 'tag', i]
+        );
+      }
     }
   }
 
@@ -147,13 +172,27 @@ export class PgStorage {
     domains?: string[];
   }): Promise<Project> {
     const id = crypto.randomUUID();
-    const { DEFAULT_DOMAINS: defaultDomains } = await import('../memory/types.js');
+    const { DEFAULT_DOMAINS: defaultDomains, DEFAULT_DOMAIN_META: meta } = await import('../memory/types.js');
+    const domainSlugs = params.domains || defaultDomains;
     const { rows } = await this.pool.query(
       `INSERT INTO projects (id, name, description, domains)
        VALUES ($1, $2, $3, $4)
        RETURNING *`,
-      [id, params.name, params.description || '', params.domains || defaultDomains]
+      [id, params.name, params.description || '', domainSlugs]
     );
+
+    // Seed project_domains rows for the new project
+    for (let i = 0; i < domainSlugs.length; i++) {
+      const slug = domainSlugs[i];
+      const m = meta[slug];
+      await this.pool.query(
+        `INSERT INTO project_domains (project_id, slug, name, description, icon, sort_order, is_default)
+         VALUES ($1, $2, $3, $4, $5, $6, true)
+         ON CONFLICT (project_id, slug) DO NOTHING`,
+        [id, slug, m?.name || slug, m?.description || '', m?.icon || 'tag', i]
+      );
+    }
+
     return rowToProject(rows[0]);
   }
 
@@ -199,6 +238,120 @@ export class PgStorage {
     if (id === DEFAULT_PROJECT_ID) return false; // Protect default project
     const result = await this.pool.query('DELETE FROM projects WHERE id = $1', [id]);
     return (result.rowCount ?? 0) > 0;
+  }
+
+  // ============ Project Domains ============
+
+  async getProjectDomains(projectId: string): Promise<ProjectDomain[]> {
+    const { rows } = await this.pool.query(
+      'SELECT * FROM project_domains WHERE project_id = $1 ORDER BY sort_order, created_at',
+      [projectId]
+    );
+    return rows.map(rowToProjectDomain);
+  }
+
+  async addProjectDomain(projectId: string, params: {
+    slug: string;
+    name: string;
+    description?: string;
+    icon?: string;
+  }): Promise<ProjectDomain> {
+    // Get next sort_order
+    const { rows: countRows } = await this.pool.query(
+      'SELECT COALESCE(MAX(sort_order), -1) + 1 AS next_order FROM project_domains WHERE project_id = $1',
+      [projectId]
+    );
+    const sortOrder = countRows[0].next_order;
+
+    const { rows } = await this.pool.query(
+      `INSERT INTO project_domains (project_id, slug, name, description, icon, sort_order, is_default)
+       VALUES ($1, $2, $3, $4, $5, $6, false)
+       RETURNING *`,
+      [projectId, params.slug, params.name, params.description || '', params.icon || 'tag', sortOrder]
+    );
+
+    await this.syncProjectDomainsArray(projectId);
+    return rowToProjectDomain(rows[0]);
+  }
+
+  async updateProjectDomain(projectId: string, slug: string, updates: {
+    name?: string;
+    description?: string;
+    icon?: string;
+  }): Promise<ProjectDomain | undefined> {
+    const setClauses: string[] = [];
+    const values: unknown[] = [];
+    let paramIdx = 1;
+
+    if (updates.name !== undefined) {
+      setClauses.push(`name = $${paramIdx++}`);
+      values.push(updates.name);
+    }
+    if (updates.description !== undefined) {
+      setClauses.push(`description = $${paramIdx++}`);
+      values.push(updates.description);
+    }
+    if (updates.icon !== undefined) {
+      setClauses.push(`icon = $${paramIdx++}`);
+      values.push(updates.icon);
+    }
+
+    if (setClauses.length === 0) {
+      const domains = await this.getProjectDomains(projectId);
+      return domains.find(d => d.slug === slug);
+    }
+
+    values.push(projectId, slug);
+    const { rows } = await this.pool.query(
+      `UPDATE project_domains SET ${setClauses.join(', ')}
+       WHERE project_id = $${paramIdx++} AND slug = $${paramIdx}
+       RETURNING *`,
+      values
+    );
+    return rows.length > 0 ? rowToProjectDomain(rows[0]) : undefined;
+  }
+
+  async removeProjectDomain(projectId: string, slug: string): Promise<{ deleted: boolean; entriesAffected: number }> {
+    // Delete the domain first — if it doesn't exist, bail out without touching entries
+    const deleteResult = await this.pool.query(
+      'DELETE FROM project_domains WHERE project_id = $1 AND slug = $2',
+      [projectId, slug]
+    );
+    const deleted = (deleteResult.rowCount ?? 0) > 0;
+
+    if (!deleted) {
+      return { deleted: false, entriesAffected: 0 };
+    }
+
+    // Only now reset domain on entries that used this domain
+    const updateResult = await this.pool.query(
+      'UPDATE entries SET domain = NULL WHERE project_id = $1 AND domain = $2',
+      [projectId, slug]
+    );
+    const entriesAffected = updateResult.rowCount ?? 0;
+
+    // Sync projects.domains TEXT[] for backward compatibility
+    await this.syncProjectDomainsArray(projectId);
+
+    return { deleted, entriesAffected };
+  }
+
+  async syncProjectDomainsArray(projectId: string): Promise<void> {
+    await this.pool.query(
+      `UPDATE projects SET domains = (
+         SELECT COALESCE(array_agg(slug ORDER BY sort_order), ARRAY[]::TEXT[])
+         FROM project_domains WHERE project_id = $1
+       ) WHERE id = $1`,
+      [projectId]
+    );
+  }
+
+  async countEntriesByDomain(projectId: string, slug: string): Promise<number> {
+    const { rows } = await this.pool.query(
+      'SELECT COUNT(*)::int AS cnt FROM entries WHERE project_id = $1 AND domain = $2',
+      [projectId, slug]
+    );
+    return rows[0].cnt;
   }
 
   // ============ Entries ============

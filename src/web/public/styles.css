@@ -928,6 +928,78 @@ select:focus {
   height: 14px;
 }
 
+/* Domain add button */
+.domain-pill--add {
+  border-style: dashed;
+  color: var(--text-muted);
+  gap: 4px;
+}
+
+.domain-pill--add:hover {
+  border-color: var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+.domain-pill--add [data-lucide] {
+  width: 14px;
+  height: 14px;
+}
+
+/* Context menu */
+.context-menu {
+  display: none;
+  position: fixed;
+  z-index: 2000;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-md);
+  box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
+  padding: 4px;
+  min-width: 160px;
+}
+
+.context-menu.active {
+  display: block;
+}
+
+.context-menu-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 8px 12px;
+  border: none;
+  background: none;
+  color: var(--text-secondary);
+  font-size: 13px;
+  cursor: pointer;
+  border-radius: var(--radius-sm);
+  transition: var(--transition);
+}
+
+.context-menu-item:hover {
+  background: var(--bg-tertiary);
+  color: var(--text-primary);
+}
+
+.context-menu-item--danger:hover {
+  background: rgba(239, 68, 68, 0.15);
+  color: #ef4444;
+}
+
+.context-menu-item [data-lucide] {
+  width: 14px;
+  height: 14px;
+}
+
+/* Form hint text */
+.form-hint {
+  display: block;
+  margin-top: 4px;
+  font-size: 11px;
+  color: var(--text-muted);
+}
+
 /* Buttons */
 .btn {
   padding: 10px 20px;
@@ -1370,6 +1442,18 @@ select:focus {
 .modal-close:hover {
   color: var(--text-primary);
   border-color: var(--accent-primary);
+}
+
+.modal-body {
+  padding: 28px 32px;
+}
+
+.modal-footer {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 16px 32px 24px;
+  border-top: 1px solid var(--border-color);
 }
 
 #entry-form {
