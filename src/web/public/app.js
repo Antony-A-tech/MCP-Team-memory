@@ -103,6 +103,7 @@ const projectSelectValue = projectSelect.querySelector('.custom-select-value');
 const projectOptionsContainer = document.getElementById('project-options');
 const domainFiltersContainer = document.getElementById('domain-filters');
 const projectsModal = document.getElementById('projects-modal');
+let projectDomains = []; // ProjectDomain[] from API
 
 // Category config
 const categoryConfig = {
@@ -158,9 +159,14 @@ document.addEventListener('DOMContentLoaded', async () => {
   initFormSelects();
   initThemeSwitcher();
   initProjectsModal();
+  initDomainModal();
+  initDomainContextMenu();
   initEntryActions();
   initAgentsPopup();
   await loadProjects();
+  await loadProjectDomains();
+  renderDomainFilters();
+  populateEntryDomainSelect();
   initWebSocket();
   loadEntries();
   loadStats();
@@ -259,10 +265,16 @@ function escapeHtml(text) {
 }
 
 function renderDomainFilters() {
-  const project = projects.find(p => p.id === currentProjectId);
-  const domains = project ? project.domains : [];
-
   domainFiltersContainer.innerHTML = '';
+
+  // "+" add domain button
+  const addBtn = document.createElement('button');
+  addBtn.className = 'domain-pill domain-pill--add';
+  addBtn.dataset.domain = '__add__';
+  addBtn.innerHTML = '<i data-lucide="plus"></i>';
+  addBtn.title = 'Добавить домен';
+  addBtn.addEventListener('click', () => openDomainModal());
+  domainFiltersContainer.appendChild(addBtn);
 
   // "All domains" pill
   const allBtn = document.createElement('button');
@@ -272,16 +284,14 @@ function renderDomainFilters() {
   allBtn.addEventListener('click', () => selectDomain(''));
   domainFiltersContainer.appendChild(allBtn);
 
-  // Domain pills
-  for (const d of domains) {
+  // Domain pills from projectDomains
+  for (const d of projectDomains) {
     const btn = document.createElement('button');
-    btn.className = 'domain-pill' + (currentDomain === d ? ' active' : '');
-    btn.dataset.domain = d;
-    const info = domainInfo[d];
-    btn.innerHTML = info
-      ? `<i data-lucide="${info.icon}"></i> ${info.name}`
-      : escapeHtml(d);
-    btn.addEventListener('click', () => selectDomain(d));
+    btn.className = 'domain-pill' + (currentDomain === d.slug ? ' active' : '');
+    btn.dataset.domain = d.slug;
+    btn.innerHTML = `<i data-lucide="${d.icon || 'tag'}"></i> ${escapeHtml(d.name)}`;
+    btn.addEventListener('click', () => selectDomain(d.slug));
+    btn.addEventListener('contextmenu', (e) => showDomainContextMenu(e, d));
     domainFiltersContainer.appendChild(btn);
   }
 
@@ -296,10 +306,11 @@ function selectDomain(domain) {
   loadEntries();
 }
 
-function switchProject(projectId) {
+async function switchProject(projectId) {
   currentProjectId = projectId;
   localStorage.setItem('selected-project', projectId);
   currentDomain = '';
+  await loadProjectDomains();
   renderDomainFilters();
   populateEntryDomainSelect();
   loadEntries();
@@ -314,23 +325,246 @@ function switchProject(projectId) {
 
 function populateEntryDomainSelect() {
   const optionsContainer = document.getElementById('domain-options');
-  const project = projects.find(p => p.id === currentProjectId);
-  const domains = project ? project.domains : [];
 
   optionsContainer.innerHTML = '<div class="custom-select-option selected" data-value=""><span class="custom-select-option-name">Без домена</span></div>';
-  for (const d of domains) {
-    const info = domainInfo[d];
-    const label = info ? info.name : d;
+  for (const d of projectDomains) {
     const optEl = document.createElement('div');
     optEl.className = 'custom-select-option';
-    optEl.dataset.value = d;
-    optEl.innerHTML = `<span class="custom-select-option-name">${escapeHtml(label)}</span>`;
+    optEl.dataset.value = d.slug;
+    optEl.innerHTML = `<span class="custom-select-option-name">${escapeHtml(d.name)}</span>`;
     optionsContainer.appendChild(optEl);
   }
 
   // Re-bind click handlers for new options
   initFormSelect('domain-select', 'entry-domain');
   setFormSelectValue('domain-select', 'entry-domain', '');
+}
+
+// === Project Domains Management ===
+
+async function loadProjectDomains() {
+  try {
+    const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains`);
+    const result = await response.json();
+    if (result.success) {
+      projectDomains = result.domains;
+    }
+  } catch (e) {
+    console.error('Failed to load project domains:', e);
+  }
+}
+
+function initDomainModal() {
+  document.getElementById('domain-modal-close').addEventListener('click', closeDomainModal);
+  document.getElementById('domain-btn-cancel').addEventListener('click', closeDomainModal);
+  document.getElementById('domain-btn-save').addEventListener('click', saveDomain);
+  document.getElementById('domain-modal').addEventListener('click', (e) => {
+    if (e.target.id === 'domain-modal') closeDomainModal();
+  });
+
+  // Auto-generate slug from name
+  document.getElementById('domain-name').addEventListener('input', (e) => {
+    const editSlug = document.getElementById('domain-edit-slug').value;
+    if (editSlug) return; // Don't auto-generate when editing
+    const slug = transliterate(e.target.value)
+      .toLowerCase()
+      .replace(/[^a-z0-9]+/g, '-')
+      .replace(/^-|-$/g, '');
+    document.getElementById('domain-slug').value = slug;
+  });
+}
+
+function transliterate(text) {
+  const map = {
+    'а':'a','б':'b','в':'v','г':'g','д':'d','е':'e','ё':'yo','ж':'zh',
+    'з':'z','и':'i','й':'y','к':'k','л':'l','м':'m','н':'n','о':'o',
+    'п':'p','р':'r','с':'s','т':'t','у':'u','ф':'f','х':'kh','ц':'ts',
+    'ч':'ch','ш':'sh','щ':'sch','ъ':'','ы':'y','ь':'','э':'e','ю':'yu','я':'ya',
+    ' ':'-'
+  };
+  return text.split('').map(c => {
+    const lower = c.toLowerCase();
+    return map[lower] !== undefined ? map[lower] : lower;
+  }).join('');
+}
+
+function openDomainModal(domain = null) {
+  const modal = document.getElementById('domain-modal');
+  const title = document.getElementById('domain-modal-title');
+  const nameInput = document.getElementById('domain-name');
+  const slugInput = document.getElementById('domain-slug');
+  const descInput = document.getElementById('domain-description');
+  const editSlugInput = document.getElementById('domain-edit-slug');
+
+  if (domain) {
+    title.textContent = 'Редактировать домен';
+    nameInput.value = domain.name;
+    slugInput.value = domain.slug;
+    slugInput.disabled = true; // Slug immutable on edit
+    descInput.value = domain.description || '';
+    editSlugInput.value = domain.slug;
+  } else {
+    title.textContent = 'Добавить домен';
+    nameInput.value = '';
+    slugInput.value = '';
+    slugInput.disabled = false;
+    descInput.value = '';
+    editSlugInput.value = '';
+  }
+
+  modal.classList.add('active');
+  nameInput.focus();
+}
+
+function closeDomainModal() {
+  document.getElementById('domain-modal').classList.remove('active');
+}
+
+async function saveDomain() {
+  const nameInput = document.getElementById('domain-name');
+  const slugInput = document.getElementById('domain-slug');
+  const descInput = document.getElementById('domain-description');
+  const editSlug = document.getElementById('domain-edit-slug').value;
+
+  const name = nameInput.value.trim();
+  const slug = slugInput.value.trim();
+  const description = descInput.value.trim();
+
+  if (!name) { showToast('Введите название домена', 'error'); return; }
+  if (!slug) { showToast('Введите slug домена', 'error'); return; }
+  if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+    showToast('Slug: только латиница, цифры и дефисы', 'error');
+    return;
+  }
+  if (slug.length > 64) {
+    showToast('Slug: максимум 64 символа', 'error');
+    return;
+  }
+
+  try {
+    let response;
+    if (editSlug) {
+      // Update
+      response = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains/${encodeURIComponent(editSlug)}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name, description })
+      });
+    } else {
+      // Create
+      response = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ slug, name, description })
+      });
+    }
+
+    const result = await response.json();
+    if (!result.success) {
+      showToast(result.error || 'Ошибка', 'error');
+      return;
+    }
+
+    showToast(editSlug ? 'Домен обновлён' : 'Домен добавлен', 'success');
+    closeDomainModal();
+    await loadProjectDomains();
+    renderDomainFilters();
+    populateEntryDomainSelect();
+  } catch (e) {
+    showToast('Ошибка сохранения домена', 'error');
+  }
+}
+
+// === Domain Context Menu ===
+
+let activeContextMenuDomain = null;
+
+function initDomainContextMenu() {
+  const menu = document.getElementById('domain-context-menu');
+
+  menu.querySelector('[data-action="edit"]').addEventListener('click', () => {
+    hideContextMenu();
+    if (activeContextMenuDomain) openDomainModal(activeContextMenuDomain);
+  });
+
+  menu.querySelector('[data-action="delete"]').addEventListener('click', async () => {
+    hideContextMenu();
+    if (!activeContextMenuDomain) return;
+    await deleteDomain(activeContextMenuDomain);
+  });
+
+  // Hide on click outside
+  document.addEventListener('click', () => hideContextMenu());
+  document.addEventListener('contextmenu', (e) => {
+    if (!e.target.closest('.domain-pill') || e.target.closest('.domain-pill--add') || e.target.closest('[data-domain=""]')) {
+      hideContextMenu();
+    }
+  });
+}
+
+function showDomainContextMenu(e, domain) {
+  e.preventDefault();
+  activeContextMenuDomain = domain;
+  const menu = document.getElementById('domain-context-menu');
+  menu.classList.add('active');
+  lucide.createIcons({ nodes: menu.querySelectorAll('[data-lucide]') });
+
+  // Position with viewport boundary check
+  let x = e.clientX;
+  let y = e.clientY;
+  const menuRect = menu.getBoundingClientRect();
+  if (x + menuRect.width > window.innerWidth) {
+    x = window.innerWidth - menuRect.width - 4;
+  }
+  if (y + menuRect.height > window.innerHeight) {
+    y = window.innerHeight - menuRect.height - 4;
+  }
+  menu.style.left = x + 'px';
+  menu.style.top = y + 'px';
+}
+
+function hideContextMenu() {
+  document.getElementById('domain-context-menu').classList.remove('active');
+  activeContextMenuDomain = null;
+}
+
+async function deleteDomain(domain) {
+  try {
+    // Check how many entries use this domain
+    const countResp = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains/${encodeURIComponent(domain.slug)}/count`);
+    const countResult = await countResp.json();
+    const count = countResult.count || 0;
+
+    let msg = `Удалить домен "${domain.name}"?`;
+    if (count > 0) {
+      msg += `\n\nУ ${count} записей установлен этот домен. Домен у них будет сброшен.`;
+    }
+
+    if (!confirm(msg)) return;
+
+    const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains/${encodeURIComponent(domain.slug)}`, {
+      method: 'DELETE'
+    });
+    const result = await response.json();
+    if (!result.success) {
+      showToast(result.error || 'Ошибка удаления', 'error');
+      return;
+    }
+
+    showToast('Домен удалён', 'success');
+
+    // If we were filtering by this domain, reset to all
+    if (currentDomain === domain.slug) {
+      currentDomain = '';
+    }
+
+    await loadProjectDomains();
+    renderDomainFilters();
+    populateEntryDomainSelect();
+    loadEntries();
+  } catch (e) {
+    showToast('Ошибка удаления домена', 'error');
+  }
 }
 
 // Navigation
@@ -602,7 +836,8 @@ function openReadModal(id) {
   document.getElementById('read-modal-title').textContent = entry.title;
 
   const catInfo = categoryConfig[entry.category];
-  const domainStr = entry.domain ? ` · ${entry.domain}` : '';
+  const readDomainPd = entry.domain ? projectDomains.find(pd => pd.slug === entry.domain) : null;
+  const domainStr = entry.domain ? ` · ${readDomainPd ? readDomainPd.name : entry.domain}` : '';
   document.getElementById('read-modal-meta').innerHTML =
     `<span class="read-meta-cat">${catInfo?.label || entry.category}${domainStr}</span>
      <span class="read-meta-info">${escapeHtml(entry.author)} · ${formatDate(entry.updatedAt)}</span>`;
@@ -767,8 +1002,9 @@ function renderProjectsList() {
         <div class="project-item-desc">${p.description ? escapeHtml(p.description) : '<em>Нет описания</em>'}</div>
         <div class="project-item-domains">
           ${p.domains.map(d => {
-            const info = domainInfo[d];
-            return `<span class="domain-tag">${info ? info.name : escapeHtml(d)}</span>`;
+            const pd = projectDomains.find(pd => pd.slug === d);
+            const label = pd ? pd.name : (domainInfo[d] ? domainInfo[d].name : d);
+            return `<span class="domain-tag">${escapeHtml(label)}</span>`;
           }).join('')}
         </div>
       </div>
@@ -1051,9 +1287,11 @@ function renderEntries() {
   }
 
   entriesContainer.innerHTML = entries.map(entry => {
-    const dInfo = entry.domain ? domainInfo[entry.domain] : null;
+    const dPd = entry.domain ? projectDomains.find(pd => pd.slug === entry.domain) : null;
+    const dInfo = entry.domain ? (dPd || domainInfo[entry.domain]) : null;
+    const domainLabel = dPd ? dPd.name : (domainInfo[entry.domain] ? domainInfo[entry.domain].name : entry.domain);
     const domainBadge = entry.domain
-      ? `<span class="entry-domain-badge">${dInfo ? dInfo.name : escapeHtml(entry.domain)}</span>`
+      ? `<span class="entry-domain-badge">${escapeHtml(domainLabel)}</span>`
       : '';
 
     return `

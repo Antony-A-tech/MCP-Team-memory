@@ -36,3 +36,7 @@ coverage/
 # Temporary files
 *.tmp
 *.temp
+
+# MCP.json
+.mcp.json
+.mcp3.json

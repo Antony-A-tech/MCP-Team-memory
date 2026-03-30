@@ -480,6 +480,49 @@
       </div>
     </div>
 
+    <!-- Domain Modal -->
+    <div class="modal" id="domain-modal">
+      <div class="modal-content" style="max-width: 480px;">
+        <div class="modal-header">
+          <h2 id="domain-modal-title">Добавить домен</h2>
+          <button class="modal-close" id="domain-modal-close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <div class="form-group">
+            <label for="domain-name">Название <span class="required">*</span></label>
+            <input type="text" id="domain-name" placeholder="Например: Андроид бэкенд">
+          </div>
+          <div class="form-group">
+            <label for="domain-slug">Slug <span class="required">*</span></label>
+            <input type="text" id="domain-slug" placeholder="android-backend">
+            <small class="form-hint">Латиница, цифры и дефисы. Используется как ключ в API.</small>
+          </div>
+          <div class="form-group">
+            <label for="domain-description">Описание для агентов</label>
+            <input type="text" id="domain-description" placeholder="Нативная Android-разработка, Kotlin">
+            <small class="form-hint">Помогает ИИ-агентам понять, когда использовать этот домен.</small>
+          </div>
+          <input type="hidden" id="domain-edit-slug" value="">
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="domain-btn-cancel">Отменить</button>
+          <button class="btn btn-primary" id="domain-btn-save">Сохранить</button>
+        </div>
+      </div>
+    </div>
+
+    <!-- Domain Context Menu -->
+    <div class="context-menu" id="domain-context-menu">
+      <button class="context-menu-item" data-action="edit">
+        <i data-lucide="pencil"></i> Редактировать
+      </button>
+      <button class="context-menu-item context-menu-item--danger" data-action="delete">
+        <i data-lucide="trash-2"></i> Удалить
+      </button>
+    </div>
+
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 

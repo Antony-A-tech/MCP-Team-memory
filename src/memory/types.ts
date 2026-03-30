@@ -57,6 +57,19 @@ export interface Project {
   updatedAt: string;
 }
 
+// Домен проекта (кастомный или дефолтный)
+export interface ProjectDomain {
+  id: string;
+  projectId: string;
+  slug: string;
+  name: string;
+  description: string;
+  icon: string;
+  sortOrder: number;
+  isDefault: boolean;
+  createdAt: string;
+}
+
 // Запись в памяти
 export interface MemoryEntry {
   id: string;
