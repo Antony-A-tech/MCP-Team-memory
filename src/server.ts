@@ -107,7 +107,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
               enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions'],
               description: 'Категория записи'
             },
-            domain: { type: 'string', description: 'Домен: backend, frontend, infrastructure, devops, database, testing' },
+            domain: { type: 'string', description: 'Домен проекта. Получите актуальный список через memory_onboard. Стандартные: backend, frontend, infrastructure, devops, database, testing. Проект может содержать дополнительные кастомные домены.' },
             title: { type: 'string', description: 'Заголовок записи' },
             content: { type: 'string', description: 'Содержимое записи' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Теги для категоризации' },
@@ -133,7 +133,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             expected_version: { type: 'number', description: 'Ожидаемая версия для optimistic locking. Если текущая версия не совпадает, вернётся ошибка конфликта.' },
             title: { type: 'string', description: 'Новый заголовок' },
             content: { type: 'string', description: 'Новое содержимое' },
-            domain: { type: 'string', description: 'Новый домен' },
+            domain: { type: 'string', description: 'Домен проекта. Получите актуальный список через memory_onboard. Стандартные: backend, frontend, infrastructure, devops, database, testing. Проект может содержать дополнительные кастомные домены.' },
             status: { type: 'string', enum: ['active', 'completed', 'archived'], description: 'Новый статус' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Новые теги' },
             priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Новый приоритет' },
