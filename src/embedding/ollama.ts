@@ -7,15 +7,18 @@ import logger from '../logger.js';
  * Requires Ollama running locally: curl -fsSL https://ollama.com/install.sh | sh
  * Model pulled automatically on first use.
  */
+const DEFAULT_MODEL = 'nomic-embed-text';
+
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
   readonly dimensions = 768;
-  readonly modelName = 'nomic-embed-text';
+  readonly modelName: string;
   readonly providerType = 'ollama' as const;
   private ready = false;
   private baseUrl: string;
 
-  constructor(baseUrl: string = 'http://localhost:11434') {
+  constructor(baseUrl: string = 'http://localhost:11434', model?: string) {
     this.baseUrl = baseUrl;
+    this.modelName = model || DEFAULT_MODEL;
   }
 
   isReady(): boolean { return this.ready; }
@@ -25,22 +28,22 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       const healthRes = await fetch(`${this.baseUrl}/api/tags`);
       if (!healthRes.ok) throw new Error(`Ollama not reachable: ${healthRes.status}`);
       const tags = await healthRes.json() as { models?: { name: string }[] };
-      const hasModel = tags.models?.some(m => m.name.startsWith('nomic-embed-text'));
+      const hasModel = tags.models?.some(m => m.name.startsWith(this.modelName));
       if (!hasModel) {
-        logger.info('Pulling nomic-embed-text model (274 MB)...');
+        logger.info(`Pulling ${this.modelName} model...`);
         const pullRes = await fetch(`${this.baseUrl}/api/pull`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ name: 'nomic-embed-text', stream: false }),
+          body: JSON.stringify({ name: this.modelName, stream: false }),
         });
         if (!pullRes.ok) throw new Error(`Failed to pull model: ${await pullRes.text()}`);
-        logger.info('Model nomic-embed-text pulled successfully');
+        logger.info(`Model ${this.modelName} pulled successfully`);
       }
       // Test embed call (direct fetch, not through this.embed which guards on ready)
       const testRes = await fetch(`${this.baseUrl}/api/embed`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ model: 'nomic-embed-text', truncate: true, input: 'search_query: test' }),
+        body: JSON.stringify({ model: this.modelName, truncate: true, input: 'search_query: test' }),
       });
       if (!testRes.ok) throw new Error(`Test embed failed: ${testRes.status}`);
       const testData = await testRes.json() as { embeddings: number[][] };
@@ -62,7 +65,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     const res = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'nomic-embed-text', truncate: true, input: prefix + text }),
+      body: JSON.stringify({ model: this.modelName, truncate: true, input: prefix + text }),
     });
     if (!res.ok) throw new Error(`Ollama embed error ${res.status}: ${await res.text()}`);
     const data = await res.json() as { embeddings: number[][] };
@@ -76,7 +79,7 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     const res = await fetch(`${this.baseUrl}/api/embed`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: 'nomic-embed-text', truncate: true, input: texts.map(t => prefix + t) }),
+      body: JSON.stringify({ model: this.modelName, truncate: true, input: texts.map(t => prefix + t) }),
     });
     if (!res.ok) throw new Error(`Ollama embed error ${res.status}: ${await res.text()}`);
     const data = await res.json() as { embeddings: number[][] };
