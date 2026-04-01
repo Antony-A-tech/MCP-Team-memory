@@ -1,0 +1,188 @@
+import type { SessionStorage } from './storage.js';
+import type { Session, SessionMessage, SessionFilters, SessionChunk } from './types.js';
+import type { VectorStore, VectorFilter } from '../vector/vector-store.js';
+import type { EmbeddingProvider } from '../embedding/provider.js';
+import { chunkMessage } from './chunking.js';
+import logger from '../logger.js';
+
+export class SessionManager {
+  constructor(
+    private storage: SessionStorage,
+    private vectorStore?: VectorStore,
+    private embeddingProvider?: EmbeddingProvider,
+  ) {}
+
+  async importSession(agentTokenId: string, data: {
+    externalId?: string;
+    name?: string;
+    summary: string;
+    projectId?: string;
+    workingDirectory?: string;
+    gitBranch?: string;
+    tags?: string[];
+    startedAt?: string;
+    endedAt?: string;
+    messages: Array<{ role: string; content: string; timestamp?: string; toolNames: string[] }>;
+  }): Promise<Session> {
+    // Check duplicate
+    if (data.externalId) {
+      const existing = await this.storage.findByExternalId(agentTokenId, data.externalId);
+      if (existing) return existing;
+    }
+
+    const session = await this.storage.createSession({ agentTokenId, ...data });
+
+    // Async: embed summary + messages
+    if (this.embeddingProvider?.isReady() && this.vectorStore) {
+      this.embedSessionAsync(session, agentTokenId).catch(err =>
+        logger.error({ err, sessionId: session.id }, 'Failed to embed session'),
+      );
+    }
+
+    return session;
+  }
+
+  private async embedSessionAsync(session: Session, agentTokenId: string): Promise<void> {
+    await this.storage.updateEmbeddingStatus(session.id, 'processing');
+
+    try {
+      // 1. Embed summary → sessions collection
+      const summaryVector = await this.embeddingProvider!.embed(session.summary, 'document');
+      await this.vectorStore!.upsert('sessions', session.id, summaryVector, {
+        session_id: session.id,
+        agent_token_id: agentTokenId,
+        project_id: session.projectId ?? '',
+        name: session.name ?? '',
+        tags: session.tags,
+        started_at: session.startedAt ? new Date(session.startedAt).getTime() : 0,
+        message_count: session.messageCount,
+      });
+
+      // 2. Chunk and embed messages → session_messages collection
+      const dbMessages = await this.storage.getMessages(session.id, 0);
+      const allChunks: SessionChunk[] = [];
+
+      for (const msg of dbMessages) {
+        const chunks = chunkMessage(msg.content, msg.id);
+        allChunks.push(...chunks);
+      }
+
+      if (allChunks.length > 0) {
+        const texts = allChunks.map(c => c.text);
+        const vectors = this.embeddingProvider!.embedBatch
+          ? await this.embeddingProvider!.embedBatch(texts, 'document')
+          : await Promise.all(texts.map(t => this.embeddingProvider!.embed(t, 'document')));
+
+        const points = allChunks.map((chunk, i) => {
+          const msg = dbMessages.find(m => m.id === chunk.messageId)!;
+          return {
+            id: `${chunk.messageId}_${chunk.chunkIndex}`,
+            vector: vectors[i],
+            payload: {
+              message_id: chunk.messageId,
+              session_id: session.id,
+              agent_token_id: agentTokenId,
+              role: msg.role,
+              message_index: msg.messageIndex,
+              chunk_index: chunk.chunkIndex,
+              total_chunks: chunk.totalChunks,
+              has_tool_use: msg.hasToolUse,
+              tool_names: msg.toolNames,
+            },
+          };
+        });
+
+        await this.vectorStore!.upsertBatch('session_messages', points);
+      }
+
+      await this.storage.updateEmbeddingStatus(session.id, 'complete');
+      logger.info({ sessionId: session.id, chunks: allChunks.length }, 'Session embedding complete');
+    } catch (err) {
+      await this.storage.updateEmbeddingStatus(session.id, 'failed');
+      throw err;
+    }
+  }
+
+  async listSessions(agentTokenId: string, filters: SessionFilters): Promise<Session[]> {
+    return this.storage.listSessions(agentTokenId, filters);
+  }
+
+  async readSession(sessionId: string, agentTokenId: string, from?: number, to?: number): Promise<{
+    session: Session;
+    messages: SessionMessage[];
+  } | null> {
+    const session = await this.storage.getSession(sessionId);
+    if (!session) return null;
+    if (session.agentTokenId !== agentTokenId) throw new Error('Access denied: not your session');
+
+    const messages = await this.storage.getMessages(sessionId, from ?? 0, to);
+    return { session, messages };
+  }
+
+  async searchSessions(agentTokenId: string, query: string, options?: {
+    projectId?: string;
+    limit?: number;
+  }): Promise<Array<Session & { score: number }>> {
+    if (!this.embeddingProvider?.isReady() || !this.vectorStore) return [];
+
+    const queryVector = await this.embeddingProvider.embed(query, 'query');
+    const filter: VectorFilter = {
+      must: [{ key: 'agent_token_id', match: { value: agentTokenId } }],
+    };
+    if (options?.projectId) {
+      filter.must!.push({ key: 'project_id', match: { value: options.projectId } });
+    }
+
+    const results = await this.vectorStore.search('sessions', queryVector, filter, options?.limit ?? 10);
+
+    const sessions = await Promise.all(
+      results.map(async r => {
+        const session = await this.storage.getSession(r.payload.session_id as string);
+        return session ? { ...session, score: r.score } : null;
+      }),
+    );
+
+    return sessions.filter((s): s is Session & { score: number } => s !== null);
+  }
+
+  async searchMessages(agentTokenId: string, query: string, options?: {
+    sessionId?: string;
+    limit?: number;
+  }): Promise<Array<{ messageId: string; sessionId: string; role: string; score: number; chunkIndex: number; messageIndex: number }>> {
+    if (!this.embeddingProvider?.isReady() || !this.vectorStore) return [];
+
+    const queryVector = await this.embeddingProvider.embed(query, 'query');
+    const filter: VectorFilter = {
+      must: [{ key: 'agent_token_id', match: { value: agentTokenId } }],
+    };
+    if (options?.sessionId) {
+      filter.must!.push({ key: 'session_id', match: { value: options.sessionId } });
+    }
+
+    const results = await this.vectorStore.search('session_messages', queryVector, filter, options?.limit ?? 10);
+
+    return results.map(r => ({
+      messageId: r.payload.message_id as string,
+      sessionId: r.payload.session_id as string,
+      role: r.payload.role as string,
+      score: r.score,
+      chunkIndex: (r.payload.chunk_index as number) ?? 0,
+      messageIndex: (r.payload.message_index as number) ?? 0,
+    }));
+  }
+
+  async deleteSession(sessionId: string, agentTokenId: string): Promise<boolean> {
+    const result = await this.storage.deleteSession(sessionId, agentTokenId);
+
+    if (this.vectorStore) {
+      this.vectorStore.delete('sessions', [sessionId]).catch(err =>
+        logger.warn({ err, sessionId }, 'Failed to delete session vector'));
+      this.vectorStore.deleteByFilter('session_messages', {
+        must: [{ key: 'session_id', match: { value: sessionId } }],
+      }).catch(err =>
+        logger.warn({ err, sessionId }, 'Failed to delete message vectors'));
+    }
+
+    return result;
+  }
+}
