@@ -74,8 +74,9 @@ export class PersonalNotesStorage {
       params.push(agentTokenId);
     }
 
-    conditions.push(`(search_vector @@ plainto_tsquery($${idx}) OR title ILIKE $${idx + 1} OR content ILIKE $${idx + 1})`);
-    params.push(query, `%${query}%`);
+    const escapedQuery = query.replace(/[%_\\]/g, '\\$&');
+    conditions.push(`(search_vector @@ plainto_tsquery($${idx}) OR title ILIKE $${idx + 1} ESCAPE '\\' OR content ILIKE $${idx + 1} ESCAPE '\\')`);
+    params.push(query, `%${escapedQuery}%`);
     idx += 2;
 
     if (filters.projectId) {
@@ -104,12 +105,6 @@ export class PersonalNotesStorage {
     agentTokenId: string | null,
     updates: Partial<{ title: string; content: string; tags: string[]; priority: string; status: string; projectId: string | null; sessionId: string | null }>,
   ): Promise<PersonalNote> {
-    if (agentTokenId !== null) {
-      const { rows } = await this.pool.query('SELECT agent_token_id FROM personal_notes WHERE id = $1', [id]);
-      if (rows.length === 0) throw new Error('Note not found');
-      if (rows[0].agent_token_id !== agentTokenId) throw new Error('Access denied: not your note');
-    }
-
     const setClauses: string[] = [];
     const params: unknown[] = [];
     let idx = 1;
@@ -123,29 +118,56 @@ export class PersonalNotesStorage {
     if (updates.sessionId !== undefined) { setClauses.push(`session_id = $${idx++}`); params.push(updates.sessionId); }
 
     if (setClauses.length === 0) {
-      return (await this.getById(id))!;
+      const note = await this.getById(id);
+      if (!note) throw new Error('Note not found');
+      return note;
     }
 
+    // Single query: ownership check + update (eliminates TOCTOU race)
+    const whereConditions = [`id = $${idx++}`];
     params.push(id);
-    const { rows } = await this.pool.query(
-      `UPDATE personal_notes SET ${setClauses.join(', ')} WHERE id = $${idx} RETURNING *`,
+    if (agentTokenId !== null) {
+      whereConditions.push(`agent_token_id = $${idx++}`);
+      params.push(agentTokenId);
+    }
+
+    const { rows, rowCount } = await this.pool.query(
+      `UPDATE personal_notes SET ${setClauses.join(', ')} WHERE ${whereConditions.join(' AND ')} RETURNING *`,
       params,
     );
+
+    if (rowCount === 0) {
+      // Distinguish "not found" from "access denied"
+      const { rows: checkRows } = await this.pool.query('SELECT id FROM personal_notes WHERE id = $1', [id]);
+      if (checkRows.length === 0) throw new Error('Note not found');
+      throw new Error('Access denied: not your note');
+    }
 
     return this.rowToNote(rows[0]);
   }
 
   async delete(id: string, agentTokenId: string | null, archive: boolean): Promise<boolean> {
+    // Single query with ownership check (eliminates TOCTOU race)
+    const whereConditions = ['id = $1'];
+    const params: unknown[] = [id];
+    let idx = 2;
     if (agentTokenId !== null) {
-      const { rows } = await this.pool.query('SELECT agent_token_id FROM personal_notes WHERE id = $1', [id]);
-      if (rows.length === 0) return false;
-      if (rows[0].agent_token_id !== agentTokenId) throw new Error('Access denied: not your note');
+      whereConditions.push(`agent_token_id = $${idx++}`);
+      params.push(agentTokenId);
+    }
+    const where = whereConditions.join(' AND ');
+
+    let result;
+    if (archive) {
+      result = await this.pool.query(`UPDATE personal_notes SET status = 'archived' WHERE ${where}`, params);
+    } else {
+      result = await this.pool.query(`DELETE FROM personal_notes WHERE ${where}`, params);
     }
 
-    if (archive) {
-      await this.pool.query("UPDATE personal_notes SET status = 'archived' WHERE id = $1", [id]);
-    } else {
-      await this.pool.query('DELETE FROM personal_notes WHERE id = $1', [id]);
+    if (result.rowCount === 0) {
+      const { rows } = await this.pool.query('SELECT id FROM personal_notes WHERE id = $1', [id]);
+      if (rows.length === 0) return false;
+      throw new Error('Access denied: not your note');
     }
     return true;
   }

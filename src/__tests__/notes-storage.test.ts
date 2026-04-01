@@ -81,57 +81,73 @@ describe('PersonalNotesStorage', () => {
   });
 
   describe('update', () => {
-    it('verifies ownership before updating', async () => {
-      pool.query
-        .mockResolvedValueOnce({ rows: [{ agent_token_id: 'token-1' }], rowCount: 1 })
-        .mockResolvedValueOnce({
-          rows: [{ id: 'note-1', agent_token_id: 'token-1', title: 'Updated', content: 'C', tags: [], priority: 'medium', status: 'active', project_id: null, session_id: null, created_at: '2026-01-01', updated_at: '2026-01-01' }],
-          rowCount: 1,
-        });
+    it('includes agent_token_id in WHERE clause for ownership', async () => {
+      // Single combined query: UPDATE ... WHERE id = $N AND agent_token_id = $M
+      pool.query.mockResolvedValueOnce({
+        rows: [{ id: 'note-1', agent_token_id: 'token-1', title: 'Updated', content: 'C', tags: [], priority: 'medium', status: 'active', project_id: null, session_id: null, created_at: '2026-01-01', updated_at: '2026-01-01' }],
+        rowCount: 1,
+      });
 
       await storage.update('note-1', 'token-1', { title: 'Updated' });
 
-      const ownershipSql = pool.query.mock.calls[0][0] as string;
-      expect(ownershipSql).toContain('agent_token_id');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('UPDATE personal_notes');
+      expect(sql).toContain('agent_token_id');
     });
 
-    it('throws on ownership mismatch', async () => {
-      pool.query.mockResolvedValue({ rows: [{ agent_token_id: 'other-token' }], rowCount: 1 });
+    it('throws access denied when ownership check fails', async () => {
+      // UPDATE returns 0 rows (ownership mismatch), then SELECT finds the note exists
+      pool.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // UPDATE matched 0 rows
+        .mockResolvedValueOnce({ rows: [{ id: 'note-1' }], rowCount: 1 });  // note exists → access denied
 
       await expect(
         storage.update('note-1', 'token-1', { title: 'Hack' }),
       ).rejects.toThrow(/access denied/i);
     });
+
+    it('throws not found for non-existent note', async () => {
+      pool.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })  // UPDATE matched 0
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 });  // note doesn't exist
+
+      await expect(
+        storage.update('nonexistent', 'token-1', { title: 'X' }),
+      ).rejects.toThrow(/not found/i);
+    });
   });
 
   describe('delete', () => {
-    it('verifies ownership before deleting', async () => {
-      pool.query
-        .mockResolvedValueOnce({ rows: [{ agent_token_id: 'token-1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    it('deletes with ownership check in single query', async () => {
+      pool.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
-      await storage.delete('note-1', 'token-1', false);
+      const result = await storage.delete('note-1', 'token-1', false);
 
-      expect(pool.query).toHaveBeenCalledTimes(2);
+      expect(result).toBe(true);
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('DELETE');
+      expect(sql).toContain('agent_token_id');
     });
 
-    it('throws on ownership mismatch', async () => {
-      pool.query.mockResolvedValue({ rows: [{ agent_token_id: 'other' }], rowCount: 1 });
+    it('throws access denied on ownership mismatch', async () => {
+      // DELETE returns 0 rows, but note exists → access denied
+      pool.query
+        .mockResolvedValueOnce({ rows: [], rowCount: 0 })
+        .mockResolvedValueOnce({ rows: [{ id: 'note-1' }], rowCount: 1 });
 
       await expect(
         storage.delete('note-1', 'token-1', false),
       ).rejects.toThrow(/access denied/i);
     });
 
-    it('archives instead of deleting by default', async () => {
-      pool.query
-        .mockResolvedValueOnce({ rows: [{ agent_token_id: 'token-1' }], rowCount: 1 })
-        .mockResolvedValueOnce({ rows: [], rowCount: 1 });
+    it('archives with status update instead of delete', async () => {
+      pool.query.mockResolvedValueOnce({ rows: [], rowCount: 1 });
 
       await storage.delete('note-1', 'token-1', true);
 
-      const archiveSql = pool.query.mock.calls[1][0] as string;
-      expect(archiveSql).toContain('archived');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('archived');
+      expect(sql).toContain('agent_token_id');
     });
   });
 });

@@ -767,10 +767,10 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
           const parsed = NoteWriteSchema.safeParse(args);
           if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
-          const isMaster = callerAgent === 'master';
-          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
-          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for personal notes' }], isError: true };
-          const note = await notesManager.write(agentTokenId!, {
+          // note_write requires agent token — master cannot create personal notes (no owner)
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required to create personal notes' }], isError: true };
+          const note = await notesManager.write(agentTokenId, {
             title: parsed.data.title,
             content: parsed.data.content,
             tags: parsed.data.tags,
