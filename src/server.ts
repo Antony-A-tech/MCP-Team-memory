@@ -42,18 +42,24 @@ import {
 } from './memory/validation.js';
 import { exportEntries, type ExportFormat } from './export/exporter.js';
 import type { AgentTokenStore } from './auth/agent-tokens.js';
+import type { NotesManager } from './notes/manager.js';
+import { NoteWriteSchema, NoteReadSchema, NoteUpdateSchema, NoteDeleteSchema, NoteSearchSchema } from './notes/validation.js';
 
-export function buildMcpServer(memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore): Server {
+export function buildMcpServer(
+  memoryManager: MemoryManager,
+  agentTokenStore?: AgentTokenStore,
+  notesManager?: NotesManager,
+): Server {
   const server = new Server(
     { name: 'team-memory', version: '2.0.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
-  setupHandlers(server, memoryManager, agentTokenStore);
+  setupHandlers(server, memoryManager, agentTokenStore, notesManager);
   return server;
 }
 
-function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore): void {
+function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Tool[] = [
       {
@@ -287,6 +293,84 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             project_id: { type: 'string', description: 'ID проекта. Если не указан — берётся из заголовка X-Project-Id.' },
           },
         }
+      },
+      // === Personal Notes tools ===
+      {
+        name: 'note_write',
+        description: 'Создать личную заметку. Привязана к вашему токену — другие агенты не видят. Можно привязать к проекту или сессии.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Заголовок заметки' },
+            content: { type: 'string', description: 'Содержимое заметки' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Теги' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            project_id: { type: 'string', description: 'ID проекта (опционально)' },
+            session_id: { type: 'string', description: 'ID импортированной сессии (опционально)' },
+          },
+          required: ['title', 'content'],
+        },
+      },
+      {
+        name: 'note_read',
+        description: 'Читать свои личные заметки. Фильтрация по тегам, проекту, сессии, статусу.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            search: { type: 'string', description: 'Поиск по ключевым словам' },
+            tags: { type: 'array', items: { type: 'string' } },
+            project_id: { type: 'string' },
+            session_id: { type: 'string' },
+            status: { type: 'string', enum: ['active', 'archived'] },
+            mode: { type: 'string', enum: ['compact', 'full'], default: 'compact' },
+            limit: { type: 'number', default: 50 },
+            offset: { type: 'number', default: 0 },
+          },
+        },
+      },
+      {
+        name: 'note_update',
+        description: 'Обновить свою личную заметку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'UUID заметки' },
+            title: { type: 'string' },
+            content: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            status: { type: 'string', enum: ['active', 'archived'] },
+            project_id: { type: ['string', 'null'] },
+            session_id: { type: ['string', 'null'] },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'note_delete',
+        description: 'Удалить или архивировать свою личную заметку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'UUID заметки' },
+            archive: { type: 'boolean', default: true, description: 'Архивировать вместо удаления' },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'note_search',
+        description: 'Семантический поиск по личным заметкам через Qdrant.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Поисковый запрос' },
+            project_id: { type: 'string' },
+            session_id: { type: 'string' },
+            limit: { type: 'number', default: 10 },
+          },
+          required: ['query'],
+        },
       },
     ];
     return { tools };
@@ -675,6 +759,94 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           if (typeof onboardProjectId !== 'string') return onboardProjectId.response;
           const summary = await memoryManager.generateOnboarding(onboardProjectId);
           return { content: [{ type: 'text', text: summary }] };
+        }
+
+        // === Personal Notes handlers ===
+
+        case 'note_write': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteWriteSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for personal notes' }], isError: true };
+          const note = await notesManager.write(agentTokenId!, {
+            title: parsed.data.title,
+            content: parsed.data.content,
+            tags: parsed.data.tags,
+            priority: parsed.data.priority,
+            projectId: parsed.data.project_id ?? null,
+            sessionId: parsed.data.session_id ?? null,
+          });
+          return { content: [{ type: 'text', text: `📝 Заметка создана: ${note.id}\n**${note.title}**` }] };
+        }
+
+        case 'note_read': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteReadSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const notes = await notesManager.read(agentTokenId, {
+            search: parsed.data.search,
+            tags: parsed.data.tags,
+            projectId: parsed.data.project_id,
+            sessionId: parsed.data.session_id,
+            status: parsed.data.status,
+            mode: parsed.data.mode,
+            limit: parsed.data.limit,
+            offset: parsed.data.offset,
+          });
+          if (notes.length === 0) return { content: [{ type: 'text', text: '📝 Заметок не найдено.' }] };
+          const lines = notes.map((n: any) => `- **${n.title}** (id: ${n.id}, ${n.status}${n.tags?.length ? ', tags: ' + n.tags.join(', ') : ''})`);
+          return { content: [{ type: 'text', text: `📝 Найдено ${notes.length} заметок:\n${lines.join('\n')}` }] };
+        }
+
+        case 'note_update': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteUpdateSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const updated = await notesManager.update(parsed.data.id, agentTokenId, {
+            title: parsed.data.title,
+            content: parsed.data.content,
+            tags: parsed.data.tags,
+            priority: parsed.data.priority,
+            status: parsed.data.status,
+            projectId: parsed.data.project_id,
+            sessionId: parsed.data.session_id,
+          });
+          return { content: [{ type: 'text', text: `✅ Заметка обновлена: **${updated.title}**` }] };
+        }
+
+        case 'note_delete': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteDeleteSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const deleted = await notesManager.delete(parsed.data.id, agentTokenId, parsed.data.archive);
+          return { content: [{ type: 'text', text: deleted ? `✅ Заметка ${parsed.data.archive ? 'архивирована' : 'удалена'}` : '❌ Заметка не найдена' }] };
+        }
+
+        case 'note_search': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteSearchSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for semantic search' }], isError: true };
+          const results = await notesManager.semanticSearch(agentTokenId, parsed.data.query, {
+            projectId: parsed.data.project_id,
+            sessionId: parsed.data.session_id,
+            limit: parsed.data.limit,
+          });
+          if (results.length === 0) return { content: [{ type: 'text', text: '🔍 Ничего не найдено.' }] };
+          const lines = results.map(n => `- [${n.score.toFixed(2)}] **${n.title}** (id: ${n.id})`);
+          return { content: [{ type: 'text', text: `🔍 Найдено ${results.length} заметок:\n${lines.join('\n')}` }] };
         }
 
         default:

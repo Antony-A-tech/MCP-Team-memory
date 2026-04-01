@@ -100,8 +100,8 @@ async function main(): Promise<void> {
   // Rate limiting
   app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
 
-  // Mount MCP StreamableHTTP transport
-  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore));
+  // MCP transport is mounted later, after optional managers are created
+  // (see below: mountMcpTransport call after Qdrant + NotesManager setup)
 
   // Mount REST API routes
   const webServer = new WebServer(memoryManager, null, agentTokenStore);
@@ -176,6 +176,29 @@ async function main(): Promise<void> {
       logger.warn({ err }, 'Failed to connect to Qdrant — vector search will use pgvector fallback');
     }
   }
+
+  // Personal Notes manager (optional — requires agent tokens)
+  let notesManager: import('./notes/manager.js').NotesManager | undefined;
+  if (agentTokenStore) {
+    const { PersonalNotesStorage } = await import('./notes/storage.js');
+    const { NotesManager } = await import('./notes/manager.js');
+    const notesStorage = new PersonalNotesStorage(storage.getPool());
+    notesManager = new NotesManager(notesStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+
+    // Ensure Qdrant collection for personal_notes
+    const vs = memoryManager.getVectorStore();
+    if (vs) {
+      const dims = memoryManager.getEmbeddingProvider()?.dimensions ?? 768;
+      await vs.ensureCollection('personal_notes', dims);
+      await vs.createPayloadIndex('personal_notes', 'agent_token_id', 'keyword');
+      await vs.createPayloadIndex('personal_notes', 'project_id', 'keyword');
+      await vs.createPayloadIndex('personal_notes', 'session_id', 'keyword');
+    }
+    logger.info('Personal notes manager initialized');
+  }
+
+  // Mount MCP transport (after all optional managers are created)
+  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager));
 
   // Auto-archive
   if (config.autoArchiveEnabled) {
