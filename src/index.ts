@@ -75,6 +75,7 @@ if (config.transport === 'http') {
         await vectorStore.createPayloadIndex('entries', 'category', 'keyword');
         await vectorStore.createPayloadIndex('entries', 'status', 'keyword');
         await vectorStore.createPayloadIndex('entries', 'author', 'keyword');
+        await vectorStore.createPayloadIndex('entries', 'domain', 'keyword');
         memoryManager.setVectorStore(vectorStore);
         logger.info({ url: config.qdrantUrl }, 'Qdrant vector store connected');
       } catch (err) {
