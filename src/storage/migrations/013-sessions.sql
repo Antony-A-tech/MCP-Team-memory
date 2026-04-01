@@ -25,6 +25,7 @@ CREATE TABLE IF NOT EXISTS sessions (
 
   tags TEXT[] DEFAULT '{}',
   search_vector TSVECTOR,
+  updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
 
   UNIQUE(agent_token_id, external_id)
 );
@@ -111,7 +112,7 @@ BEGIN
   ) THEN
     ALTER TABLE personal_notes
       ADD CONSTRAINT fk_personal_notes_session
-      FOREIGN KEY (session_id) REFERENCES sessions(id);
+      FOREIGN KEY (session_id) REFERENCES sessions(id) ON DELETE SET NULL;
   END IF;
 END$$;
 

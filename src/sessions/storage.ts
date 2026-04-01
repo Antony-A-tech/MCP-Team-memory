@@ -37,22 +37,27 @@ export class SessionStorage {
         ],
       );
 
+      // Batch insert messages (max ~5000 per batch to stay within PG 65535 param limit, 7 params/row)
       if (data.messages.length > 0) {
-        const values: string[] = [];
-        const params: unknown[] = [];
-        let idx = 1;
+        const BATCH_SIZE = 5000;
+        for (let batchStart = 0; batchStart < data.messages.length; batchStart += BATCH_SIZE) {
+          const batch = data.messages.slice(batchStart, batchStart + BATCH_SIZE);
+          const values: string[] = [];
+          const params: unknown[] = [];
+          let idx = 1;
 
-        data.messages.forEach((msg, i) => {
-          const hasToolUse = msg.toolNames.length > 0;
-          values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
-          params.push(session.id, msg.role, msg.content, i, hasToolUse, msg.toolNames, msg.timestamp ?? null);
-        });
+          batch.forEach((msg, i) => {
+            const hasToolUse = msg.toolNames.length > 0;
+            values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            params.push(session.id, msg.role, msg.content, batchStart + i, hasToolUse, msg.toolNames, msg.timestamp ?? null);
+          });
 
-        await client.query(
-          `INSERT INTO session_messages (session_id, role, content, message_index, has_tool_use, tool_names, timestamp)
-           VALUES ${values.join(', ')}`,
-          params,
-        );
+          await client.query(
+            `INSERT INTO session_messages (session_id, role, content, message_index, has_tool_use, tool_names, timestamp)
+             VALUES ${values.join(', ')}`,
+            params,
+          );
+        }
       }
 
       await client.query('COMMIT');
