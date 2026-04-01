@@ -154,6 +154,28 @@ async function main(): Promise<void> {
     }
   }
 
+  // Qdrant vector store (optional, replaces pgvector for vector search)
+  if (config.vectorStore === 'qdrant') {
+    try {
+      const { QdrantVectorStore } = await import('./vector/qdrant-store.js');
+      const vectorStore = new QdrantVectorStore(config.qdrantUrl, config.qdrantApiKey);
+
+      const embProvider = memoryManager.getEmbeddingProvider();
+      const dims = embProvider?.dimensions ?? 768;
+
+      await vectorStore.ensureCollection('entries', dims);
+      await vectorStore.createPayloadIndex('entries', 'project_id', 'keyword');
+      await vectorStore.createPayloadIndex('entries', 'category', 'keyword');
+      await vectorStore.createPayloadIndex('entries', 'status', 'keyword');
+      await vectorStore.createPayloadIndex('entries', 'author', 'keyword');
+
+      memoryManager.setVectorStore(vectorStore);
+      logger.info({ url: config.qdrantUrl }, 'Qdrant vector store connected');
+    } catch (err) {
+      logger.warn({ err }, 'Failed to connect to Qdrant — vector search will use pgvector fallback');
+    }
+  }
+
   // Auto-archive
   if (config.autoArchiveEnabled) {
     const decayConfig = config.decayThreshold !== undefined
