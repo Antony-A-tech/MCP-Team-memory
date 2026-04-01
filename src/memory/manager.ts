@@ -281,8 +281,13 @@ export class MemoryManager {
         ),
       }).catch(err => logger.error({ err }, 'Audit log failed'));
 
-      // Fire-and-forget: regenerate embedding if content or title changed
-      if (this.embeddingProvider?.isReady() && (params.title || params.content)) {
+      // Fire-and-forget: update Qdrant
+      const payloadFields = { status: params.status, tags: params.tags, domain: params.domain };
+      const hasPayloadChange = Object.values(payloadFields).some(v => v !== undefined);
+      const hasContentChange = !!(params.title || params.content);
+
+      if (hasContentChange && this.embeddingProvider?.isReady()) {
+        // Re-embed + full upsert (vector + payload)
         this.embeddingProvider.embed(`${updated.title} ${updated.content}`, 'document')
           .then(async (emb) => {
             if (this.vectorStore) {
@@ -299,6 +304,14 @@ export class MemoryManager {
             await this.storage.saveEmbedding(updated.id, emb);
           })
           .catch(err => logger.error({ err, entryId: updated.id }, 'Embedding regeneration failed'));
+      } else if (hasPayloadChange && this.vectorStore) {
+        // Metadata-only change — update Qdrant payload without re-embedding
+        const payload: Record<string, unknown> = {};
+        if (params.status !== undefined) payload.status = updated.status;
+        if (params.tags !== undefined) payload.tags = updated.tags;
+        if (params.domain !== undefined) payload.domain = updated.domain ?? '';
+        this.vectorStore.setPayload('entries', updated.id, payload)
+          .catch(err => logger.warn({ err, entryId: updated.id }, 'Failed to update Qdrant payload'));
       }
 
       return updated;
@@ -320,6 +333,13 @@ export class MemoryManager {
           action: 'archive',
           actor: archived.author,
         }).catch(err => logger.error({ err }, 'Audit log failed'));
+
+        // Update Qdrant payload to reflect archived status
+        if (this.vectorStore) {
+          this.vectorStore.setPayload('entries', id, { status: 'archived' })
+            .catch(err => logger.warn({ err, entryId: id }, 'Failed to update Qdrant status on archive'));
+        }
+
         return true;
       }
       return false;
@@ -419,6 +439,22 @@ export class MemoryManager {
   private static readonly BATCH_CHUNK_SIZE = 100;
 
   /** Backfill embeddings for entries that don't have one yet (loops until all done) */
+  /** Save embedding to both pgvector and Qdrant (if available) */
+  private async saveEmbeddingDual(entry: MemoryEntry, embedding: number[]): Promise<void> {
+    if (this.vectorStore) {
+      await this.vectorStore.upsert('entries', entry.id, embedding, {
+        entry_id: entry.id,
+        project_id: entry.projectId,
+        category: entry.category,
+        domain: entry.domain ?? '',
+        status: entry.status,
+        tags: entry.tags,
+        author: entry.author,
+      });
+    }
+    await this.storage.saveEmbedding(entry.id, embedding);
+  }
+
   async backfillEmbeddings(batchSize: number = 100): Promise<number> {
     if (!this.embeddingProvider?.isReady()) return 0;
 
@@ -441,7 +477,7 @@ export class MemoryManager {
             const embeddings = await provider.embedBatch(texts, 'document');
             // TODO: optimize with batch INSERT ... VALUES (...), (...) for large backfills
             for (let j = 0; j < chunk.length; j++) {
-              await this.storage.saveEmbedding(chunk[j].id, embeddings[j]);
+              await this.saveEmbeddingDual(chunk[j], embeddings[j]);
               batchCount++;
             }
           } catch (err) {
@@ -449,7 +485,7 @@ export class MemoryManager {
             for (const entry of chunk) {
               try {
                 const embedding = await provider.embed(`${entry.title} ${entry.content}`, 'document');
-                await this.storage.saveEmbedding(entry.id, embedding);
+                await this.saveEmbeddingDual(entry, embedding);
                 batchCount++;
               } catch (seqErr) {
                 logger.error({ err: seqErr, entryId: entry.id }, 'Sequential embed fallback failed');
@@ -462,7 +498,7 @@ export class MemoryManager {
         for (const entry of entries) {
           try {
             const embedding = await provider.embed(`${entry.title} ${entry.content}`, 'document');
-            await this.storage.saveEmbedding(entry.id, embedding);
+            await this.saveEmbeddingDual(entry, embedding);
             batchCount++;
           } catch (err) {
             logger.error({ err, entryId: entry.id }, 'Embedding backfill failed for entry');

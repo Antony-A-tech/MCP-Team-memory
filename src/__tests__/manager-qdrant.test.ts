@@ -62,6 +62,7 @@ function createMockVectorStore(): VectorStore {
     search: vi.fn().mockResolvedValue([]),
     delete: vi.fn().mockResolvedValue(undefined),
     deleteByFilter: vi.fn().mockResolvedValue(undefined),
+    setPayload: vi.fn().mockResolvedValue(undefined),
     createPayloadIndex: vi.fn().mockResolvedValue(undefined),
     collectionExists: vi.fn().mockResolvedValue(true),
     close: vi.fn().mockResolvedValue(undefined),
@@ -139,10 +140,11 @@ describe('MemoryManager with VectorStore', () => {
     expect(vectorStore.delete).toHaveBeenCalledWith('entries', [mockEntry.id]);
   });
 
-  it('does NOT delete from Qdrant on archive (soft delete)', async () => {
+  it('updates Qdrant status payload on archive (soft delete)', async () => {
     await manager.delete({ id: mockEntry.id, archive: true });
 
     expect(vectorStore.delete).not.toHaveBeenCalled();
+    expect(vectorStore.setPayload).toHaveBeenCalledWith('entries', mockEntry.id, { status: 'archived' });
   });
 
   it('re-upserts to Qdrant on update with content change', async () => {

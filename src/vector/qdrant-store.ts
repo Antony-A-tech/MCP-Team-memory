@@ -93,6 +93,14 @@ export class QdrantVectorStore implements VectorStore {
     }));
   }
 
+  async setPayload(collection: string, id: string, payload: Record<string, unknown>): Promise<void> {
+    await this.client.setPayload(collection, {
+      wait: true,
+      points: [id],
+      payload,
+    });
+  }
+
   async delete(collection: string, ids: string[]): Promise<void> {
     if (ids.length === 0) return;
     await this.client.delete(collection, {

@@ -10,7 +10,7 @@ import logger from '../logger.js';
 const DEFAULT_MODEL = 'nomic-embed-text';
 
 export class OllamaEmbeddingProvider implements EmbeddingProvider {
-  readonly dimensions = 768;
+  dimensions = 768;  // default, auto-detected from test embed during initialize()
   readonly modelName: string;
   readonly providerType = 'ollama' as const;
   private ready = false;
@@ -47,9 +47,8 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
       });
       if (!testRes.ok) throw new Error(`Test embed failed: ${testRes.status}`);
       const testData = await testRes.json() as { embeddings: number[][] };
-      if (testData.embeddings[0].length !== this.dimensions) {
-        throw new Error(`Expected ${this.dimensions} dimensions, got ${testData.embeddings[0].length}`);
-      }
+      // Auto-detect dimensions from the model's actual output
+      this.dimensions = testData.embeddings[0].length;
       this.ready = true;
       logger.info({ model: this.modelName, dimensions: this.dimensions, baseUrl: this.baseUrl },
         'Ollama embedding provider initialized');

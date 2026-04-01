@@ -11,6 +11,7 @@ const mockClient = {
   createCollection: vi.fn(),
   createPayloadIndex: vi.fn(),
   upsert: vi.fn(),
+  setPayload: vi.fn(),
   search: vi.fn(),
   delete: vi.fn(),
 };

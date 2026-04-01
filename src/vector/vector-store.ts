@@ -55,6 +55,9 @@ export interface VectorStore {
   /** Delete vectors matching a filter */
   deleteByFilter(collection: string, filter: VectorFilter): Promise<void>;
 
+  /** Update payload fields without re-sending the vector */
+  setPayload(collection: string, id: string, payload: Record<string, unknown>): Promise<void>;
+
   /** Create payload index for fast filtered search */
   createPayloadIndex(collection: string, field: string, schema: 'keyword' | 'integer' | 'bool'): Promise<void>;
 
