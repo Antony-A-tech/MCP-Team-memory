@@ -6,7 +6,7 @@ import type {
   VectorPoint,
   CollectionOptions,
 } from './vector-store.js';
-import { logger } from '../logger.js';
+import logger from '../logger.js';
 
 export class QdrantVectorStore implements VectorStore {
   private client: QdrantClient;
