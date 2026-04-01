@@ -31,6 +31,17 @@ export async function setupQdrant(config: AppConfig, memoryManager: MemoryManage
     await vectorStore.createPayloadIndex('personal_notes', 'project_id', 'keyword');
     await vectorStore.createPayloadIndex('personal_notes', 'session_id', 'keyword');
 
+    // Sessions collection (summaries)
+    await vectorStore.ensureCollection('sessions', dims);
+    await vectorStore.createPayloadIndex('sessions', 'agent_token_id', 'keyword');
+    await vectorStore.createPayloadIndex('sessions', 'project_id', 'keyword');
+
+    // Session messages collection (chunked message embeddings, with quantization)
+    await vectorStore.ensureCollection('session_messages', dims, { quantization: 'scalar' });
+    await vectorStore.createPayloadIndex('session_messages', 'agent_token_id', 'keyword');
+    await vectorStore.createPayloadIndex('session_messages', 'session_id', 'keyword');
+    await vectorStore.createPayloadIndex('session_messages', 'role', 'keyword');
+
     memoryManager.setVectorStore(vectorStore);
     logger.info({ url: config.qdrantUrl }, 'Qdrant vector store connected');
     return vectorStore;

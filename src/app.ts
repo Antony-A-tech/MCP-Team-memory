@@ -168,8 +168,18 @@ async function main(): Promise<void> {
     logger.info('Personal notes manager initialized');
   }
 
+  // Session manager (optional — requires agent tokens)
+  let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
+  if (agentTokenStore) {
+    const { SessionStorage } = await import('./sessions/storage.js');
+    const { SessionManager } = await import('./sessions/manager.js');
+    const sessionStorage = new SessionStorage(storage.getPool());
+    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+    logger.info('Session manager initialized');
+  }
+
   // Mount MCP transport (after all optional managers are created)
-  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager));
+  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager));
 
   // Auto-archive
   if (config.autoArchiveEnabled) {
