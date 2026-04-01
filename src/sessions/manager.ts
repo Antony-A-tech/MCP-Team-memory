@@ -1,9 +1,18 @@
+import crypto from 'crypto';
 import type { SessionStorage } from './storage.js';
 import type { Session, SessionMessage, SessionFilters, SessionChunk } from './types.js';
 import type { VectorStore, VectorFilter } from '../vector/vector-store.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import { chunkMessage } from './chunking.js';
 import logger from '../logger.js';
+
+/** Generate a deterministic UUID v5 from message ID + chunk index */
+function chunkPointId(messageId: string, chunkIndex: number): string {
+  // Use SHA-1 hash truncated to UUID format (same approach as UUID v5)
+  const hash = crypto.createHash('sha1').update(`${messageId}:${chunkIndex}`).digest('hex');
+  // Format as UUID: 8-4-4-4-12
+  return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
 
 export class SessionManager {
   constructor(
@@ -76,7 +85,7 @@ export class SessionManager {
         const points = allChunks.map((chunk, i) => {
           const msg = dbMessages.find(m => m.id === chunk.messageId)!;
           return {
-            id: `${chunk.messageId}_${chunk.chunkIndex}`,
+            id: chunkPointId(chunk.messageId, chunk.chunkIndex),
             vector: vectors[i],
             payload: {
               message_id: chunk.messageId,
