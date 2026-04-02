@@ -5,7 +5,7 @@ const UuidSchema = z.string().uuid('Invalid UUID format');
 export const SessionImportSchema = z.object({
   external_id: z.string().max(200).optional(),
   name: z.string().max(500).optional(),
-  summary: z.string().min(1).max(10000),
+  summary: z.string().max(10000).optional(),
   project_id: UuidSchema.optional(),
   working_directory: z.string().max(1000).optional(),
   git_branch: z.string().max(200).optional(),
