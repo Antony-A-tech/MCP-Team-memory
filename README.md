@@ -108,8 +108,8 @@ Each team member gets a personal token (`tm_...`). The author field is set autom
 | `MEMORY_PORT` | `3846` | HTTP server port |
 | `MEMORY_API_TOKEN` | — | Master token (enables auth when set) |
 | `MEMORY_FTS_LANGUAGE` | `simple` | PostgreSQL FTS config (`russian`, `english`, etc.) |
-| `MEMORY_EMBEDDING_PROVIDER` | — | `gemini` or `local` (ONNX) |
-| `GEMINI_API_KEY` | — | Google Gemini API key for embeddings |
+| `OLLAMA_URL` | `http://localhost:11434` | Ollama server URL |
+| `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text-v2-moe` | Embedding model name |
 | `MEMORY_AUTO_ARCHIVE` | `true` | Enable auto-archival |
 | `MEMORY_AUTO_ARCHIVE_DAYS` | `14` | Days before auto-archive |
 | `MEMORY_CORS_ORIGIN` | `*` | CORS origin for production |
@@ -216,8 +216,8 @@ node dist/index.js
 | `MEMORY_PORT` | `3846` | Порт HTTP-сервера |
 | `MEMORY_API_TOKEN` | — | Master токен (включает auth при установке) |
 | `MEMORY_FTS_LANGUAGE` | `simple` | Конфигурация FTS (`russian`, `english` и др.) |
-| `MEMORY_EMBEDDING_PROVIDER` | — | `gemini` или `local` (ONNX) |
-| `GEMINI_API_KEY` | — | API-ключ Google Gemini для эмбеддингов |
+| `OLLAMA_URL` | `http://localhost:11434` | URL сервера Ollama |
+| `OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text-v2-moe` | Модель для эмбеддингов |
 | `MEMORY_AUTO_ARCHIVE` | `true` | Автоархивация |
 | `MEMORY_AUTO_ARCHIVE_DAYS` | `14` | Дней до автоархивации |
 | `MEMORY_CORS_ORIGIN` | `*` | CORS origin для production |

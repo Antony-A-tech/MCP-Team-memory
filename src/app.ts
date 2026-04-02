@@ -125,30 +125,12 @@ async function main(): Promise<void> {
   wsServer.attachToServer(server);
   webServer.setWsServer(wsServer);
 
-  // Embedding provider (optional)
-  // Set MEMORY_EMBEDDING_PROVIDER=gemini + GEMINI_API_KEY for Gemini API
-  // Set MEMORY_EMBEDDING_PROVIDER=local for local ONNX model
-  if (config.embeddingProvider === 'gemini' && config.geminiApiKey) {
-    const { GeminiEmbeddingProvider } = await import('./embedding/gemini.js');
-    const embProvider = new GeminiEmbeddingProvider(config.geminiApiKey);
-    await embProvider.initialize();
-    if (embProvider.isReady()) {
-      await memoryManager.setEmbeddingProvider(embProvider);
-    }
-  } else if (config.embeddingProvider === 'ollama') {
-    const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
-    const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
-    await embProvider.initialize();
-    if (embProvider.isReady()) {
-      await memoryManager.setEmbeddingProvider(embProvider);
-    }
-  } else if (config.embeddingProvider === 'local') {
-    const { LocalEmbeddingProvider } = await import('./embedding/local.js');
-    const embProvider = new LocalEmbeddingProvider(config.embeddingModelDir);
-    await embProvider.initialize();
-    if (embProvider.isReady()) {
-      await memoryManager.setEmbeddingProvider(embProvider);
-    }
+  // Embedding provider — Ollama with nomic-embed-text-v2-moe
+  const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
+  const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
+  await embProvider.initialize();
+  if (embProvider.isReady()) {
+    await memoryManager.setEmbeddingProvider(embProvider);
   }
 
   // Qdrant vector store — shared setup (entries + personal_notes + sessions collections)
