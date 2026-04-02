@@ -16,10 +16,7 @@ export interface AppConfig {
   decayWeights: [number, number, number, number];
   // FTS config
   ftsLanguage: string;  // PostgreSQL text search config: 'simple', 'russian', 'english', etc.
-  // Embedding config
-  embeddingProvider: string | undefined;  // 'local' | 'gemini' | 'ollama' | undefined (disabled)
-  embeddingModelDir: string;
-  geminiApiKey: string | undefined;
+  // Embedding config (Ollama only)
   ollamaUrl: string;
   ollamaEmbeddingModel: string;
   // Qdrant / Vector Store
@@ -52,9 +49,6 @@ export function loadConfig(): AppConfig {
     decayDays: parseIntSafe(process.env.MEMORY_DECAY_DAYS || '30', 30),
     decayWeights,
     ftsLanguage: process.env.MEMORY_FTS_LANGUAGE || 'simple',
-    embeddingProvider: process.env.MEMORY_EMBEDDING_PROVIDER || undefined,
-    embeddingModelDir: process.env.MEMORY_EMBEDDING_MODEL_DIR || 'data/models',
-    geminiApiKey: process.env.GEMINI_API_KEY || undefined,
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
     ollamaEmbeddingModel: process.env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text-v2-moe',
     vectorStore: (process.env.VECTOR_STORE as 'qdrant' | 'pgvector') || 'pgvector',

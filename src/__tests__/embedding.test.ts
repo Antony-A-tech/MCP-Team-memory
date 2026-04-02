@@ -23,7 +23,7 @@ function createMockEmbeddingProvider(ready = true): EmbeddingProvider {
   return {
     dimensions: 768,
     modelName: 'test-model',
-    providerType: 'local',
+    providerType: 'ollama',
     isReady: () => ready,
     embed: vi.fn().mockResolvedValue(new Array(768).fill(0.1)),
   };
@@ -375,51 +375,3 @@ describe('MemoryManager embedding integration', () => {
   });
 });
 
-describe('GeminiEmbeddingProvider', () => {
-  it('constructs correct embed request URL and body', async () => {
-    const mockResponse = {
-      ok: true,
-      json: vi.fn().mockResolvedValue({ embedding: { values: [0.1, 0.2, 0.3] } }),
-    };
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
-
-    try {
-      const { GeminiEmbeddingProvider } = await import('../embedding/gemini.js');
-      const provider = new GeminiEmbeddingProvider('test-key');
-      const result = await provider.embed('hello world', 'query');
-
-      expect(result).toEqual([0.1, 0.2, 0.3]);
-      expect(globalThis.fetch).toHaveBeenCalledWith(
-        expect.stringContaining('embedContent'),
-        expect.objectContaining({
-          method: 'POST',
-          headers: expect.objectContaining({ 'x-goog-api-key': 'test-key' }),
-          body: expect.stringContaining('RETRIEVAL_QUERY'),
-        })
-      );
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-
-  it('handles non-JSON error response gracefully', async () => {
-    // Use 400 (not retryable) to avoid retry delays in test
-    const mockResponse = {
-      ok: false,
-      status: 400,
-      json: vi.fn().mockRejectedValue(new Error('not json')),
-    };
-    const originalFetch = globalThis.fetch;
-    globalThis.fetch = vi.fn().mockResolvedValue(mockResponse);
-
-    try {
-      const { GeminiEmbeddingProvider } = await import('../embedding/gemini.js');
-      const provider = new GeminiEmbeddingProvider('test-key');
-
-      await expect(provider.embed('test')).rejects.toThrow('HTTP 400');
-    } finally {
-      globalThis.fetch = originalFetch;
-    }
-  });
-});

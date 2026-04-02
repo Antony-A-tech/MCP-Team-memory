@@ -34,28 +34,12 @@ if (config.transport === 'http') {
     const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
     await memoryManager.initialize();
 
-    // Embedding provider (optional) — must be set before Qdrant and MCP server creation
-    if (config.embeddingProvider === 'gemini' && config.geminiApiKey) {
-      const { GeminiEmbeddingProvider } = await import('./embedding/gemini.js');
-      const embProvider = new GeminiEmbeddingProvider(config.geminiApiKey);
-      await embProvider.initialize();
-      if (embProvider.isReady()) {
-        await memoryManager.setEmbeddingProvider(embProvider);
-      }
-    } else if (config.embeddingProvider === 'ollama') {
-      const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
-      const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
-      await embProvider.initialize();
-      if (embProvider.isReady()) {
-        await memoryManager.setEmbeddingProvider(embProvider);
-      }
-    } else if (config.embeddingProvider === 'local') {
-      const { LocalEmbeddingProvider } = await import('./embedding/local.js');
-      const embProvider = new LocalEmbeddingProvider(config.embeddingModelDir);
-      await embProvider.initialize();
-      if (embProvider.isReady()) {
-        await memoryManager.setEmbeddingProvider(embProvider);
-      }
+    // Embedding provider — Ollama with nomic-embed-text-v2-moe
+    const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
+    const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
+    await embProvider.initialize();
+    if (embProvider.isReady()) {
+      await memoryManager.setEmbeddingProvider(embProvider);
     }
 
     // Qdrant vector store — shared setup
