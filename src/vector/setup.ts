@@ -16,10 +16,13 @@ export async function setupQdrant(config: AppConfig, memoryManager: MemoryManage
     const { QdrantVectorStore } = await import('./qdrant-store.js');
     const vectorStore = new QdrantVectorStore(config.qdrantUrl, config.qdrantApiKey);
 
-    const dims = memoryManager.getEmbeddingProvider()?.dimensions ?? 768;
+    const provider = memoryManager.getEmbeddingProvider();
+    const dims = provider?.dimensions ?? 768;
+    // Only validate dimensions if provider is ready (not a fallback default)
+    const validateDimensions = !!provider?.isReady();
 
     // Entries collection
-    await vectorStore.ensureCollection('entries', dims);
+    await vectorStore.ensureCollection('entries', dims, { validateDimensions });
     await vectorStore.createPayloadIndex('entries', 'project_id', 'keyword');
     await vectorStore.createPayloadIndex('entries', 'category', 'keyword');
     await vectorStore.createPayloadIndex('entries', 'status', 'keyword');
@@ -27,18 +30,18 @@ export async function setupQdrant(config: AppConfig, memoryManager: MemoryManage
     await vectorStore.createPayloadIndex('entries', 'domain', 'keyword');
 
     // Personal notes collection
-    await vectorStore.ensureCollection('personal_notes', dims);
+    await vectorStore.ensureCollection('personal_notes', dims, { validateDimensions });
     await vectorStore.createPayloadIndex('personal_notes', 'agent_token_id', 'keyword');
     await vectorStore.createPayloadIndex('personal_notes', 'project_id', 'keyword');
     await vectorStore.createPayloadIndex('personal_notes', 'session_id', 'keyword');
 
     // Sessions collection (summaries)
-    await vectorStore.ensureCollection('sessions', dims);
+    await vectorStore.ensureCollection('sessions', dims, { validateDimensions });
     await vectorStore.createPayloadIndex('sessions', 'agent_token_id', 'keyword');
     await vectorStore.createPayloadIndex('sessions', 'project_id', 'keyword');
 
     // Session messages collection (chunked message embeddings, with quantization)
-    await vectorStore.ensureCollection('session_messages', dims, { quantization: 'scalar' });
+    await vectorStore.ensureCollection('session_messages', dims, { quantization: 'scalar', validateDimensions });
     await vectorStore.createPayloadIndex('session_messages', 'agent_token_id', 'keyword');
     await vectorStore.createPayloadIndex('session_messages', 'session_id', 'keyword');
     await vectorStore.createPayloadIndex('session_messages', 'role', 'keyword');

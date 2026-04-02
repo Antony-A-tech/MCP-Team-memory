@@ -19,12 +19,17 @@ export class QdrantVectorStore implements VectorStore {
     const { exists } = await this.client.collectionExists(name);
     if (exists) {
       // Validate dimensions match — model change requires collection recreation
-      const info = await this.client.getCollection(name);
-      const currentDims = (info.config?.params?.vectors as { size?: number })?.size;
-      if (currentDims && currentDims !== dimensions) {
-        logger.warn({ collection: name, currentDims, expectedDims: dimensions },
-          'Collection dimension mismatch — recreating (embedding model changed?)');
-        await this.client.deleteCollection(name);
+      // Only recreate if dimensions are explicitly provided (not a fallback default)
+      if (options?.validateDimensions) {
+        const info = await this.client.getCollection(name);
+        const currentDims = (info.config?.params?.vectors as { size?: number })?.size;
+        if (currentDims && currentDims !== dimensions) {
+          logger.warn({ collection: name, currentDims, expectedDims: dimensions },
+            'Collection dimension mismatch — recreating (embedding model changed)');
+          await this.client.deleteCollection(name);
+        } else {
+          return;
+        }
       } else {
         return;
       }
