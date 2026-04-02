@@ -49,27 +49,45 @@ describe('QdrantVectorStore', () => {
       });
     });
 
-    it('skips creation when collection exists with matching dimensions', async () => {
+    it('skips creation when collection exists (no dimension validation)', async () => {
+      mockClient.collectionExists.mockResolvedValue({ exists: true });
+
+      await store.ensureCollection('test', 768);
+
+      expect(mockClient.getCollection).not.toHaveBeenCalled();
+      expect(mockClient.createCollection).not.toHaveBeenCalled();
+    });
+
+    it('skips recreation when dimensions match and validateDimensions is true', async () => {
       mockClient.collectionExists.mockResolvedValue({ exists: true });
       mockClient.getCollection.mockResolvedValue({ config: { params: { vectors: { size: 768 } } } });
 
-      await store.ensureCollection('test', 768);
+      await store.ensureCollection('test', 768, { validateDimensions: true });
 
       expect(mockClient.createCollection).not.toHaveBeenCalled();
     });
 
-    it('recreates collection when dimensions mismatch', async () => {
+    it('recreates collection on dimension mismatch when validateDimensions is true', async () => {
       mockClient.collectionExists.mockResolvedValue({ exists: true });
       mockClient.getCollection.mockResolvedValue({ config: { params: { vectors: { size: 384 } } } });
       mockClient.deleteCollection = vi.fn().mockResolvedValue(true);
       mockClient.createCollection.mockResolvedValue(true);
 
-      await store.ensureCollection('test', 768);
+      await store.ensureCollection('test', 768, { validateDimensions: true });
 
       expect(mockClient.deleteCollection).toHaveBeenCalledWith('test');
       expect(mockClient.createCollection).toHaveBeenCalledWith('test', expect.objectContaining({
         vectors: { size: 768, distance: 'Cosine' },
       }));
+    });
+
+    it('does NOT recreate on dimension mismatch when validateDimensions is false', async () => {
+      mockClient.collectionExists.mockResolvedValue({ exists: true });
+
+      await store.ensureCollection('test', 768, { validateDimensions: false });
+
+      expect(mockClient.getCollection).not.toHaveBeenCalled();
+      expect(mockClient.createCollection).not.toHaveBeenCalled();
     });
 
     it('applies scalar quantization when requested', async () => {

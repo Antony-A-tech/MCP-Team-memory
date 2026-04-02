@@ -13,6 +13,9 @@ export interface CollectionOptions {
   distance?: 'Cosine' | 'Euclid' | 'Dot';
   quantization?: 'scalar' | 'binary' | null;
   onDisk?: boolean;
+  /** When true, validates that existing collection dimensions match and recreates on mismatch.
+   *  Only set when dimensions come from an initialized embedding provider, not a fallback default. */
+  validateDimensions?: boolean;
 }
 
 export type VectorMatch =
