@@ -154,11 +154,18 @@ async function main(): Promise<void> {
 
   // Session manager (optional — requires agent tokens)
   let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
+  let llmClient: import('./llm/ollama.js').OllamaLlmClient | undefined;
   if (agentTokenStore) {
+    // LLM client for summarization (optional — requires Ollama with LLM model)
+    const { OllamaLlmClient } = await import('./llm/ollama.js');
+    const ollamaLlm = new OllamaLlmClient(config.ollamaUrl, config.ollamaLlmModel);
+    await ollamaLlm.initialize();
+    if (ollamaLlm.isReady()) llmClient = ollamaLlm;
+
     const { SessionStorage } = await import('./sessions/storage.js');
     const { SessionManager } = await import('./sessions/manager.js');
     const sessionStorage = new SessionStorage(storage.getPool());
-    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined, llmClient);
     logger.info('Session manager initialized');
   }
 
@@ -205,7 +212,10 @@ async function main(): Promise<void> {
     // 5. Force-close remaining keep-alive connections
     server.closeAllConnections();
 
-    // 6. Close database pool (also stops auto-archive timer)
+    // 6. Close LLM client
+    await llmClient?.close();
+
+    // 7. Close database pool (also stops auto-archive timer)
     await memoryManager.close();
 
     logger.info('Shutdown complete');

@@ -65,10 +65,17 @@ if (config.transport === 'http') {
       const notesStorage = new PersonalNotesStorage(storage.getPool());
       notesManager = new NotesManager(notesStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
 
+      // LLM client for summarization
+      let llmClient: import('./llm/ollama.js').OllamaLlmClient | undefined;
+      const { OllamaLlmClient } = await import('./llm/ollama.js');
+      const ollamaLlm = new OllamaLlmClient(config.ollamaUrl, config.ollamaLlmModel);
+      await ollamaLlm.initialize();
+      if (ollamaLlm.isReady()) llmClient = ollamaLlm;
+
       const { SessionStorage } = await import('./sessions/storage.js');
       const { SessionManager } = await import('./sessions/manager.js');
       const sessionStorage = new SessionStorage(storage.getPool());
-      sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+      sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined, llmClient);
 
       logger.info('Agent tokens, notes, and sessions managers initialized (stdio)');
     }

@@ -378,13 +378,13 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
       // === Session Import tools ===
       {
         name: 'session_import',
-        description: 'Импортировать сессию Claude Code с сообщениями. Агент читает ~/.claude/ и передаёт данные сюда.',
+        description: 'Импортировать сессию Claude Code с сообщениями. Summary генерируется автоматически через LLM если не указан.',
         inputSchema: {
           type: 'object',
           properties: {
             external_id: { type: 'string', description: 'ID сессии из Claude Code' },
             name: { type: 'string', description: 'Название сессии' },
-            summary: { type: 'string', description: 'Summary сессии (агент генерирует)' },
+            summary: { type: 'string', description: 'Summary сессии (опционально — сервер сгенерирует через LLM)' },
             project_id: { type: 'string', description: 'ID проекта (опционально)' },
             working_directory: { type: 'string' },
             git_branch: { type: 'string' },
@@ -393,7 +393,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             ended_at: { type: 'string', description: 'ISO timestamp' },
             messages: { type: 'array', items: { type: 'object', properties: { role: { type: 'string', enum: ['user', 'assistant', 'system'] }, content: { type: 'string' }, timestamp: { type: 'string' }, tool_names: { type: 'array', items: { type: 'string' } } }, required: ['role', 'content'] } },
           },
-          required: ['summary', 'messages'],
+          required: ['messages'],
         },
       },
       {

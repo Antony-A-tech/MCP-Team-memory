@@ -19,6 +19,7 @@ export interface AppConfig {
   // Embedding config (Ollama only)
   ollamaUrl: string;
   ollamaEmbeddingModel: string;
+  ollamaLlmModel: string;
   // Qdrant / Vector Store
   vectorStore: 'qdrant' | 'pgvector';
   qdrantUrl: string;
@@ -51,6 +52,7 @@ export function loadConfig(): AppConfig {
     ftsLanguage: process.env.MEMORY_FTS_LANGUAGE || 'simple',
     ollamaUrl: process.env.OLLAMA_URL || 'http://localhost:11434',
     ollamaEmbeddingModel: process.env.OLLAMA_EMBEDDING_MODEL || 'nomic-embed-text-v2-moe',
+    ollamaLlmModel: process.env.OLLAMA_LLM_MODEL || 'gemma4:26b',
     vectorStore: (process.env.VECTOR_STORE as 'qdrant' | 'pgvector') || 'pgvector',
     qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
     qdrantApiKey: process.env.QDRANT_API_KEY || undefined,
