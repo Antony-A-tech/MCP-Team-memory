@@ -49,7 +49,7 @@ async function main(): Promise<void> {
 
   // Create Express app
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '50mb' }));  // Large limit for session_import (sessions can be 10-50MB)
 
   // CORS — allow configurable origins
   const allowedOrigin = process.env.MEMORY_CORS_ORIGIN || '*';
@@ -100,8 +100,8 @@ async function main(): Promise<void> {
   // Rate limiting
   app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
 
-  // Mount MCP StreamableHTTP transport
-  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore));
+  // MCP transport is mounted later, after optional managers are created
+  // (see below: mountMcpTransport call after Qdrant + NotesManager setup)
 
   // Mount REST API routes
   const webServer = new WebServer(memoryManager, null, agentTokenStore);
@@ -134,15 +134,13 @@ async function main(): Promise<void> {
     await embProvider.initialize();
     if (embProvider.isReady()) {
       await memoryManager.setEmbeddingProvider(embProvider);
-      memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
     }
   } else if (config.embeddingProvider === 'ollama') {
     const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
-    const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl);
+    const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
     await embProvider.initialize();
     if (embProvider.isReady()) {
       await memoryManager.setEmbeddingProvider(embProvider);
-      memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
     }
   } else if (config.embeddingProvider === 'local') {
     const { LocalEmbeddingProvider } = await import('./embedding/local.js');
@@ -150,9 +148,40 @@ async function main(): Promise<void> {
     await embProvider.initialize();
     if (embProvider.isReady()) {
       await memoryManager.setEmbeddingProvider(embProvider);
-      memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
     }
   }
+
+  // Qdrant vector store — shared setup (entries + personal_notes + sessions collections)
+  const { setupQdrant } = await import('./vector/setup.js');
+  await setupQdrant(config, memoryManager, storage.getPool());
+
+  // Backfill embeddings AFTER Qdrant is set up (so Qdrant-based backfill works)
+  if (memoryManager.getEmbeddingProvider()?.isReady()) {
+    memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
+  }
+
+  // Personal Notes manager (optional — requires agent tokens)
+  let notesManager: import('./notes/manager.js').NotesManager | undefined;
+  if (agentTokenStore) {
+    const { PersonalNotesStorage } = await import('./notes/storage.js');
+    const { NotesManager } = await import('./notes/manager.js');
+    const notesStorage = new PersonalNotesStorage(storage.getPool());
+    notesManager = new NotesManager(notesStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+    logger.info('Personal notes manager initialized');
+  }
+
+  // Session manager (optional — requires agent tokens)
+  let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
+  if (agentTokenStore) {
+    const { SessionStorage } = await import('./sessions/storage.js');
+    const { SessionManager } = await import('./sessions/manager.js');
+    const sessionStorage = new SessionStorage(storage.getPool());
+    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+    logger.info('Session manager initialized');
+  }
+
+  // Mount MCP transport (after all optional managers are created)
+  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager));
 
   // Auto-archive
   if (config.autoArchiveEnabled) {
