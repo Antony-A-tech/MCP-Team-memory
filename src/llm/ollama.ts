@@ -47,7 +47,7 @@ export class OllamaLlmClient {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ model: this.modelName, prompt: 'Hi', stream: false, options: { num_predict: 1 } }),
-        signal: AbortSignal.timeout(30_000),
+        signal: AbortSignal.timeout(120_000), // gemma4:26b cold start loads ~16GB into RAM
       });
       if (!testRes.ok) throw new Error(`Test generate failed: ${testRes.status}`);
       this.ready = true;
