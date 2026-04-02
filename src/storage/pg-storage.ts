@@ -94,6 +94,7 @@ export class PgStorage {
     'hungarian', 'turkish', 'arabic',
   ];
   private ftsLanguage: string;
+  private hasEmbeddingColumn = true;  // set to false after migration 011 drops the column
 
   constructor(databaseUrl: string, ftsLanguage: string = 'simple') {
     // Validate FTS language against allowlist to prevent SQL injection
@@ -127,6 +128,18 @@ export class PgStorage {
     await migrator.run();
 
     await this.ensureDefaultProject();
+
+    // Check if embedding column still exists (dropped by manual migration 011)
+    const { rows: [{ exists }] } = await this.pool.query(`
+      SELECT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'entries' AND column_name = 'embedding'
+      )
+    `);
+    this.hasEmbeddingColumn = exists;
+    if (!exists) {
+      logger.info('embedding column not found — pgvector operations disabled (use Qdrant)');
+    }
 
     logger.info('PgStorage initialized');
   }
@@ -766,7 +779,13 @@ export class PgStorage {
       compact?: boolean;
     }
   ): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
-    // Fall back to regular search when no embedding available
+    // Fall back to regular search when embedding column dropped
+    if (!this.hasEmbeddingColumn) {
+      if (filters?.compact) {
+        return this.search(projectId, query, { ...filters, compact: true as const });
+      }
+      return this.search(projectId, query, filters as any);
+    }
     if (!queryEmbedding) {
       return this.search(projectId, query, filters as any);
     }
@@ -831,16 +850,18 @@ export class PgStorage {
     return this.attachVersions(entries);
   }
 
-  /** Save embedding vector for an entry */
+  /** Save embedding vector for an entry (no-op if embedding column was dropped) */
   async saveEmbedding(id: string, embedding: number[]): Promise<void> {
+    if (!this.hasEmbeddingColumn) return;
     await this.pool.query(
       `UPDATE entries SET embedding = $1::vector WHERE id = $2`,
       [`[${embedding.join(',')}]`, id]
     );
   }
 
-  /** Get entries that have no embedding yet (for backfill) */
+  /** Get entries that have no embedding yet (for backfill). Returns empty if column dropped. */
   async getEntriesWithoutEmbedding(limit: number = 50): Promise<MemoryEntry[]> {
+    if (!this.hasEmbeddingColumn) return [];
     const { rows } = await this.pool.query(
       `SELECT * FROM entries WHERE embedding IS NULL ORDER BY updated_at DESC LIMIT $1`,
       [limit]
@@ -850,6 +871,10 @@ export class PgStorage {
 
   /** Count active entries that have embeddings and total active entries */
   async countEmbeddingStats(): Promise<{ embedded: number; total: number }> {
+    if (!this.hasEmbeddingColumn) {
+      const { rows } = await this.pool.query(`SELECT count(*)::int as total FROM entries`);
+      return { embedded: 0, total: rows[0].total };
+    }
     const { rows } = await this.pool.query(
       `SELECT
          count(*) FILTER (WHERE embedding IS NOT NULL)::int as embedded,
@@ -867,7 +892,7 @@ export class PgStorage {
     return rows.length > 0 ? parseInt(rows[0].value, 10) : 0;
   }
 
-  /** Update stored embedding dimensions, recreate HNSW index for new dimensions */
+  /** Update stored embedding dimensions. Recreates HNSW index only if embedding column exists. */
   async setEmbeddingDimensions(dims: number): Promise<void> {
     if (!Number.isInteger(dims) || dims <= 0 || dims > 10000) {
       throw new Error(`Invalid embedding dimensions: ${dims}`);
@@ -877,6 +902,11 @@ export class PgStorage {
        ON CONFLICT (key) DO UPDATE SET value = $1`,
       [String(dims)]
     );
+
+    if (!this.hasEmbeddingColumn) {
+      logger.info({ dims }, 'Embedding dimensions stored (HNSW index skipped — column dropped)');
+      return;
+    }
 
     // Recreate HNSW index with correct dimensions for the active provider
     // SAFETY: dims is validated above (integer, 1-10000) — no SQL injection risk from interpolation
@@ -890,6 +920,7 @@ export class PgStorage {
 
   /** Clear all embeddings (when switching provider with different dimensions) */
   async clearAllEmbeddings(): Promise<number> {
+    if (!this.hasEmbeddingColumn) return 0;
     const result = await this.pool.query(
       `UPDATE entries SET embedding = NULL WHERE embedding IS NOT NULL`
     );
@@ -989,6 +1020,7 @@ export class PgStorage {
   static __createForTest(pool: pg.Pool): PgStorage {
     const instance = Object.create(PgStorage.prototype) as PgStorage;
     instance['pool'] = pool;
+    instance['hasEmbeddingColumn'] = true;  // assume column exists in tests
     return instance;
   }
 }

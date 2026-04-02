@@ -60,7 +60,7 @@ export function createAuthMiddleware(
         req.agentRole = agentInfo.role;
         // MCP SDK reads req.auth for StreamableHTTPServerTransport → extra.authInfo
         const projectId = req.headers['x-project-id'] as string | undefined;
-        (req as any).auth = { clientId: agentInfo.agentName, scopes: [agentInfo.role], projectId };
+        (req as any).auth = { clientId: agentInfo.agentName, agentTokenId: agentInfo.id, scopes: [agentInfo.role], projectId };
         agentTokenStore.trackLastUsed(agentInfo.id);
         next();
         return;
