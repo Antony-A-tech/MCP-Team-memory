@@ -5,6 +5,7 @@ import { VersionManager } from '../storage/versioning.js';
 import { DEFAULT_PROJECT_ID } from './types.js';
 import logger from '../logger.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
+import type { VectorStore } from '../vector/vector-store.js';
 import type {
   MemoryEntry,
   CompactMemoryEntry,
@@ -19,7 +20,8 @@ import type {
   MemoryStats,
   WSEvent,
   WSEventType,
-  ConflictError
+  ConflictError,
+  ProjectDomain
 } from './types.js';
 
 type EventListener = (event: WSEvent) => void;
@@ -29,6 +31,7 @@ export class MemoryManager {
   private auditLogger: AuditLogger | null = null;
   private versionManager: VersionManager | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
+  private vectorStore: VectorStore | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
 
@@ -43,9 +46,18 @@ export class MemoryManager {
     logger.info('Memory Manager initialized');
   }
 
+  setVectorStore(store: VectorStore): void {
+    this.vectorStore = store;
+  }
+
+  getVectorStore(): VectorStore | null {
+    return this.vectorStore;
+  }
+
   async close(): Promise<void> {
     this.stopAutoArchive();
     await this.embeddingProvider?.close?.();
+    await this.vectorStore?.close();
     await this.storage.close();
   }
 
@@ -91,6 +103,42 @@ export class MemoryManager {
     return this.storage.deleteProject(id);
   }
 
+  // === Project Domains ===
+
+  async getProjectDomains(projectId: string): Promise<ProjectDomain[]> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.getProjectDomains(pid);
+  }
+
+  async addProjectDomain(projectId: string, params: {
+    slug: string;
+    name: string;
+    description?: string;
+    icon?: string;
+  }): Promise<ProjectDomain> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.addProjectDomain(pid, params);
+  }
+
+  async updateProjectDomain(projectId: string, slug: string, updates: {
+    name?: string;
+    description?: string;
+    icon?: string;
+  }): Promise<ProjectDomain | undefined> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.updateProjectDomain(pid, slug, updates);
+  }
+
+  async removeProjectDomain(projectId: string, slug: string): Promise<{ deleted: boolean; entriesAffected: number }> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.removeProjectDomain(pid, slug);
+  }
+
+  async countEntriesByDomain(projectId: string, slug: string): Promise<number> {
+    const pid = projectId || DEFAULT_PROJECT_ID;
+    return this.storage.countEntriesByDomain(pid, slug);
+  }
+
   // === Entries ===
 
   async read(params: ReadParams): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
@@ -104,35 +152,117 @@ export class MemoryManager {
 
     const cat = category === 'all' ? undefined : category;
     const filters = { category: cat, domain, status, tags, limit, offset };
+    const isCompact = mode === 'compact';
 
-    if (mode === 'compact') {
-      if (search) {
-        if (this.embeddingProvider?.isReady()) {
-          try {
-            const queryEmbedding = await this.embeddingProvider.embed(search, 'query');
-            return this.storage.hybridSearch(projectId, search, queryEmbedding, { ...filters, compact: true as const });
-          } catch (err) {
-            logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
-          }
-        }
-        return this.storage.search(projectId, search, { ...filters, compact: true as const });
-      }
-      return this.storage.getAll(projectId, { ...filters, compact: true as const });
-    }
-
-    // mode === 'full'
     if (search) {
-      if (this.embeddingProvider?.isReady()) {
+      // Try Qdrant vector search first (when available)
+      if (this.embeddingProvider?.isReady() && this.vectorStore) {
+        try {
+          return await this.qdrantHybridSearch(projectId, search, filters, isCompact);
+        } catch (err) {
+          logger.warn({ err }, 'Qdrant hybrid search failed, falling back');
+        }
+      }
+      // Fallback: pgvector hybrid search (if embedding column still exists)
+      if (this.embeddingProvider?.isReady() && !this.vectorStore) {
         try {
           const queryEmbedding = await this.embeddingProvider.embed(search, 'query');
+          if (isCompact) {
+            return this.storage.hybridSearch(projectId, search, queryEmbedding, { ...filters, compact: true as const });
+          }
           return this.storage.hybridSearch(projectId, search, queryEmbedding, filters);
         } catch (err) {
-          logger.warn({ err }, 'Hybrid search failed, falling back to FTS');
+          logger.warn({ err }, 'pgvector hybrid search failed, falling back to FTS');
         }
+      }
+      // Final fallback: FTS only
+      if (isCompact) {
+        return this.storage.search(projectId, search, { ...filters, compact: true as const });
       }
       return this.storage.search(projectId, search, filters);
     }
+
+    if (isCompact) {
+      return this.storage.getAll(projectId, { ...filters, compact: true as const });
+    }
     return this.storage.getAll(projectId, filters);
+  }
+
+  /** Qdrant-based hybrid search: FTS from PG + vector from Qdrant, merged */
+  private async qdrantHybridSearch(
+    projectId: string,
+    query: string,
+    filters: { category?: string; domain?: string; status?: string; tags?: string[]; limit?: number; offset?: number },
+    compact: boolean,
+  ): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
+    const queryVector = await this.embeddingProvider!.embed(query, 'query');
+
+    // Build Qdrant filter
+    const qdrantFilter: import('../vector/vector-store.js').VectorFilter = {
+      must: [{ key: 'project_id', match: { value: projectId } }],
+    };
+    if (filters.category) qdrantFilter.must!.push({ key: 'category', match: { value: filters.category } });
+    if (filters.status) qdrantFilter.must!.push({ key: 'status', match: { value: filters.status } });
+    if (filters.domain) qdrantFilter.must!.push({ key: 'domain', match: { value: filters.domain } });
+
+    const limit = filters.limit ?? 50;
+
+    // Parallel: FTS from PG + vector from Qdrant
+    const [ftsResults, vectorResults] = await Promise.all([
+      this.storage.search(projectId, query, { ...filters, limit, compact: false }),
+      this.vectorStore!.search('entries', queryVector, qdrantFilter, limit),
+    ]);
+
+    // Merge results by ID, weighted scoring
+    const ftsMap = new Map<string, { entry: MemoryEntry; score: number }>();
+    (ftsResults as MemoryEntry[]).forEach((entry, i) => {
+      ftsMap.set(entry.id, { entry, score: 1 - (i / Math.max(ftsResults.length, 1)) });
+    });
+
+    const vectorMap = new Map<string, number>();
+    vectorResults.forEach(r => {
+      vectorMap.set(r.payload.entry_id as string, r.score);
+    });
+
+    // Combine all unique IDs
+    const allIds = new Set([...ftsMap.keys(), ...vectorMap.keys()]);
+    const scored: Array<{ id: string; entry?: MemoryEntry; score: number }> = [];
+
+    for (const id of allIds) {
+      const ftsScore = ftsMap.get(id)?.score ?? 0;
+      const vecScore = vectorMap.get(id) ?? 0;
+      const combined = 0.4 * ftsScore + 0.6 * vecScore;
+      scored.push({ id, entry: ftsMap.get(id)?.entry, score: combined });
+    }
+
+    scored.sort((a, b) => b.score - a.score);
+    const topIds = scored.slice(0, limit);
+
+    // Fetch entries that came from vector search but not FTS
+    const missingIds = topIds.filter(s => !s.entry).map(s => s.id);
+    if (missingIds.length > 0) {
+      const fetched = await this.storage.getByIds(projectId, missingIds);
+      const fetchedMap = new Map(fetched.map(e => [e.id, e]));
+      topIds.forEach(s => { if (!s.entry) s.entry = fetchedMap.get(s.id); });
+    }
+
+    const entries = topIds.filter(s => s.entry).map(s => s.entry!);
+
+    if (compact) {
+      return entries.map(e => ({
+        id: e.id,
+        projectId: e.projectId,
+        title: e.title,
+        category: e.category,
+        domain: e.domain,
+        status: e.status,
+        priority: e.priority,
+        tags: e.tags,
+        pinned: e.pinned,
+        updatedAt: e.updatedAt,
+      }));
+    }
+    return entries;
   }
 
   async write(params: WriteParams): Promise<MemoryEntry> {
@@ -166,11 +296,25 @@ export class MemoryManager {
     }).catch(err => logger.error({ err }, 'Audit log failed'));
 
     // Fire-and-forget: generate embedding for new entry
-    // Fire-and-forget: embeddings are eventually consistent.
-    // If server crashes before completion, backfill recovers missing embeddings on next startup.
+    // Embeddings are eventually consistent. Backfill recovers missing embeddings on next startup.
     if (this.embeddingProvider?.isReady()) {
       this.embeddingProvider.embed(`${created.title} ${created.content}`, 'document')
-        .then(emb => this.storage.saveEmbedding(created.id, emb))
+        .then(async (emb) => {
+          // Upsert to Qdrant if available
+          if (this.vectorStore) {
+            await this.vectorStore.upsert('entries', created.id, emb, {
+              entry_id: created.id,
+              project_id: created.projectId,
+              category: created.category,
+              domain: created.domain ?? '',
+              status: created.status,
+              tags: created.tags,
+              author: created.author,
+            });
+          }
+          // Also save to pgvector for backward compat during migration period
+          await this.storage.saveEmbedding(created.id, emb);
+        })
         .catch(err => logger.error({ err, entryId: created.id }, 'Embedding generation failed'));
     }
 
@@ -219,11 +363,37 @@ export class MemoryManager {
         ),
       }).catch(err => logger.error({ err }, 'Audit log failed'));
 
-      // Fire-and-forget: regenerate embedding if content or title changed
-      if (this.embeddingProvider?.isReady() && (params.title || params.content)) {
+      // Fire-and-forget: update Qdrant
+      const payloadFields = { status: params.status, tags: params.tags, domain: params.domain };
+      const hasPayloadChange = Object.values(payloadFields).some(v => v !== undefined);
+      const hasContentChange = !!(params.title || params.content);
+
+      if (hasContentChange && this.embeddingProvider?.isReady()) {
+        // Re-embed + full upsert (vector + payload)
         this.embeddingProvider.embed(`${updated.title} ${updated.content}`, 'document')
-          .then(emb => this.storage.saveEmbedding(updated.id, emb))
+          .then(async (emb) => {
+            if (this.vectorStore) {
+              await this.vectorStore.upsert('entries', updated.id, emb, {
+                entry_id: updated.id,
+                project_id: updated.projectId,
+                category: updated.category,
+                domain: updated.domain ?? '',
+                status: updated.status,
+                tags: updated.tags,
+                author: updated.author,
+              });
+            }
+            await this.storage.saveEmbedding(updated.id, emb);
+          })
           .catch(err => logger.error({ err, entryId: updated.id }, 'Embedding regeneration failed'));
+      } else if (hasPayloadChange && this.vectorStore) {
+        // Metadata-only change — update Qdrant payload without re-embedding
+        const payload: Record<string, unknown> = {};
+        if (params.status !== undefined) payload.status = updated.status;
+        if (params.tags !== undefined) payload.tags = updated.tags;
+        if (params.domain !== undefined) payload.domain = updated.domain ?? '';
+        this.vectorStore.setPayload('entries', updated.id, payload)
+          .catch(err => logger.warn({ err, entryId: updated.id }, 'Failed to update Qdrant payload'));
       }
 
       return updated;
@@ -245,6 +415,13 @@ export class MemoryManager {
           action: 'archive',
           actor: archived.author,
         }).catch(err => logger.error({ err }, 'Audit log failed'));
+
+        // Update Qdrant payload to reflect archived status
+        if (this.vectorStore) {
+          this.vectorStore.setPayload('entries', id, { status: 'archived' })
+            .catch(err => logger.warn({ err, entryId: id }, 'Failed to update Qdrant status on archive'));
+        }
+
         return true;
       }
       return false;
@@ -261,6 +438,16 @@ export class MemoryManager {
         action: 'delete',
         actor: existing?.author || 'system',
       }).catch(err => logger.error({ err }, 'Audit log failed'));
+
+      // Clean up vector from Qdrant (awaited — ensures consistency)
+      if (this.vectorStore) {
+        try {
+          await this.vectorStore.delete('entries', [id]);
+        } catch (err) {
+          logger.warn({ err, entryId: id }, 'Failed to delete vector from Qdrant');
+        }
+      }
+
       return true;
     }
     return false;
@@ -320,16 +507,26 @@ export class MemoryManager {
     dimensions: number | null;
     entriesEmbedded: number;
     entriesTotal: number;
+    vectorStore: string | null;
   }> {
     const p = this.embeddingProvider;
     const embStats = await this.storage.countEmbeddingStats();
+
+    // When using Qdrant and pgvector column is gone, get embedded count from Qdrant
+    let entriesEmbedded = embStats.embedded;
+    if (this.vectorStore && entriesEmbedded === 0 && embStats.total > 0) {
+      const qdrantCount = await this.vectorStore.getPointCount('entries');
+      if (qdrantCount > 0) entriesEmbedded = qdrantCount;
+    }
+
     return {
       provider: p?.providerType ?? null,
       model: p?.modelName ?? null,
       isReady: p?.isReady() ?? false,
       dimensions: p?.dimensions ?? null,
-      entriesEmbedded: embStats.embedded,
+      entriesEmbedded,
       entriesTotal: embStats.total,
+      vectorStore: this.vectorStore ? 'qdrant' : 'pgvector',
     };
   }
 
@@ -337,8 +534,33 @@ export class MemoryManager {
   private static readonly BATCH_CHUNK_SIZE = 100;
 
   /** Backfill embeddings for entries that don't have one yet (loops until all done) */
+  /** Save embedding to both pgvector and Qdrant (if available) */
+  private async saveEmbeddingDual(entry: MemoryEntry, embedding: number[]): Promise<void> {
+    if (this.vectorStore) {
+      await this.vectorStore.upsert('entries', entry.id, embedding, {
+        entry_id: entry.id,
+        project_id: entry.projectId,
+        category: entry.category,
+        domain: entry.domain ?? '',
+        status: entry.status,
+        tags: entry.tags,
+        author: entry.author,
+      });
+    }
+    await this.storage.saveEmbedding(entry.id, embedding);
+  }
+
   async backfillEmbeddings(batchSize: number = 100): Promise<number> {
     if (!this.embeddingProvider?.isReady()) return 0;
+
+    // If vectorStore is available and pgvector column is dropped, use Qdrant-based backfill
+    if (this.vectorStore) {
+      const entries = await this.storage.getEntriesWithoutEmbedding(batchSize);
+      if (entries.length === 0) {
+        // pgvector column might be dropped — do Qdrant-only backfill for ALL entries
+        return this.backfillQdrant(batchSize);
+      }
+    }
 
     const provider = this.embeddingProvider;
     let totalCount = 0;
@@ -359,7 +581,7 @@ export class MemoryManager {
             const embeddings = await provider.embedBatch(texts, 'document');
             // TODO: optimize with batch INSERT ... VALUES (...), (...) for large backfills
             for (let j = 0; j < chunk.length; j++) {
-              await this.storage.saveEmbedding(chunk[j].id, embeddings[j]);
+              await this.saveEmbeddingDual(chunk[j], embeddings[j]);
               batchCount++;
             }
           } catch (err) {
@@ -367,7 +589,7 @@ export class MemoryManager {
             for (const entry of chunk) {
               try {
                 const embedding = await provider.embed(`${entry.title} ${entry.content}`, 'document');
-                await this.storage.saveEmbedding(entry.id, embedding);
+                await this.saveEmbeddingDual(entry, embedding);
                 batchCount++;
               } catch (seqErr) {
                 logger.error({ err: seqErr, entryId: entry.id }, 'Sequential embed fallback failed');
@@ -380,7 +602,7 @@ export class MemoryManager {
         for (const entry of entries) {
           try {
             const embedding = await provider.embed(`${entry.title} ${entry.content}`, 'document');
-            await this.storage.saveEmbedding(entry.id, embedding);
+            await this.saveEmbeddingDual(entry, embedding);
             batchCount++;
           } catch (err) {
             logger.error({ err, entryId: entry.id }, 'Embedding backfill failed for entry');
@@ -397,6 +619,79 @@ export class MemoryManager {
 
     if (totalCount > 0) {
       logger.info({ totalCount }, 'Backfill complete');
+    }
+    return totalCount;
+  }
+
+  /**
+   * Qdrant-only backfill: reads ALL entries from PG, embeds them, upserts to Qdrant.
+   * Used when pgvector embedding column has been dropped (migration 011).
+   * Safe to re-run — Qdrant upserts are idempotent.
+   */
+  /**
+   * Qdrant-only backfill: reads ALL entries from PG, embeds one-by-one, upserts to Qdrant.
+   * Used when pgvector embedding column has been dropped (migration 011).
+   * Sequential processing ensures long entries don't crash the batch.
+   * Safe to re-run — Qdrant upserts are idempotent.
+   */
+  private async backfillQdrant(batchSize: number = 100): Promise<number> {
+    if (!this.embeddingProvider?.isReady() || !this.vectorStore) return 0;
+
+    // Skip if Qdrant already has all entries (avoids redundant re-embedding on every restart)
+    const qdrantCount = await this.vectorStore.getPointCount('entries');
+    const pgCount = await this.storage.count();
+    if (qdrantCount >= 0 && pgCount >= 0 && qdrantCount >= pgCount) {
+      logger.info({ qdrantCount, pgCount }, 'Qdrant backfill skipped — already up to date');
+      return 0;
+    }
+
+    const provider = this.embeddingProvider;
+    let totalCount = 0;
+    let failed = 0;
+
+    // Gather entries from ALL projects
+    const allProjects = await this.storage.listProjects();
+    const projectIds = [DEFAULT_PROJECT_ID, ...allProjects.map(p => p.id).filter(id => id !== DEFAULT_PROJECT_ID)];
+
+    for (const projectId of projectIds) {
+      let offset = 0;
+      // eslint-disable-next-line no-constant-condition
+      while (true) {
+        const entries = await this.storage.getAll(projectId, {
+          limit: batchSize,
+          offset,
+          compact: false,
+        }) as MemoryEntry[];
+
+        if (entries.length === 0) break;
+
+        for (const entry of entries) {
+          try {
+            const text = `${entry.title} ${entry.content}`;
+            const embedding = await provider.embed(text, 'document');
+            await this.vectorStore!.upsert('entries', entry.id, embedding, {
+              entry_id: entry.id,
+              project_id: entry.projectId,
+              category: entry.category,
+              domain: entry.domain ?? '',
+              status: entry.status,
+              tags: entry.tags,
+              author: entry.author,
+            });
+            totalCount++;
+          } catch (err) {
+            failed++;
+            logger.warn({ err, entryId: entry.id }, 'Qdrant backfill: skipped entry');
+          }
+        }
+
+        logger.info({ totalCount, failed, projectId, offset }, 'Qdrant backfill progress');
+        offset += entries.length;
+      }
+    }
+
+    if (totalCount > 0) {
+      logger.info({ totalCount, failed }, 'Qdrant backfill complete');
     }
     return totalCount;
   }
@@ -529,7 +824,20 @@ export class MemoryManager {
 
     if (project?.description) {
       lines.push(`**Описание:** ${project.description}`);
-      lines.push(`**Домены:** ${project.domains.join(', ')}`);
+      lines.push('');
+    }
+
+    // Rich domain list for agents
+    const projectDomains = await this.storage.getProjectDomains(pid);
+    if (projectDomains.length > 0) {
+      lines.push('## Домены проекта');
+      lines.push('При записи в память используйте один из этих доменов (поле `domain`):');
+      for (const d of projectDomains) {
+        const desc = d.description ? ` — ${d.description}` : '';
+        lines.push(`- \`${d.slug}\` (${d.name})${desc}`);
+      }
+      lines.push('');
+      lines.push('Если запись не относится к конкретному домену — оставьте domain пустым.');
       lines.push('');
     }
 

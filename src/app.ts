@@ -49,7 +49,7 @@ async function main(): Promise<void> {
 
   // Create Express app
   const app = express();
-  app.use(express.json({ limit: '1mb' }));
+  app.use(express.json({ limit: '50mb' }));  // Large limit for session_import (sessions can be 10-50MB)
 
   // CORS — allow configurable origins
   const allowedOrigin = process.env.MEMORY_CORS_ORIGIN || '*';
@@ -100,8 +100,8 @@ async function main(): Promise<void> {
   // Rate limiting
   app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
 
-  // Mount MCP StreamableHTTP transport
-  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore));
+  // MCP transport is mounted later, after optional managers are created
+  // (see below: mountMcpTransport call after Qdrant + NotesManager setup)
 
   // Mount REST API routes
   const webServer = new WebServer(memoryManager, null, agentTokenStore);
@@ -125,34 +125,128 @@ async function main(): Promise<void> {
   wsServer.attachToServer(server);
   webServer.setWsServer(wsServer);
 
-  // Embedding provider (optional)
-  // Set MEMORY_EMBEDDING_PROVIDER=gemini + GEMINI_API_KEY for Gemini API
-  // Set MEMORY_EMBEDDING_PROVIDER=local for local ONNX model
-  if (config.embeddingProvider === 'gemini' && config.geminiApiKey) {
-    const { GeminiEmbeddingProvider } = await import('./embedding/gemini.js');
-    const embProvider = new GeminiEmbeddingProvider(config.geminiApiKey);
-    await embProvider.initialize();
-    if (embProvider.isReady()) {
-      await memoryManager.setEmbeddingProvider(embProvider);
-      memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
+  // Embedding provider — Ollama with nomic-embed-text-v2-moe
+  const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
+  const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
+  await embProvider.initialize();
+  if (embProvider.isReady()) {
+    await memoryManager.setEmbeddingProvider(embProvider);
+  }
+
+  // Qdrant vector store — shared setup (entries + personal_notes + sessions collections)
+  const { setupQdrant } = await import('./vector/setup.js');
+  await setupQdrant(config, memoryManager, storage.getPool());
+
+  // Backfill embeddings AFTER Qdrant is set up (so Qdrant-based backfill works)
+  if (memoryManager.getEmbeddingProvider()?.isReady()) {
+    memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
+  }
+
+  // Personal Notes manager (optional — requires agent tokens)
+  let notesManager: import('./notes/manager.js').NotesManager | undefined;
+  if (agentTokenStore) {
+    const { PersonalNotesStorage } = await import('./notes/storage.js');
+    const { NotesManager } = await import('./notes/manager.js');
+    const notesStorage = new PersonalNotesStorage(storage.getPool());
+    notesManager = new NotesManager(notesStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined);
+    logger.info('Personal notes manager initialized');
+  }
+
+  // Session manager (optional — requires agent tokens)
+  let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
+  let llmClient: import('./llm/ollama.js').OllamaLlmClient | undefined;
+  if (agentTokenStore) {
+    // LLM client for summarization (optional — requires Ollama with LLM model)
+    const { OllamaLlmClient } = await import('./llm/ollama.js');
+    const ollamaLlm = new OllamaLlmClient(config.ollamaUrl, config.ollamaLlmModel);
+    await ollamaLlm.initialize();
+    if (ollamaLlm.isReady()) llmClient = ollamaLlm;
+
+    const { SessionStorage } = await import('./sessions/storage.js');
+    const { SessionManager } = await import('./sessions/manager.js');
+    const sessionStorage = new SessionStorage(storage.getPool());
+    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined, llmClient);
+    sessionManager.startWorker(30); // Process queued sessions every 30 sec
+    logger.info('Session manager initialized with background worker');
+  }
+
+  // AI Chat endpoint
+  const MAX_CHAT_SESSIONS = 100;
+  const CHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
+  type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
+  const chatSessions = new Map<string, { messages: ChatMessage[]; lastActive: number }>();
+
+  function evictStaleSessions() {
+    const now = Date.now();
+    for (const [id, session] of chatSessions) {
+      if (now - session.lastActive > CHAT_SESSION_TTL_MS) chatSessions.delete(id);
     }
-  } else if (config.embeddingProvider === 'ollama') {
-    const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
-    const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl);
-    await embProvider.initialize();
-    if (embProvider.isReady()) {
-      await memoryManager.setEmbeddingProvider(embProvider);
-      memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
-    }
-  } else if (config.embeddingProvider === 'local') {
-    const { LocalEmbeddingProvider } = await import('./embedding/local.js');
-    const embProvider = new LocalEmbeddingProvider(config.embeddingModelDir);
-    await embProvider.initialize();
-    if (embProvider.isReady()) {
-      await memoryManager.setEmbeddingProvider(embProvider);
-      memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
+    // Hard cap: evict oldest if still over limit
+    if (chatSessions.size > MAX_CHAT_SESSIONS) {
+      const sorted = [...chatSessions.entries()].sort((a, b) => a[1].lastActive - b[1].lastActive);
+      for (let i = 0; i < sorted.length - MAX_CHAT_SESSIONS; i++) chatSessions.delete(sorted[i][0]);
     }
   }
+
+  app.post('/api/chat', async (req, res) => {
+    if (!llmClient?.isReady()) {
+      res.status(503).json({ error: 'LLM not available' });
+      return;
+    }
+    const { message, session_id } = req.body;
+    if (!message || typeof message !== 'string') {
+      res.status(400).json({ error: 'message is required' });
+      return;
+    }
+    if (message.length > 10_000) {
+      res.status(400).json({ error: 'Message too long (max 10,000 characters)' });
+      return;
+    }
+
+    evictStaleSessions();
+
+    const chatId = session_id || 'default';
+    if (!chatSessions.has(chatId)) {
+      chatSessions.set(chatId, {
+        messages: [{ role: 'system', content: 'You are a helpful AI assistant. Respond in the same language as the user. Be concise — keep answers under 300 words.' }],
+        lastActive: Date.now(),
+      });
+    }
+    const session = chatSessions.get(chatId)!;
+    session.lastActive = Date.now();
+    session.messages.push({ role: 'user', content: message });
+
+    // Rolling window: keep system prompt + last 30 messages
+    if (session.messages.length > 31) {
+      const system = session.messages[0];
+      session.messages = [system, ...session.messages.slice(-30)];
+    }
+
+    try {
+      const reply = await llmClient.chat(session.messages);
+      session.messages.push({ role: 'assistant', content: reply });
+      res.json({ reply, model: llmClient.modelName });
+    } catch (err) {
+      logger.error({ err }, 'Chat generation failed');
+      res.status(500).json({ error: 'Generation failed' });
+    }
+  });
+
+  app.get('/api/chat/status', (_req, res) => {
+    res.json({
+      available: !!llmClient?.isReady(),
+      model: llmClient?.modelName ?? null,
+    });
+  });
+
+  app.delete('/api/chat', (req, res) => {
+    const chatId = req.body?.session_id || (req.query.session_id as string) || 'default';
+    chatSessions.delete(chatId);
+    res.json({ ok: true });
+  });
+
+  // Mount MCP transport (after all optional managers are created)
+  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager));
 
   // Auto-archive
   if (config.autoArchiveEnabled) {
@@ -194,7 +288,11 @@ async function main(): Promise<void> {
     // 5. Force-close remaining keep-alive connections
     server.closeAllConnections();
 
-    // 6. Close database pool (also stops auto-archive timer)
+    // 6. Stop session queue worker and close LLM client
+    sessionManager?.stopWorker();
+    await llmClient?.close();
+
+    // 7. Close database pool (also stops auto-archive timer)
     await memoryManager.close();
 
     logger.info('Shutdown complete');

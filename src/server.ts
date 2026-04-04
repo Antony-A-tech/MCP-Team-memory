@@ -42,18 +42,27 @@ import {
 } from './memory/validation.js';
 import { exportEntries, type ExportFormat } from './export/exporter.js';
 import type { AgentTokenStore } from './auth/agent-tokens.js';
+import type { NotesManager } from './notes/manager.js';
+import type { SessionManager } from './sessions/manager.js';
+import { NoteWriteSchema, NoteReadSchema, NoteUpdateSchema, NoteDeleteSchema, NoteSearchSchema } from './notes/validation.js';
+import { SessionImportSchema, SessionListSchema, SessionSearchSchema, SessionReadSchema, SessionMessageSearchSchema, SessionDeleteSchema } from './sessions/validation.js';
 
-export function buildMcpServer(memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore): Server {
+export function buildMcpServer(
+  memoryManager: MemoryManager,
+  agentTokenStore?: AgentTokenStore,
+  notesManager?: NotesManager,
+  sessionManager?: SessionManager,
+): Server {
   const server = new Server(
-    { name: 'team-memory', version: '2.0.0' },
+    { name: 'team-memory', version: '3.0.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
-  setupHandlers(server, memoryManager, agentTokenStore);
+  setupHandlers(server, memoryManager, agentTokenStore, notesManager, sessionManager);
   return server;
 }
 
-function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore): void {
+function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager, sessionManager?: SessionManager): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Tool[] = [
       {
@@ -107,7 +116,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
               enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions'],
               description: 'Категория записи'
             },
-            domain: { type: 'string', description: 'Домен: backend, frontend, infrastructure, devops, database, testing' },
+            domain: { type: 'string', description: 'Домен проекта. Получите актуальный список через memory_onboard. Стандартные: backend, frontend, infrastructure, devops, database, testing. Проект может содержать дополнительные кастомные домены.' },
             title: { type: 'string', description: 'Заголовок записи' },
             content: { type: 'string', description: 'Содержимое записи' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Теги для категоризации' },
@@ -133,7 +142,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             expected_version: { type: 'number', description: 'Ожидаемая версия для optimistic locking. Если текущая версия не совпадает, вернётся ошибка конфликта.' },
             title: { type: 'string', description: 'Новый заголовок' },
             content: { type: 'string', description: 'Новое содержимое' },
-            domain: { type: 'string', description: 'Новый домен' },
+            domain: { type: 'string', description: 'Домен проекта. Получите актуальный список через memory_onboard. Стандартные: backend, frontend, infrastructure, devops, database, testing. Проект может содержать дополнительные кастомные домены.' },
             status: { type: 'string', enum: ['active', 'completed', 'archived'], description: 'Новый статус' },
             tags: { type: 'array', items: { type: 'string' }, description: 'Новые теги' },
             priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'], description: 'Новый приоритет' },
@@ -287,6 +296,171 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             project_id: { type: 'string', description: 'ID проекта. Если не указан — берётся из заголовка X-Project-Id.' },
           },
         }
+      },
+      // === Personal Notes tools ===
+      {
+        name: 'note_write',
+        description: 'Создать личную заметку. Привязана к вашему токену — другие агенты не видят. Можно привязать к проекту или сессии.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            title: { type: 'string', description: 'Заголовок заметки' },
+            content: { type: 'string', description: 'Содержимое заметки' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Теги' },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            project_id: { type: 'string', description: 'ID проекта (опционально)' },
+            session_id: { type: 'string', description: 'ID импортированной сессии (опционально)' },
+          },
+          required: ['title', 'content'],
+        },
+      },
+      {
+        name: 'note_read',
+        description: 'Читать свои личные заметки. Фильтрация по тегам, проекту, сессии, статусу.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            search: { type: 'string', description: 'Поиск по ключевым словам' },
+            tags: { type: 'array', items: { type: 'string' } },
+            project_id: { type: 'string' },
+            session_id: { type: 'string' },
+            status: { type: 'string', enum: ['active', 'archived'] },
+            mode: { type: 'string', enum: ['compact', 'full'], default: 'compact' },
+            limit: { type: 'number', default: 50 },
+            offset: { type: 'number', default: 0 },
+          },
+        },
+      },
+      {
+        name: 'note_update',
+        description: 'Обновить свою личную заметку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'UUID заметки' },
+            title: { type: 'string' },
+            content: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+            priority: { type: 'string', enum: ['low', 'medium', 'high', 'critical'] },
+            status: { type: 'string', enum: ['active', 'archived'] },
+            project_id: { type: ['string', 'null'] },
+            session_id: { type: ['string', 'null'] },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'note_delete',
+        description: 'Удалить или архивировать свою личную заметку.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            id: { type: 'string', description: 'UUID заметки' },
+            archive: { type: 'boolean', default: true, description: 'Архивировать вместо удаления' },
+          },
+          required: ['id'],
+        },
+      },
+      {
+        name: 'note_search',
+        description: 'Семантический поиск по личным заметкам через Qdrant.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Поисковый запрос' },
+            project_id: { type: 'string' },
+            session_id: { type: 'string' },
+            limit: { type: 'number', default: 10 },
+          },
+          required: ['query'],
+        },
+      },
+      // === Session Import tools ===
+      {
+        name: 'session_import',
+        description: 'Импортировать сессию Claude Code с сообщениями. Summary генерируется автоматически через LLM если не указан.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            external_id: { type: 'string', description: 'ID сессии из Claude Code' },
+            name: { type: 'string', description: 'Название сессии' },
+            summary: { type: 'string', description: 'Summary сессии (опционально — сервер сгенерирует через LLM)' },
+            project_id: { type: 'string', description: 'ID проекта (опционально)' },
+            working_directory: { type: 'string' },
+            git_branch: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+            started_at: { type: 'string', description: 'ISO timestamp' },
+            ended_at: { type: 'string', description: 'ISO timestamp' },
+            messages: { type: 'array', items: { type: 'object', properties: { role: { type: 'string', enum: ['user', 'assistant', 'system'] }, content: { type: 'string' }, timestamp: { type: 'string' }, tool_names: { type: 'array', items: { type: 'string' } } }, required: ['role', 'content'] } },
+          },
+          required: ['messages'],
+        },
+      },
+      {
+        name: 'session_list',
+        description: 'Список импортированных сессий. Фильтрация по проекту, тегам, датам.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string' },
+            tags: { type: 'array', items: { type: 'string' } },
+            date_from: { type: 'string' },
+            date_to: { type: 'string' },
+            search: { type: 'string' },
+            limit: { type: 'number', default: 20 },
+            offset: { type: 'number', default: 0 },
+          },
+        },
+      },
+      {
+        name: 'session_search',
+        description: 'Семантический поиск по summary сессий через Qdrant. Найдёт сессию по смыслу.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Поисковый запрос' },
+            project_id: { type: 'string' },
+            limit: { type: 'number', default: 10 },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'session_read',
+        description: 'Прочитать сессию с сообщениями. Пагинация по индексам сообщений.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'UUID сессии' },
+            message_from: { type: 'number', default: 0 },
+            message_to: { type: 'number' },
+          },
+          required: ['session_id'],
+        },
+      },
+      {
+        name: 'session_message_search',
+        description: 'Семантический поиск внутри сессии или по всем сообщениям. Находит конкретные сообщения.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            query: { type: 'string', description: 'Поисковый запрос' },
+            session_id: { type: 'string', description: 'UUID сессии (опционально — если не указан, ищет по всем)' },
+            limit: { type: 'number', default: 10 },
+          },
+          required: ['query'],
+        },
+      },
+      {
+        name: 'session_delete',
+        description: 'Удалить импортированную сессию со всеми сообщениями.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            session_id: { type: 'string', description: 'UUID сессии' },
+          },
+          required: ['session_id'],
+        },
       },
     ];
     return { tools };
@@ -677,6 +851,195 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           return { content: [{ type: 'text', text: summary }] };
         }
 
+        // === Personal Notes handlers ===
+
+        case 'note_write': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteWriteSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          // note_write requires agent token — master cannot create personal notes (no owner)
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required to create personal notes' }], isError: true };
+          const note = await notesManager.write(agentTokenId, {
+            title: parsed.data.title,
+            content: parsed.data.content,
+            tags: parsed.data.tags,
+            priority: parsed.data.priority,
+            projectId: parsed.data.project_id ?? null,
+            sessionId: parsed.data.session_id ?? null,
+          });
+          return { content: [{ type: 'text', text: `📝 Заметка создана: ${note.id}\n**${note.title}**` }] };
+        }
+
+        case 'note_read': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteReadSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const notes = await notesManager.read(agentTokenId, {
+            search: parsed.data.search,
+            tags: parsed.data.tags,
+            projectId: parsed.data.project_id,
+            sessionId: parsed.data.session_id,
+            status: parsed.data.status,
+            mode: parsed.data.mode,
+            limit: parsed.data.limit,
+            offset: parsed.data.offset,
+          });
+          if (notes.length === 0) return { content: [{ type: 'text', text: '📝 Заметок не найдено.' }] };
+          const lines = notes.map((n: any) => `- **${n.title}** (id: ${n.id}, ${n.status}${n.tags?.length ? ', tags: ' + n.tags.join(', ') : ''})`);
+          return { content: [{ type: 'text', text: `📝 Найдено ${notes.length} заметок:\n${lines.join('\n')}` }] };
+        }
+
+        case 'note_update': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteUpdateSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const updated = await notesManager.update(parsed.data.id, agentTokenId, {
+            title: parsed.data.title,
+            content: parsed.data.content,
+            tags: parsed.data.tags,
+            priority: parsed.data.priority,
+            status: parsed.data.status,
+            projectId: parsed.data.project_id,
+            sessionId: parsed.data.session_id,
+          });
+          return { content: [{ type: 'text', text: `✅ Заметка обновлена: **${updated.title}**` }] };
+        }
+
+        case 'note_delete': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteDeleteSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const isMaster = callerAgent === 'master';
+          const agentTokenId: string | null = isMaster ? null : ((extra as any)?.authInfo?.agentTokenId as string | undefined) ?? null;
+          if (!isMaster && !agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const deleted = await notesManager.delete(parsed.data.id, agentTokenId, parsed.data.archive);
+          return { content: [{ type: 'text', text: deleted ? `✅ Заметка ${parsed.data.archive ? 'архивирована' : 'удалена'}` : '❌ Заметка не найдена' }] };
+        }
+
+        case 'note_search': {
+          if (!notesManager) return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          const parsed = NoteSearchSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for semantic search' }], isError: true };
+          const results = await notesManager.semanticSearch(agentTokenId, parsed.data.query, {
+            projectId: parsed.data.project_id,
+            sessionId: parsed.data.session_id,
+            limit: parsed.data.limit,
+          });
+          if (results.length === 0) return { content: [{ type: 'text', text: '🔍 Ничего не найдено.' }] };
+          const lines = results.map(n => `- [${n.score.toFixed(2)}] **${n.title}** (id: ${n.id})`);
+          return { content: [{ type: 'text', text: `🔍 Найдено ${results.length} заметок:\n${lines.join('\n')}` }] };
+        }
+
+        // === Session Import handlers ===
+
+        case 'session_import': {
+          if (!sessionManager) return { content: [{ type: 'text', text: '❌ Sessions not configured' }], isError: true };
+          const parsed = SessionImportSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for session import' }], isError: true };
+          const session = await sessionManager.importSession(agentTokenId, {
+            externalId: parsed.data.external_id,
+            name: parsed.data.name,
+            summary: parsed.data.summary,
+            projectId: parsed.data.project_id,
+            workingDirectory: parsed.data.working_directory,
+            gitBranch: parsed.data.git_branch,
+            tags: parsed.data.tags,
+            startedAt: parsed.data.started_at,
+            endedAt: parsed.data.ended_at,
+            messages: parsed.data.messages.map(m => ({
+              role: m.role,
+              content: m.content,
+              timestamp: m.timestamp,
+              toolNames: m.tool_names,
+            })),
+          });
+          return { content: [{ type: 'text', text: `📥 Сессия импортирована: ${session.id}\nСообщений: ${session.messageCount}\nСтатус: в очереди на обработку (LLM summary + embedding)` }] };
+        }
+
+        case 'session_list': {
+          if (!sessionManager) return { content: [{ type: 'text', text: '❌ Sessions not configured' }], isError: true };
+          const parsed = SessionListSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const sessions = await sessionManager.listSessions(agentTokenId, {
+            projectId: parsed.data.project_id,
+            tags: parsed.data.tags,
+            dateFrom: parsed.data.date_from,
+            dateTo: parsed.data.date_to,
+            search: parsed.data.search,
+            limit: parsed.data.limit,
+            offset: parsed.data.offset,
+          });
+          if (sessions.length === 0) return { content: [{ type: 'text', text: '📋 Сессий не найдено.' }] };
+          const lines = sessions.map(s => `- **${s.name || 'Без названия'}** (${s.messageCount} сообщ., ${s.startedAt?.slice(0, 10) ?? '?'}) id: ${s.id}`);
+          return { content: [{ type: 'text', text: `📋 Найдено ${sessions.length} сессий:\n${lines.join('\n')}` }] };
+        }
+
+        case 'session_search': {
+          if (!sessionManager) return { content: [{ type: 'text', text: '❌ Sessions not configured' }], isError: true };
+          const parsed = SessionSearchSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const results = await sessionManager.searchSessions(agentTokenId, parsed.data.query, {
+            projectId: parsed.data.project_id,
+            limit: parsed.data.limit,
+          });
+          if (results.length === 0) return { content: [{ type: 'text', text: '🔍 Сессий не найдено.' }] };
+          const lines = results.map(s => `- [${s.score.toFixed(2)}] **${s.name || s.summary.slice(0, 60)}** (${s.messageCount} сообщ.) id: ${s.id}`);
+          return { content: [{ type: 'text', text: `🔍 Найдено ${results.length} сессий:\n${lines.join('\n')}` }] };
+        }
+
+        case 'session_read': {
+          if (!sessionManager) return { content: [{ type: 'text', text: '❌ Sessions not configured' }], isError: true };
+          const parsed = SessionReadSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const result = await sessionManager.readSession(parsed.data.session_id, agentTokenId, parsed.data.message_from, parsed.data.message_to);
+          if (!result) return { content: [{ type: 'text', text: '❌ Сессия не найдена' }], isError: true };
+          const header = `📖 **${result.session.name || 'Сессия'}** (${result.session.messageCount} сообщений)\n\n`;
+          const msgs = result.messages.map(m => `**[${m.role}]** ${m.content.slice(0, 500)}${m.content.length > 500 ? '...' : ''}`);
+          return { content: [{ type: 'text', text: header + msgs.join('\n\n---\n\n') }] };
+        }
+
+        case 'session_message_search': {
+          if (!sessionManager) return { content: [{ type: 'text', text: '❌ Sessions not configured' }], isError: true };
+          const parsed = SessionMessageSearchSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const results = await sessionManager.searchMessages(agentTokenId, parsed.data.query, {
+            sessionId: parsed.data.session_id,
+            limit: parsed.data.limit,
+          });
+          if (results.length === 0) return { content: [{ type: 'text', text: '🔍 Сообщений не найдено.' }] };
+          const lines = results.map(r => `- [${r.score.toFixed(2)}] **${r.role}** (сессия: ${r.sessionId}, msg #${r.messageIndex})`);
+          return { content: [{ type: 'text', text: `🔍 Найдено ${results.length} сообщений:\n${lines.join('\n')}` }] };
+        }
+
+        case 'session_delete': {
+          if (!sessionManager) return { content: [{ type: 'text', text: '❌ Sessions not configured' }], isError: true };
+          const parsed = SessionDeleteSchema.safeParse(args);
+          if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
+          const deleted = await sessionManager.deleteSession(parsed.data.session_id, agentTokenId);
+          return { content: [{ type: 'text', text: deleted ? '✅ Сессия удалена' : '❌ Сессия не найдена' }] };
+        }
+
         default:
           return { content: [{ type: 'text', text: `❌ Неизвестный инструмент: ${name}` }], isError: true };
       }
@@ -781,9 +1144,9 @@ export class TeamMemoryMCPServer {
   private server: Server;
   private memoryManager: MemoryManager;
 
-  constructor(memoryManager: MemoryManager) {
+  constructor(memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager, sessionManager?: SessionManager) {
     this.memoryManager = memoryManager;
-    this.server = buildMcpServer(memoryManager);
+    this.server = buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager);
   }
 
   async start(): Promise<void> {

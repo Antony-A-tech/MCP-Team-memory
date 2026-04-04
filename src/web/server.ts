@@ -118,6 +118,101 @@ export class WebServer {
       }
     });
 
+    // === Project Domains API ===
+
+    app.get('/api/projects/:id/domains', async (req: Request, res: Response) => {
+      try {
+        const domains = await this.memoryManager.getProjectDomains(req.params.id);
+        res.json({ success: true, domains });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.post('/api/projects/:id/domains', async (req: Request, res: Response) => {
+      try {
+        if ((req as any).agentName) {
+          res.status(403).json({ success: false, error: 'Only administrator can manage domains' });
+          return;
+        }
+        const { slug, name, description, icon } = req.body;
+        const trimmedName = (name || '').trim();
+        if (!slug || !trimmedName) {
+          res.status(400).json({ success: false, error: 'slug and name are required' });
+          return;
+        }
+        if (!/^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug)) {
+          res.status(400).json({ success: false, error: 'slug must be lowercase alphanumeric with hyphens' });
+          return;
+        }
+        if (slug.length > 64) {
+          res.status(400).json({ success: false, error: 'slug must be at most 64 characters' });
+          return;
+        }
+        const domain = await this.memoryManager.addProjectDomain(req.params.id, { slug, name: trimmedName, description, icon });
+        res.json({ success: true, domain });
+      } catch (error: any) {
+        if (error.code === '23505') { // unique_violation
+          res.status(409).json({ success: false, error: 'Domain with this slug already exists' });
+          return;
+        }
+        if (error.code === '23503') { // foreign_key_violation
+          res.status(404).json({ success: false, error: 'Project not found' });
+          return;
+        }
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.put('/api/projects/:id/domains/:slug', async (req: Request, res: Response) => {
+      try {
+        if ((req as any).agentName) {
+          res.status(403).json({ success: false, error: 'Only administrator can manage domains' });
+          return;
+        }
+        const { name, description, icon } = req.body;
+        const domain = await this.memoryManager.updateProjectDomain(req.params.id, req.params.slug, { name, description, icon });
+        if (!domain) {
+          res.status(404).json({ success: false, error: 'Domain not found' });
+          return;
+        }
+        res.json({ success: true, domain });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.delete('/api/projects/:id/domains/:slug', async (req: Request, res: Response) => {
+      try {
+        if ((req as any).agentName) {
+          res.status(403).json({ success: false, error: 'Only administrator can manage domains' });
+          return;
+        }
+        const result = await this.memoryManager.removeProjectDomain(req.params.id, req.params.slug);
+        if (!result.deleted) {
+          res.status(404).json({ success: false, error: 'Domain not found' });
+          return;
+        }
+        res.json({ success: true, entriesAffected: result.entriesAffected });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.get('/api/projects/:id/domains/:slug/count', async (req: Request, res: Response) => {
+      try {
+        const count = await this.memoryManager.countEntriesByDomain(req.params.id, req.params.slug);
+        res.json({ success: true, count });
+      } catch (error) {
+        logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
     // === Memory Entries API ===
 
     app.get('/api/memory', async (req: Request, res: Response) => {

@@ -15,11 +15,29 @@ services:
       timeout: 5s
       retries: 5
 
+  qdrant:
+    image: qdrant/qdrant:v1.13.2
+    ports:
+      - "127.0.0.1:6333:6333"
+      - "127.0.0.1:6334:6334"
+    volumes:
+      - qdrant_data:/qdrant/storage
+    environment:
+      QDRANT__SERVICE__GRPC_PORT: 6334
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:6333/healthz || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
   app:
     build: .
     depends_on:
       postgres:
         condition: service_healthy
+      qdrant:
+        condition: service_started
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER:-memory}:${POSTGRES_PASSWORD:-memory}@postgres:5432/team_memory
       MEMORY_TRANSPORT: http
@@ -32,9 +50,12 @@ services:
       MEMORY_DECAY_THRESHOLD: ${MEMORY_DECAY_THRESHOLD:-}
       MEMORY_DECAY_DAYS: ${MEMORY_DECAY_DAYS:-30}
       MEMORY_DECAY_WEIGHTS: ${MEMORY_DECAY_WEIGHTS:-0.3,0.2,0.3,0.2}
-      MEMORY_EMBEDDING_PROVIDER: ${MEMORY_EMBEDDING_PROVIDER:-}
-      MEMORY_EMBEDDING_MODEL_DIR: ${MEMORY_EMBEDDING_MODEL_DIR:-data/models}
       OLLAMA_URL: ${OLLAMA_URL:-http://host.docker.internal:11434}
+      OLLAMA_EMBEDDING_MODEL: ${OLLAMA_EMBEDDING_MODEL:-nomic-embed-text-v2-moe}
+      OLLAMA_LLM_MODEL: ${OLLAMA_LLM_MODEL:-qwen3.5:4b}
+      VECTOR_STORE: ${VECTOR_STORE:-qdrant}
+      QDRANT_URL: ${QDRANT_URL:-http://qdrant:6333}
+      QDRANT_API_KEY: ${QDRANT_API_KEY:-}
       PG_CONTAINER: ${COMPOSE_PROJECT_NAME:-team-memory-mcp}-postgres-1
     ports:
       - "3846:3846"
@@ -51,3 +72,4 @@ services:
 volumes:
   pgdata:
   backups:
+  qdrant_data:

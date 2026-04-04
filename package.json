@@ -1,6 +1,6 @@
 {
   "name": "@antony-A-tech/team-memory-mcp",
-  "version": "2.2.0",
+  "version": "3.0.0",
   "description": "MCP Server for team memory - shared knowledge base for Claude Code agents (PostgreSQL, multi-project)",
   "type": "module",
   "main": "dist/index.js",
@@ -52,6 +52,7 @@
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",
+    "@qdrant/js-client-rest": "1.13.0",
     "dotenv": "^17.3.1",
     "express": "^4.21.0",
     "pg": "^8.13.0",
