@@ -40,13 +40,49 @@ export class SessionManager {
     endedAt?: string;
     messages: Array<{ role: string; content: string; timestamp?: string; toolNames: string[] }>;
   }): Promise<Session> {
-    // Check duplicate
+    // Check duplicate — upsert if session grew (new messages added)
     if (data.externalId) {
       const existing = await this.storage.findByExternalId(agentTokenId, data.externalId);
-      if (existing) return existing;
+      if (existing) {
+        // If new data has more messages, update the session
+        if (data.messages.length > existing.messageCount) {
+          // Skip upsert if worker is actively processing this session
+          if (existing.embeddingStatus === 'summarizing' || existing.embeddingStatus === 'embedding') {
+            logger.info({ sessionId: existing.id, status: existing.embeddingStatus },
+              'Session upsert skipped — worker is processing, will retry next sync');
+            return existing;
+          }
+
+          await this.storage.replaceMessages(existing.id, data.messages);
+          await this.storage.updateSessionMeta(existing.id, {
+            messageCount: data.messages.length,
+            endedAt: data.endedAt,
+          });
+
+          // Re-queue for LLM summary + embedding (content changed)
+          const needsSummary = !data.summary;
+          await this.storage.updateEmbeddingStatus(existing.id, needsSummary ? 'queued' : 'queued_embed');
+
+          // Clean old vectors — worker will regenerate
+          if (this.vectorStore) {
+            this.vectorStore.delete('sessions', [existing.id]).catch(err =>
+              logger.warn({ err, sessionId: existing.id }, 'Failed to clean old session vector during upsert'));
+            this.vectorStore.deleteByFilter('session_messages', {
+              must: [{ key: 'session_id', match: { value: existing.id } }],
+            }).catch(err =>
+              logger.warn({ err, sessionId: existing.id }, 'Failed to clean old message vectors during upsert'));
+          }
+
+          logger.info({ sessionId: existing.id, oldCount: existing.messageCount, newCount: data.messages.length },
+            'Session updated with new messages, re-queued');
+          return { ...existing, messageCount: data.messages.length, endedAt: data.endedAt ?? existing.endedAt };
+        }
+        // Same or fewer messages — no update needed
+        return existing;
+      }
     }
 
-    // If summary provided by client, use it; otherwise mark for LLM generation
+    // New session
     const summary = data.summary || 'Pending summarization...';
     const needsSummary = !data.summary;
 
