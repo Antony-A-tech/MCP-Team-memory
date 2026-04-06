@@ -47,7 +47,8 @@ const https = require('https');
 // === Config ===
 const SERVER_URL = process.env.TM_SERVER_URL || 'http://10.61.11.54:3846';
 const TOKEN = process.env.TM_TOKEN;
-const PROJECT_ID = process.env.TM_PROJECT_ID || undefined;
+// No fallback — if .mcp.json not found, session is not sent
+// (prevents sending sessions to wrong project)
 const MIN_MESSAGES = 3;
 const DEBOUNCE_MS = 60 * 60 * 1000; // 1 hour
 
@@ -77,6 +78,10 @@ async function main() {
     process.exit(0);
   }
 
+  // Resolve project — skip if no .mcp.json found (project not configured)
+  const projectId = resolveProjectId(cwd);
+  if (!projectId) process.exit(0);
+
   // Find and parse session file
   const sessionFile = findSessionFile(session_id, cwd);
   if (!sessionFile) process.exit(0);
@@ -90,7 +95,7 @@ async function main() {
     await importSession({
       externalId: session_id,
       name: `Session ${session_id.substring(0, 8)}`,
-      projectId: PROJECT_ID,
+      projectId,
       workingDirectory: cwd,
       gitBranch: gitBranch || '',
       startedAt: messages[0]?.timestamp,
@@ -201,6 +206,32 @@ function findSessionFile(sessionId, cwd) {
   return null;
 }
 
+// === Resolve project ID from .mcp.json ===
+function resolveProjectId(cwd) {
+  if (!cwd) return FALLBACK_PROJECT_ID;
+
+  // Walk up from cwd looking for .mcp.json with team-memory config
+  let dir = cwd;
+  for (let i = 0; i < 10; i++) {
+    try {
+      const mcpFile = path.join(dir, '.mcp.json');
+      if (fs.existsSync(mcpFile)) {
+        const config = JSON.parse(fs.readFileSync(mcpFile, 'utf8'));
+        // Look for team-memory server config with X-Project-Id header
+        const tm = config?.mcpServers?.['team-memory'];
+        const projectId = tm?.headers?.['X-Project-Id'];
+        if (projectId) return projectId;
+      }
+    } catch { /* ignore parse errors */ }
+
+    const parent = path.dirname(dir);
+    if (parent === dir) break; // reached root
+    dir = parent;
+  }
+
+  return null;
+}
+
 // === Detect git branch ===
 function detectGitBranch(cwd) {
   if (!cwd) return null;
@@ -218,6 +249,7 @@ function detectGitBranch(cwd) {
 
 // === MCP Import ===
 let mcpSessionId = null;
+let currentProjectId = null;
 
 function mcpRequest(body) {
   const url = new URL(SERVER_URL + '/mcp');
@@ -232,7 +264,7 @@ function mcpRequest(body) {
       'Authorization': 'Bearer ' + TOKEN,
       'Content-Length': Buffer.byteLength(payload),
     };
-    if (PROJECT_ID) headers['X-Project-Id'] = PROJECT_ID;
+    if (currentProjectId) headers['X-Project-Id'] = currentProjectId;
     if (mcpSessionId) headers['Mcp-Session-Id'] = mcpSessionId;
 
     const req = transport.request({
@@ -261,6 +293,8 @@ function mcpRequest(body) {
 }
 
 async function importSession(data) {
+  currentProjectId = data.projectId || null;
+
   await mcpRequest({
     jsonrpc: '2.0', id: 1,
     method: 'initialize',
