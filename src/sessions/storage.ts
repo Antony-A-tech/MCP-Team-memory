@@ -146,6 +146,57 @@ export class SessionStorage {
     );
   }
 
+  async replaceMessages(sessionId: string, messages: Array<{ role: string; content: string; timestamp?: string; toolNames: string[] }>): Promise<void> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query('DELETE FROM session_messages WHERE session_id = $1', [sessionId]);
+
+      if (messages.length > 0) {
+        const BATCH_SIZE = 5000;
+        for (let batchStart = 0; batchStart < messages.length; batchStart += BATCH_SIZE) {
+          const batch = messages.slice(batchStart, batchStart + BATCH_SIZE);
+          const values: string[] = [];
+          const params: unknown[] = [];
+          let idx = 1;
+
+          batch.forEach((msg, i) => {
+            const hasToolUse = msg.toolNames.length > 0;
+            values.push(`($${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++}, $${idx++})`);
+            params.push(sessionId, msg.role, msg.content, batchStart + i, hasToolUse, msg.toolNames, msg.timestamp ?? null);
+          });
+
+          await client.query(
+            `INSERT INTO session_messages (session_id, role, content, message_index, has_tool_use, tool_names, timestamp)
+             VALUES ${values.join(', ')}`,
+            params,
+          );
+        }
+      }
+
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK');
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
+  async updateSessionMeta(sessionId: string, meta: { messageCount?: number; endedAt?: string | null }): Promise<void> {
+    const sets: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (meta.messageCount !== undefined) { sets.push(`message_count = $${idx++}`); params.push(meta.messageCount); }
+    if (meta.endedAt !== undefined) { sets.push(`ended_at = $${idx++}`); params.push(meta.endedAt); }
+
+    if (sets.length > 0) {
+      params.push(sessionId);
+      await this.pool.query(`UPDATE sessions SET ${sets.join(', ')} WHERE id = $${idx}`, params);
+    }
+  }
+
   async updateSummary(sessionId: string, summary: string): Promise<void> {
     await this.pool.query(
       'UPDATE sessions SET summary = $1 WHERE id = $2',

@@ -27,6 +27,8 @@ function createMockSessionStorage() {
     ]),
     updateEmbeddingStatus: vi.fn().mockResolvedValue(undefined),
     updateSummary: vi.fn().mockResolvedValue(undefined),
+    replaceMessages: vi.fn().mockResolvedValue(undefined),
+    updateSessionMeta: vi.fn().mockResolvedValue(undefined),
     getNextQueued: vi.fn().mockResolvedValue(null),
     recoverStuckSessions: vi.fn().mockResolvedValue(0),
     deleteSession: vi.fn().mockResolvedValue(true),
@@ -123,9 +125,9 @@ describe('SessionManager', () => {
       expect(storage.updateEmbeddingStatus).toHaveBeenCalledWith('sess-1', 'complete');
     });
 
-    it('returns existing session on duplicate external_id', async () => {
+    it('returns existing session on duplicate external_id with same message count', async () => {
       storage.findByExternalId.mockResolvedValue({
-        id: 'existing-sess', summary: 'Old', messageCount: 5,
+        id: 'existing-sess', summary: 'Old', messageCount: 1, embeddingStatus: 'complete',
       });
 
       const result = await manager.importSession('tok-1', {
@@ -136,6 +138,52 @@ describe('SessionManager', () => {
 
       expect(result.id).toBe('existing-sess');
       expect(storage.createSession).not.toHaveBeenCalled();
+      expect(storage.replaceMessages).not.toHaveBeenCalled();
+    });
+
+    it('upserts session when new import has more messages', async () => {
+      storage.findByExternalId.mockResolvedValue({
+        id: 'existing-sess', summary: 'Old', messageCount: 2, embeddingStatus: 'complete',
+        agentTokenId: 'tok-1', endedAt: null,
+      });
+      storage.replaceMessages = vi.fn().mockResolvedValue(undefined);
+      storage.updateSessionMeta = vi.fn().mockResolvedValue(undefined);
+
+      const result = await manager.importSession('tok-1', {
+        externalId: 'ext-1',
+        messages: [
+          { role: 'user', content: 'msg1', toolNames: [] },
+          { role: 'assistant', content: 'msg2', toolNames: [] },
+          { role: 'user', content: 'msg3', toolNames: [] },
+          { role: 'assistant', content: 'msg4', toolNames: [] },
+        ],
+        endedAt: '2026-04-06T12:00:00Z',
+      });
+
+      expect(storage.replaceMessages).toHaveBeenCalledWith('existing-sess', expect.any(Array));
+      expect(storage.updateSessionMeta).toHaveBeenCalledWith('existing-sess', { messageCount: 4, endedAt: '2026-04-06T12:00:00Z' });
+      expect(storage.updateEmbeddingStatus).toHaveBeenCalledWith('existing-sess', 'queued');
+      expect(vectorStore.delete).toHaveBeenCalledWith('sessions', ['existing-sess']);
+      expect(result.messageCount).toBe(4);
+    });
+
+    it('skips upsert when worker is actively processing session', async () => {
+      storage.findByExternalId.mockResolvedValue({
+        id: 'existing-sess', summary: 'Old', messageCount: 2, embeddingStatus: 'embedding',
+      });
+      storage.replaceMessages = vi.fn();
+
+      const result = await manager.importSession('tok-1', {
+        externalId: 'ext-1',
+        messages: [
+          { role: 'user', content: 'msg1', toolNames: [] },
+          { role: 'assistant', content: 'msg2', toolNames: [] },
+          { role: 'user', content: 'msg3', toolNames: [] },
+        ],
+      });
+
+      expect(storage.replaceMessages).not.toHaveBeenCalled();
+      expect(result.id).toBe('existing-sess');
     });
   });
 

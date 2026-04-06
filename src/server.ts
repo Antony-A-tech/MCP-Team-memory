@@ -948,12 +948,12 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for session import' }], isError: true };
           const session = await sessionManager.importSession(agentTokenId, {
-            externalId: parsed.data.external_id,
-            name: parsed.data.name,
-            summary: parsed.data.summary,
-            projectId: parsed.data.project_id,
-            workingDirectory: parsed.data.working_directory,
-            gitBranch: parsed.data.git_branch,
+            externalId: parsed.data.external_id ?? undefined,
+            name: parsed.data.name ?? undefined,
+            summary: parsed.data.summary ?? undefined,
+            projectId: parsed.data.project_id ?? undefined,
+            workingDirectory: parsed.data.working_directory ?? undefined,
+            gitBranch: parsed.data.git_branch ?? undefined,
             tags: parsed.data.tags,
             startedAt: parsed.data.started_at,
             endedAt: parsed.data.ended_at,
