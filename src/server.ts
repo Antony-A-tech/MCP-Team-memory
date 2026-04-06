@@ -974,7 +974,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
           const sessions = await sessionManager.listSessions(agentTokenId, {
-            projectId: parsed.data.project_id,
+            projectId: resolveProjectId(parsed.data.project_id),
             tags: parsed.data.tags,
             dateFrom: parsed.data.date_from,
             dateTo: parsed.data.date_to,
@@ -994,7 +994,7 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required' }], isError: true };
           const results = await sessionManager.searchSessions(agentTokenId, parsed.data.query, {
-            projectId: parsed.data.project_id,
+            projectId: resolveProjectId(parsed.data.project_id),
             limit: parsed.data.limit,
           });
           if (results.length === 0) return { content: [{ type: 'text', text: '🔍 Сессий не найдено.' }] };
