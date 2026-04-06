@@ -3,12 +3,12 @@ import { z } from 'zod';
 const UuidSchema = z.string().uuid('Invalid UUID format');
 
 export const SessionImportSchema = z.object({
-  external_id: z.string().max(200).optional(),
-  name: z.string().max(500).optional(),
-  summary: z.string().max(10000).optional(),
-  project_id: UuidSchema.optional(),
-  working_directory: z.string().max(1000).optional(),
-  git_branch: z.string().max(200).optional(),
+  external_id: z.string().max(200).nullish(),
+  name: z.string().max(500).nullish(),
+  summary: z.string().max(10000).nullish(),
+  project_id: UuidSchema.nullish(),
+  working_directory: z.string().max(1000).nullish(),
+  git_branch: z.string().max(200).nullish(),
   tags: z.array(z.string().max(50)).max(20).default([]),
   started_at: z.string().datetime().optional(),
   ended_at: z.string().datetime().optional(),
