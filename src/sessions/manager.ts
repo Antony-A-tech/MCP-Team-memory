@@ -223,6 +223,8 @@ export class SessionManager {
     }
 
     if (allChunks.length > 0) {
+      logger.info({ sessionId: session.id, chunks: allChunks.length, messages: dbMessages.length },
+        'Embedding session messages');
       const texts = allChunks.map(c => c.text);
       const vectors = this.embeddingProvider!.embedBatch
         ? await this.embeddingProvider!.embedBatch(texts, 'document')
