@@ -42,6 +42,21 @@ let isGraphView = false;
 let isAgentsView = false;
 let isMasterUser = false;
 
+// Sessions state
+let sessionsData = [];
+let currentSessionOffset = 0;
+const SESSIONS_LIMIT = 20;
+let currentSessionId = null;
+let sessionMessages = [];
+let sessionMessageFrom = 0;
+const SESSION_MESSAGES_PAGE = 50;
+let sessionSearchDebounce = null;
+
+// Notes state
+let notesData = [];
+let currentNoteOffset = 0;
+const NOTES_LIMIT = 20;
+
 // Theme configuration
 const THEMES = [
   {
@@ -171,6 +186,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initWebSocket();
   loadEntries();
   loadStats();
+  updateSessionNotesCounts();
 });
 
 // === Tooltips ===
@@ -316,6 +332,7 @@ async function switchProject(projectId) {
   populateEntryDomainSelect();
   loadEntries();
   loadStats();
+  updateSessionNotesCounts();
   // Reconnect WebSocket with new project_id
   if (ws) {
     ws.onclose = null; // prevent auto-reconnect with old project_id
@@ -579,12 +596,50 @@ function initNavigation() {
       item.classList.add('active');
 
       currentCategory = item.dataset.category;
-      pageTitle.textContent = categoryConfig[currentCategory].title;
-      loadEntries();
+
+      // Hide all content containers
+      document.getElementById('entries-container').style.display = '';
+      document.getElementById('sessions-container').style.display = 'none';
+      document.getElementById('session-detail-container').style.display = 'none';
+      document.getElementById('notes-container').style.display = 'none';
+      document.getElementById('domain-filters').style.display = '';
+
+      const existingLoadMore = document.getElementById('load-more-btn');
+      if (existingLoadMore) existingLoadMore.remove();
+      const sessLoadMore = document.getElementById('sessions-load-more-btn');
+      if (sessLoadMore) sessLoadMore.remove();
+      const notesLoadMore = document.getElementById('notes-load-more-btn');
+      if (notesLoadMore) notesLoadMore.remove();
+
+      if (currentCategory === 'sessions') {
+        document.getElementById('entries-container').style.display = 'none';
+        document.getElementById('sessions-container').style.display = '';
+        document.getElementById('domain-filters').style.display = 'none';
+        pageTitle.textContent = 'Сессии';
+        updateHeaderStatsForSessions();
+        loadSessions();
+      } else if (currentCategory === 'notes') {
+        document.getElementById('entries-container').style.display = 'none';
+        document.getElementById('notes-container').style.display = '';
+        document.getElementById('domain-filters').style.display = 'none';
+        pageTitle.textContent = 'Заметки';
+        updateHeaderStatsForNotes();
+        loadNotes();
+      } else {
+        pageTitle.textContent = categoryConfig[currentCategory]?.title || 'Все записи';
+        loadStats();
+        loadEntries();
+      }
     });
   });
 
-  document.getElementById('btn-add').addEventListener('click', () => openModal());
+  document.getElementById('btn-add').addEventListener('click', () => {
+    if (currentCategory === 'notes') {
+      openNoteModal();
+    } else {
+      openModal();
+    }
+  });
 
   document.getElementById('btn-export').addEventListener('click', async () => {
     const params = new URLSearchParams();
@@ -703,7 +758,13 @@ function initSearch() {
     clearTimeout(searchTimeout);
     searchTimeout = setTimeout(() => {
       currentSearch = e.target.value;
-      loadEntries();
+      if (currentCategory === 'sessions') {
+        loadSessions();
+      } else if (currentCategory === 'notes') {
+        loadNotes();
+      } else {
+        loadEntries();
+      }
     }, 300);
   });
 
@@ -2099,6 +2160,620 @@ function initThemeSwitcher() {
       if (themeModal && themeModal.classList.contains('active')) {
         closeThemeModal();
       }
+      const noteModal = document.getElementById('note-modal');
+      if (noteModal && noteModal.classList.contains('active')) {
+        closeNoteModal();
+      }
+      const noteReadModal = document.getElementById('note-read-modal');
+      if (noteReadModal && noteReadModal.classList.contains('active')) {
+        noteReadModal.classList.remove('active');
+      }
     }
   });
+}
+
+// ===== Sessions UI =====
+
+async function loadSessions(append = false) {
+  const container = document.getElementById('sessions-container');
+  if (!append) {
+    currentSessionOffset = 0;
+    container.innerHTML = `
+      <div class="loading">
+        <i data-lucide="loader-2" class="spin"></i>
+        <span>Загрузка...</span>
+      </div>
+    `;
+    lucide.createIcons();
+  }
+
+  try {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    if (currentSearch) params.append('search', currentSearch);
+    params.append('limit', String(SESSIONS_LIMIT));
+    params.append('offset', String(currentSessionOffset));
+
+    const response = await authFetch(`${API_BASE}/sessions?${params}`);
+    const result = await response.json();
+
+    if (result.success) {
+      if (append) {
+        sessionsData = sessionsData.concat(result.sessions);
+      } else {
+        sessionsData = result.sessions;
+      }
+      renderSessions();
+      renderSessionsLoadMore(result);
+    }
+  } catch (error) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="alert-triangle"></i>
+        <div class="empty-state-text">Ошибка загрузки сессий</div>
+      </div>
+    `;
+    lucide.createIcons();
+    console.error(error);
+  }
+}
+
+function renderSessions() {
+  const container = document.getElementById('sessions-container');
+
+  if (sessionsData.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="message-square"></i>
+        <div class="empty-state-text">Нет сессий${currentSearch ? ' по запросу "' + escapeHtml(currentSearch) + '"' : ''}</div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  const statusLabels = {
+    complete: 'Indexed', processing: 'Processing', summarizing: 'Summarizing',
+    queued_embed: 'Processing', queued: 'Queued', failed: 'Failed'
+  };
+
+  container.innerHTML = sessionsData.map(session => {
+    const title = session.name || ('Сессия от ' + formatDate(session.importedAt));
+    const statusLabel = statusLabels[session.embeddingStatus] || session.embeddingStatus;
+
+    return `
+    <div class="session-card" data-session-id="${escapeHtml(session.id)}">
+      <div class="session-title">${escapeHtml(title)}</div>
+      ${session.summary ? `<div class="session-summary">${escapeHtml(session.summary)}</div>` : ''}
+      <div class="session-meta">
+        <span><i data-lucide="calendar"></i> ${formatDate(session.importedAt)}</span>
+        <span><i data-lucide="message-square"></i> ${session.messageCount} сообщений</span>
+        <span class="embedding-badge ${escapeHtml(session.embeddingStatus)}">${escapeHtml(statusLabel)}</span>
+      </div>
+      ${session.tags && session.tags.length > 0 ? `
+        <div class="session-tags">
+          ${session.tags.map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `}).join('');
+
+  lucide.createIcons();
+}
+
+function renderSessionsLoadMore(result) {
+  const existing = document.getElementById('sessions-load-more-btn');
+  if (existing) existing.remove();
+
+  if (result.hasMore) {
+    const btn = document.createElement('button');
+    btn.id = 'sessions-load-more-btn';
+    btn.className = 'btn btn-secondary load-more';
+    btn.innerHTML = '<i data-lucide="chevrons-down"></i> Загрузить ещё';
+    btn.addEventListener('click', () => {
+      currentSessionOffset += SESSIONS_LIMIT;
+      loadSessions(true);
+    });
+    document.getElementById('sessions-container').after(btn);
+    lucide.createIcons();
+  }
+}
+
+// Event delegation for session cards
+document.getElementById('sessions-container').addEventListener('click', (e) => {
+  const card = e.target.closest('.session-card');
+  if (card) {
+    openSessionDetail(card.dataset.sessionId);
+  }
+});
+
+async function openSessionDetail(sessionId) {
+  currentSessionId = sessionId;
+  sessionMessageFrom = 0;
+  sessionMessages = [];
+
+  document.getElementById('sessions-container').style.display = 'none';
+  const existingLoadMore = document.getElementById('sessions-load-more-btn');
+  if (existingLoadMore) existingLoadMore.style.display = 'none';
+  document.getElementById('session-detail-container').style.display = '';
+
+  const messagesEl = document.getElementById('session-messages');
+  messagesEl.innerHTML = `
+    <div class="loading">
+      <i data-lucide="loader-2" class="spin"></i>
+      <span>Загрузка сообщений...</span>
+    </div>
+  `;
+  lucide.createIcons();
+
+  try {
+    const params = new URLSearchParams({ from: '0', to: String(SESSION_MESSAGES_PAGE - 1) });
+    const response = await authFetch(`${API_BASE}/sessions/${sessionId}?${params}`);
+    const result = await response.json();
+
+    if (!result.success) {
+      messagesEl.innerHTML = `<div class="empty-state"><i data-lucide="alert-triangle"></i><div class="empty-state-text">Ошибка загрузки</div></div>`;
+      lucide.createIcons();
+      return;
+    }
+
+    const session = result.session;
+    sessionMessages = result.messages;
+    sessionMessageFrom = result.messages.length;
+
+    // Fill header
+    document.getElementById('session-detail-title').textContent = session.name || ('Сессия от ' + formatDate(session.importedAt));
+    document.getElementById('session-detail-summary').textContent = session.summary || '';
+    document.getElementById('session-detail-meta').innerHTML = `
+      <span><i data-lucide="calendar"></i> ${formatDate(session.importedAt)}</span>
+      <span><i data-lucide="message-square"></i> ${session.messageCount} сообщений</span>
+      <span class="embedding-badge ${escapeHtml(session.embeddingStatus)}">${session.embeddingStatus}</span>
+    `;
+    document.getElementById('session-detail-tags').innerHTML =
+      (session.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+
+    renderSessionMessages(result.total_messages);
+    lucide.createIcons();
+  } catch (error) {
+    messagesEl.innerHTML = `<div class="empty-state"><i data-lucide="alert-triangle"></i><div class="empty-state-text">Ошибка загрузки</div></div>`;
+    lucide.createIcons();
+    console.error(error);
+  }
+}
+
+function renderSessionMessages(totalMessages) {
+  const container = document.getElementById('session-messages');
+
+  if (sessionMessages.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="message-square"></i>
+        <div class="empty-state-text">Нет сообщений</div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  let html = '';
+
+  html += sessionMessages.map(msg => `
+    <div class="message message-${escapeHtml(msg.role)}" data-message-id="${escapeHtml(msg.id)}">
+      <div class="message-role">${escapeHtml(msg.role)}</div>
+      <div class="message-content">${escapeHtml(msg.content)}</div>
+      ${msg.timestamp ? `<div class="message-timestamp">${formatDate(msg.timestamp)}</div>` : ''}
+    </div>
+  `).join('');
+
+  // Load more button at bottom if there are more messages
+  if (sessionMessageFrom < totalMessages) {
+    html += `<button class="btn btn-secondary session-load-more" id="session-messages-load-more">
+      <i data-lucide="chevrons-down"></i> Загрузить ещё (${sessionMessageFrom} из ${totalMessages})
+    </button>`;
+  }
+
+  container.innerHTML = html;
+  lucide.createIcons();
+
+  // Bind load more
+  const loadMoreBtn = document.getElementById('session-messages-load-more');
+  if (loadMoreBtn) {
+    loadMoreBtn.addEventListener('click', loadMoreSessionMessages);
+  }
+}
+
+async function loadMoreSessionMessages() {
+  if (!currentSessionId) return;
+  const to = sessionMessageFrom + SESSION_MESSAGES_PAGE - 1;
+  try {
+    const params = new URLSearchParams({ from: String(sessionMessageFrom), to: String(to) });
+    const response = await authFetch(`${API_BASE}/sessions/${currentSessionId}?${params}`);
+    const result = await response.json();
+    if (result.success && result.messages.length > 0) {
+      sessionMessages = sessionMessages.concat(result.messages);
+      sessionMessageFrom += result.messages.length;
+      renderSessionMessages(result.total_messages);
+    }
+  } catch (e) {
+    showToast('Ошибка загрузки сообщений', 'error');
+  }
+}
+
+// Back button
+document.getElementById('session-back-btn').addEventListener('click', () => {
+  document.getElementById('session-detail-container').style.display = 'none';
+  document.getElementById('sessions-container').style.display = '';
+  const existingLoadMore = document.getElementById('sessions-load-more-btn');
+  if (existingLoadMore) existingLoadMore.style.display = '';
+  currentSessionId = null;
+  document.getElementById('session-message-search').value = '';
+});
+
+// Message search within session
+document.getElementById('session-message-search').addEventListener('input', (e) => {
+  clearTimeout(sessionSearchDebounce);
+  const query = e.target.value.trim();
+  sessionSearchDebounce = setTimeout(async () => {
+    if (!currentSessionId) return;
+    if (!query) {
+      // Reset to full messages
+      openSessionDetail(currentSessionId);
+      return;
+    }
+    try {
+      const params = new URLSearchParams({ q: query, limit: '50' });
+      const response = await authFetch(`${API_BASE}/sessions/${currentSessionId}/search?${params}`);
+      const result = await response.json();
+      if (result.success) {
+        const container = document.getElementById('session-messages');
+        container.innerHTML = result.messages.length === 0
+          ? `<div class="empty-state"><i data-lucide="search"></i><div class="empty-state-text">Ничего не найдено</div></div>`
+          : result.messages.map(msg => `
+              <div class="message message-${escapeHtml(msg.role)} message-highlight" data-message-id="${escapeHtml(msg.id)}">
+                <div class="message-role">${escapeHtml(msg.role)}</div>
+                <div class="message-content">${escapeHtml(msg.content)}</div>
+                ${msg.timestamp ? `<div class="message-timestamp">${formatDate(msg.timestamp)}</div>` : ''}
+              </div>
+            `).join('');
+        lucide.createIcons();
+      }
+    } catch (e) {
+      showToast('Ошибка поиска', 'error');
+    }
+  }, 300);
+});
+
+// ===== Notes UI =====
+
+async function loadNotes(append = false) {
+  const container = document.getElementById('notes-container');
+  if (!append) {
+    currentNoteOffset = 0;
+    container.innerHTML = `
+      <div class="loading">
+        <i data-lucide="loader-2" class="spin"></i>
+        <span>Загрузка...</span>
+      </div>
+    `;
+    lucide.createIcons();
+  }
+
+  try {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    if (currentSearch) params.append('search', currentSearch);
+    params.append('limit', String(NOTES_LIMIT));
+    params.append('offset', String(currentNoteOffset));
+
+    const response = await authFetch(`${API_BASE}/notes?${params}`);
+    const result = await response.json();
+
+    if (result.success) {
+      if (append) {
+        notesData = notesData.concat(result.notes);
+      } else {
+        notesData = result.notes;
+      }
+      renderNotes();
+      renderNotesLoadMore(result);
+    }
+  } catch (error) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="alert-triangle"></i>
+        <div class="empty-state-text">Ошибка загрузки заметок</div>
+      </div>
+    `;
+    lucide.createIcons();
+    console.error(error);
+  }
+}
+
+function renderNotes() {
+  const container = document.getElementById('notes-container');
+
+  if (notesData.length === 0) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="sticky-note"></i>
+        <div class="empty-state-text">Нет заметок${currentSearch ? ' по запросу "' + escapeHtml(currentSearch) + '"' : ''}</div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = notesData.map(note => `
+    <div class="note-card" data-note-id="${escapeHtml(note.id)}">
+      <div class="note-title">${escapeHtml(note.title)}</div>
+      <div class="note-content-preview">${escapeHtml(note.content)}</div>
+      <div class="note-meta">
+        <span><i data-lucide="calendar"></i> ${formatDate(note.createdAt)}</span>
+        ${note.updatedAt !== note.createdAt ? `<span><i data-lucide="edit"></i> ${formatDate(note.updatedAt)}</span>` : ''}
+      </div>
+      <div class="note-footer">
+        <div class="note-tags">
+          ${(note.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
+        </div>
+        <div class="note-actions">
+          <button data-action="editNote" data-note-id="${escapeHtml(note.id)}" title="Редактировать">
+            <i data-lucide="pencil"></i>
+          </button>
+          <button data-action="deleteNote" data-note-id="${escapeHtml(note.id)}" title="Удалить">
+            <i data-lucide="trash-2"></i>
+          </button>
+        </div>
+      </div>
+    </div>
+  `).join('');
+
+  lucide.createIcons();
+}
+
+function renderNotesLoadMore(result) {
+  const existing = document.getElementById('notes-load-more-btn');
+  if (existing) existing.remove();
+
+  if (result.hasMore) {
+    const btn = document.createElement('button');
+    btn.id = 'notes-load-more-btn';
+    btn.className = 'btn btn-secondary load-more';
+    btn.innerHTML = '<i data-lucide="chevrons-down"></i> Загрузить ещё';
+    btn.addEventListener('click', () => {
+      currentNoteOffset += NOTES_LIMIT;
+      loadNotes(true);
+    });
+    document.getElementById('notes-container').after(btn);
+    lucide.createIcons();
+  }
+}
+
+// Event delegation for notes
+document.getElementById('notes-container').addEventListener('click', (e) => {
+  const actionBtn = e.target.closest('[data-action]');
+  if (actionBtn) {
+    const noteId = actionBtn.dataset.noteId;
+    const action = actionBtn.dataset.action;
+    if (action === 'editNote') openNoteModal(noteId);
+    else if (action === 'deleteNote') deleteNote(noteId);
+    return;
+  }
+  const card = e.target.closest('.note-card');
+  if (card) {
+    openNoteReadModal(card.dataset.noteId);
+  }
+});
+
+function openNoteReadModal(noteId) {
+  const note = notesData.find(n => n.id === noteId);
+  if (!note) return;
+
+  document.getElementById('note-read-title').textContent = note.title;
+  document.getElementById('note-read-meta').innerHTML = `
+    <span>Создано: ${formatDate(note.createdAt)}</span>
+    ${note.updatedAt !== note.createdAt ? ` · <span>Обновлено: ${formatDate(note.updatedAt)}</span>` : ''}
+  `;
+  document.getElementById('note-read-body').textContent = note.content;
+  document.getElementById('note-read-body').style.whiteSpace = 'pre-wrap';
+  document.getElementById('note-read-tags').innerHTML =
+    (note.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join('');
+
+  const modal = document.getElementById('note-read-modal');
+  modal.classList.add('active');
+  modal.dataset.noteId = noteId;
+
+  document.getElementById('note-read-close').onclick = () => modal.classList.remove('active');
+  document.getElementById('note-read-edit').onclick = () => {
+    modal.classList.remove('active');
+    openNoteModal(noteId);
+  };
+  modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('active'); };
+  lucide.createIcons();
+}
+
+function openNoteModal(noteId = null) {
+  const modal = document.getElementById('note-modal');
+  const title = document.getElementById('note-modal-title');
+  const form = document.getElementById('note-form');
+
+  if (noteId) {
+    const note = notesData.find(n => n.id === noteId);
+    if (!note) return;
+    title.textContent = 'Редактировать заметку';
+    document.getElementById('note-id').value = note.id;
+    document.getElementById('note-title-input').value = note.title;
+    document.getElementById('note-content-input').value = note.content;
+    document.getElementById('note-tags-input').value = (note.tags || []).join(', ');
+    const sessionSelect = document.getElementById('note-session-select');
+    if (note.sessionId) sessionSelect.value = note.sessionId;
+  } else {
+    title.textContent = 'Создать заметку';
+    form.reset();
+    document.getElementById('note-id').value = '';
+  }
+
+  populateNoteSessionSelect();
+  modal.classList.add('active');
+}
+
+async function populateNoteSessionSelect() {
+  const select = document.getElementById('note-session-select');
+  const currentVal = select.value;
+  try {
+    const params = new URLSearchParams({ limit: '100' });
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    const response = await authFetch(`${API_BASE}/sessions?${params}`);
+    const result = await response.json();
+    if (result.success) {
+      select.innerHTML = '<option value="">Без привязки</option>' +
+        result.sessions.map(s => {
+          const name = s.name || ('Сессия от ' + formatDate(s.importedAt));
+          return `<option value="${escapeHtml(s.id)}">${escapeHtml(name)}</option>`;
+        }).join('');
+      if (currentVal) select.value = currentVal;
+    }
+  } catch (e) {
+    // Keep default option
+  }
+}
+
+function closeNoteModal() {
+  document.getElementById('note-modal').classList.remove('active');
+}
+
+document.getElementById('note-modal-close').addEventListener('click', closeNoteModal);
+document.getElementById('note-btn-cancel').addEventListener('click', closeNoteModal);
+document.getElementById('note-modal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('note-modal')) closeNoteModal();
+});
+
+document.getElementById('note-form').addEventListener('submit', async (e) => {
+  e.preventDefault();
+  const noteId = document.getElementById('note-id').value;
+  const title = document.getElementById('note-title-input').value.trim();
+  const content = document.getElementById('note-content-input').value.trim();
+  const tags = document.getElementById('note-tags-input').value;
+  const sessionId = document.getElementById('note-session-select').value || null;
+
+  if (!title || !content) {
+    showToast('Заголовок и содержание обязательны', 'error');
+    return;
+  }
+
+  try {
+    if (noteId) {
+      const updateBody = { title, content, tags };
+      if (sessionId !== null) updateBody.session_id = sessionId;
+      const response = await authFetch(`${API_BASE}/notes/${noteId}`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(updateBody),
+      });
+      const result = await response.json();
+      if (result.success) {
+        showToast('Заметка обновлена', 'success');
+        closeNoteModal();
+        loadNotes();
+      } else {
+        showToast(result.error || 'Ошибка обновления', 'error');
+      }
+    } else {
+      const body = { title, content, tags };
+      if (sessionId) body.session_id = sessionId;
+      if (currentProjectId) body.project_id = currentProjectId;
+
+      const response = await authFetch(`${API_BASE}/notes`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const result = await response.json();
+      if (result.success) {
+        showToast('Заметка создана', 'success');
+        closeNoteModal();
+        loadNotes();
+      } else {
+        showToast(result.error || 'Ошибка создания', 'error');
+      }
+    }
+  } catch (err) {
+    showToast('Ошибка сохранения заметки', 'error');
+    console.error(err);
+  }
+});
+
+async function deleteNote(noteId) {
+  if (!confirm('Удалить заметку?')) return;
+  try {
+    const response = await authFetch(`${API_BASE}/notes/${noteId}`, { method: 'DELETE' });
+    const result = await response.json();
+    if (result.success) {
+      showToast('Заметка удалена', 'success');
+      notesData = notesData.filter(n => n.id !== noteId);
+      renderNotes();
+    } else {
+      showToast(result.error || 'Ошибка удаления', 'error');
+    }
+  } catch (err) {
+    showToast('Ошибка удаления', 'error');
+  }
+}
+
+// ===== Sidebar Badge Counts =====
+
+async function updateHeaderStatsForSessions() {
+  try {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    const res = await authFetch(`${API_BASE}/sessions/count?${params}`);
+    const result = await res.json();
+    if (result.success) {
+      document.getElementById('stat-total').textContent = result.count;
+    }
+
+    // 24h count
+    const params24h = new URLSearchParams();
+    if (currentProjectId) params24h.append('project_id', currentProjectId);
+    params24h.append('date_from', new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString());
+    const res24h = await authFetch(`${API_BASE}/sessions/count?${params24h}`);
+    const result24h = await res24h.json();
+    if (result24h.success) {
+      document.getElementById('stat-24h').textContent = result24h.count;
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function updateHeaderStatsForNotes() {
+  try {
+    const params = new URLSearchParams();
+    if (currentProjectId) params.append('project_id', currentProjectId);
+    const res = await authFetch(`${API_BASE}/notes/count?${params}`);
+    const result = await res.json();
+    if (result.success) {
+      document.getElementById('stat-total').textContent = result.count;
+      document.getElementById('stat-24h').textContent = result.count; // all notes are "recent" for now
+    }
+  } catch (e) { /* ignore */ }
+}
+
+async function updateSessionNotesCounts() {
+  try {
+    const sessParams = new URLSearchParams();
+    if (currentProjectId) sessParams.append('project_id', currentProjectId);
+    const sessRes = await authFetch(`${API_BASE}/sessions/count?${sessParams}`);
+    const sessResult = await sessRes.json();
+    if (sessResult.success) {
+      document.getElementById('count-sessions').textContent = sessResult.count;
+    }
+
+    const notesParams = new URLSearchParams();
+    if (currentProjectId) notesParams.append('project_id', currentProjectId);
+    const notesRes = await authFetch(`${API_BASE}/notes/count?${notesParams}`);
+    const notesResult = await notesRes.json();
+    if (notesResult.success) {
+      document.getElementById('count-notes').textContent = notesResult.count;
+    }
+  } catch (e) {
+    // Silently fail
+  }
 }

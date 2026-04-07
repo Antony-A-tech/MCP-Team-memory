@@ -257,13 +257,17 @@ export class SessionManager {
     return this.storage.listSessions(agentTokenId, filters);
   }
 
+  async countSessions(agentTokenId: string, filters: SessionFilters): Promise<number> {
+    return this.storage.countSessions(agentTokenId, filters);
+  }
+
   async readSession(sessionId: string, agentTokenId: string, from?: number, to?: number): Promise<{
     session: Session;
     messages: SessionMessage[];
   } | null> {
     const session = await this.storage.getSession(sessionId);
     if (!session) return null;
-    if (session.agentTokenId !== agentTokenId) throw new Error('Access denied: not your session');
+    if (agentTokenId && session.agentTokenId !== agentTokenId) throw new Error('Access denied: not your session');
 
     const messages = await this.storage.getMessages(sessionId, from ?? 0, to);
     return { session, messages };
@@ -319,6 +323,26 @@ export class SessionManager {
       chunkIndex: (r.payload.chunk_index as number) ?? 0,
       messageIndex: (r.payload.message_index as number) ?? 0,
     }));
+  }
+
+  async searchMessagesInSession(sessionId: string, agentTokenId: string, query: string, limit: number = 20): Promise<SessionMessage[]> {
+    const session = await this.storage.getSession(sessionId);
+    if (!session) throw new Error('Session not found');
+    if (agentTokenId && session.agentTokenId !== agentTokenId) throw new Error('Access denied: not your session');
+
+    // Try semantic search first
+    if (session.embeddingStatus === 'complete' && this.embeddingProvider?.isReady() && this.vectorStore) {
+      const results = await this.searchMessages(agentTokenId, query, { sessionId, limit });
+      if (results.length > 0) {
+        const messages = await Promise.all(
+          results.map(r => this.storage.getMessages(sessionId, r.messageIndex, r.messageIndex))
+        );
+        return messages.flat();
+      }
+    }
+
+    // Fallback: text search
+    return this.storage.searchMessagesByText(sessionId, query, limit);
   }
 
   async deleteSession(sessionId: string, agentTokenId: string): Promise<boolean> {

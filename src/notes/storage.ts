@@ -64,6 +64,42 @@ export class PersonalNotesStorage {
     return rows.map(r => filters.mode === 'full' ? this.rowToNote(r) : this.rowToCompact(r));
   }
 
+  async countNotes(agentTokenId: string | null, filters: NoteFilters): Promise<number> {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (agentTokenId !== null) {
+      conditions.push(`agent_token_id = $${idx++}`);
+      params.push(agentTokenId);
+    }
+    if (filters.projectId) {
+      conditions.push(`project_id = $${idx++}`);
+      params.push(filters.projectId);
+    }
+    if (filters.sessionId) {
+      conditions.push(`session_id = $${idx++}`);
+      params.push(filters.sessionId);
+    }
+    if (filters.status) {
+      conditions.push(`status = $${idx++}`);
+      params.push(filters.status);
+    }
+    if (filters.search) {
+      const escaped = filters.search.replace(/[%_\\]/g, '\\$&');
+      conditions.push(`(search_vector @@ plainto_tsquery($${idx}) OR title ILIKE $${idx + 1} ESCAPE '\\' OR content ILIKE $${idx + 1} ESCAPE '\\')`);
+      params.push(filters.search, `%${escaped}%`);
+      idx += 2;
+    }
+
+    const where = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
+    const { rows } = await this.pool.query(
+      `SELECT COUNT(*)::int AS count FROM personal_notes ${where}`,
+      params,
+    );
+    return rows[0].count;
+  }
+
   async search(agentTokenId: string | null, query: string, filters: NoteFilters): Promise<PersonalNote[]> {
     const conditions: string[] = [];
     const params: unknown[] = [];
