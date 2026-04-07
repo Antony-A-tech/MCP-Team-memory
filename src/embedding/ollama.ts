@@ -14,6 +14,8 @@ const DEFAULT_MODEL = 'nomic-embed-text-v2-moe';
 // Safe limit: ~8000 tokens / ~2 tokens/char = ~4000 Cyrillic chars.
 // Mixed text (code + Cyrillic): use 6000 chars as a balanced limit.
 const MAX_EMBED_CHARS = 6000;
+const EMBED_BATCH_SIZE = 50;        // max texts per single Ollama API call
+const EMBED_TIMEOUT_MS = 5 * 60_000; // 5 min per sub-batch (Ollama is slow on CPU)
 
 function truncateForEmbed(text: string): string {
   return text.length > MAX_EMBED_CHARS ? text.slice(0, MAX_EMBED_CHARS) : text;
@@ -85,14 +87,29 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
     if (!this.ready) throw new Error('Embedding provider not initialized');
     if (texts.length === 0) return [];
     const prefix = taskType === 'query' ? 'search_query: ' : 'search_document: ';
-    const res = await fetch(`${this.baseUrl}/api/embed`, {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ model: this.modelName, truncate: true, input: texts.map(t => prefix + truncateForEmbed(t)) }),
-    });
-    if (!res.ok) throw new Error(`Ollama embed error ${res.status}: ${await res.text()}`);
-    const data = await res.json() as { embeddings: number[][] };
-    return data.embeddings;
+    const allEmbeddings: number[][] = [];
+    const totalBatches = Math.ceil(texts.length / EMBED_BATCH_SIZE);
+
+    for (let i = 0; i < texts.length; i += EMBED_BATCH_SIZE) {
+      const batch = texts.slice(i, i + EMBED_BATCH_SIZE);
+      if (totalBatches > 1) {
+        const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
+        logger.info({ batch: batchNum, totalBatches, batchSize: batch.length, totalTexts: texts.length },
+          'Embedding sub-batch');
+      }
+
+      const res = await fetch(`${this.baseUrl}/api/embed`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ model: this.modelName, truncate: true, input: batch.map(t => prefix + truncateForEmbed(t)) }),
+        signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+      });
+      if (!res.ok) throw new Error(`Ollama embed error ${res.status}: ${await res.text()}`);
+      const data = await res.json() as { embeddings: number[][] };
+      allEmbeddings.push(...data.embeddings);
+    }
+
+    return allEmbeddings;
   }
 
   async close(): Promise<void> { this.ready = false; }
