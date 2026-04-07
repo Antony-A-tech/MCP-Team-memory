@@ -37,6 +37,14 @@ export class NotesManager {
     return note;
   }
 
+  async getById(noteId: string, agentTokenId: string | null): Promise<PersonalNote | null> {
+    return this.storage.getById(noteId, agentTokenId);
+  }
+
+  async count(agentTokenId: string | null, filters: NoteFilters): Promise<number> {
+    return this.storage.countNotes(agentTokenId, filters);
+  }
+
   async read(agentTokenId: string | null, filters: NoteFilters): Promise<(PersonalNote | CompactPersonalNote)[]> {
     if (filters.search) {
       return this.storage.search(agentTokenId, filters.search, filters);

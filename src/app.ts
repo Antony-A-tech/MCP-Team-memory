@@ -245,6 +245,200 @@ async function main(): Promise<void> {
     res.json({ ok: true });
   });
 
+  // === Sessions REST API ===
+  app.get('/api/sessions', async (req, res) => {
+    if (!sessionManager) { res.json({ success: true, sessions: [], hasMore: false, offset: 0, limit: 20 }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const projectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = parseInt(req.query.offset as string) || 0;
+    try {
+      const sessions = await sessionManager.listSessions(agentTokenId || '', {
+        projectId,
+        search: req.query.search as string,
+        tags: req.query.tags ? (req.query.tags as string).split(',') : undefined,
+        limit,
+        offset,
+      });
+      res.json({ success: true, sessions, offset, limit, hasMore: sessions.length === limit });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/sessions failed');
+      res.status(500).json({ success: false, error: 'Failed to list sessions' });
+    }
+  });
+
+  app.get('/api/sessions/count', async (req, res) => {
+    if (!sessionManager) { res.json({ success: true, count: 0 }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const projectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
+    try {
+      const dateFrom = req.query.date_from as string || undefined;
+      const count = await sessionManager.countSessions(agentTokenId || '', { projectId, dateFrom });
+      res.json({ success: true, count });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/sessions/count failed');
+      res.status(500).json({ success: false, error: 'Failed to count sessions' });
+    }
+  });
+
+  app.get('/api/sessions/:id', async (req, res) => {
+    if (!sessionManager) { res.status(404).json({ success: false, error: 'Sessions not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const from = parseInt(req.query.from as string) || 0;
+    const to = req.query.to ? parseInt(req.query.to as string) : undefined;
+    try {
+      const result = await sessionManager.readSession(req.params.id, agentTokenId || '', from, to);
+      if (!result) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      res.json({
+        success: true,
+        session: result.session,
+        messages: result.messages,
+        total_messages: result.session.messageCount,
+      });
+    } catch (err: any) {
+      if (err.message?.includes('Access denied')) { res.status(403).json({ success: false, error: err.message }); return; }
+      logger.error({ err }, 'GET /api/sessions/:id failed');
+      res.status(500).json({ success: false, error: 'Failed to read session' });
+    }
+  });
+
+  app.get('/api/sessions/:id/search', async (req, res) => {
+    if (!sessionManager) { res.status(404).json({ success: false, error: 'Sessions not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const query = req.query.q as string;
+    if (!query) { res.status(400).json({ success: false, error: 'Query parameter "q" is required' }); return; }
+    const limit = parseInt(req.query.limit as string) || 20;
+    try {
+      const messages = await sessionManager.searchMessagesInSession(req.params.id, agentTokenId || '', query, limit);
+      res.json({ success: true, messages });
+    } catch (err: any) {
+      if (err.message?.includes('Access denied')) { res.status(403).json({ success: false, error: err.message }); return; }
+      if (err.message?.includes('not found')) { res.status(404).json({ success: false, error: err.message }); return; }
+      logger.error({ err }, 'GET /api/sessions/:id/search failed');
+      res.status(500).json({ success: false, error: 'Failed to search messages' });
+    }
+  });
+
+  app.delete('/api/sessions/:id', async (req, res) => {
+    if (!sessionManager) { res.status(404).json({ success: false, error: 'Sessions not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    try {
+      const deleted = await sessionManager.deleteSession(req.params.id, agentTokenId || '');
+      if (!deleted) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      res.json({ success: true });
+    } catch (err: any) {
+      if (err.message?.includes('Access denied')) { res.status(403).json({ success: false, error: err.message }); return; }
+      logger.error({ err }, 'DELETE /api/sessions/:id failed');
+      res.status(500).json({ success: false, error: 'Failed to delete session' });
+    }
+  });
+
+  // === Notes REST API ===
+  app.get('/api/notes', async (req, res) => {
+    if (!notesManager) { res.json({ success: true, notes: [], hasMore: false, offset: 0, limit: 20 }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const limit = parseInt(req.query.limit as string) || 20;
+    const offset = parseInt(req.query.offset as string) || 0;
+    try {
+      const notes = await notesManager.read(agentTokenId || null, {
+        projectId: (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined,
+        sessionId: (req.query.session_id as string) || undefined,
+        search: (req.query.search as string) || undefined,
+        status: 'active',
+        mode: 'full',
+        limit,
+        offset,
+      });
+      res.json({ success: true, notes, offset, limit, hasMore: notes.length === limit });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/notes failed');
+      res.status(500).json({ success: false, error: 'Failed to list notes' });
+    }
+  });
+
+  app.get('/api/notes/count', async (req, res) => {
+    if (!notesManager) { res.json({ success: true, count: 0 }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const projectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
+    try {
+      const count = await notesManager.count(agentTokenId || null, { projectId, status: 'active' });
+      res.json({ success: true, count });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/notes/count failed');
+      res.status(500).json({ success: false, error: 'Failed to count notes' });
+    }
+  });
+
+  app.get('/api/notes/:id', async (req, res) => {
+    if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    try {
+      const note = await notesManager.getById(req.params.id, agentTokenId || null);
+      if (!note) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      res.json({ success: true, note });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/notes/:id failed');
+      res.status(500).json({ success: false, error: 'Failed to read note' });
+    }
+  });
+
+  app.post('/api/notes', async (req, res) => {
+    if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const { title, content, tags, session_id } = req.body;
+    if (!title || !content) { res.status(400).json({ success: false, error: 'title and content are required' }); return; }
+    const projectId = (req.body.project_id as string) || (req.headers['x-project-id'] as string) || null;
+    try {
+      if (!agentTokenId) { res.status(400).json({ success: false, error: 'Agent token required to create notes. Use an agent token instead of master token.' }); return; }
+      const note = await notesManager.write(agentTokenId, {
+        title,
+        content,
+        tags: Array.isArray(tags) ? tags : (tags ? String(tags).split(',').map((t: string) => t.trim()).filter(Boolean) : []),
+        priority: req.body.priority || 'medium',
+        projectId,
+        sessionId: session_id || null,
+      });
+      res.json({ success: true, note });
+    } catch (err) {
+      logger.error({ err }, 'POST /api/notes failed');
+      res.status(500).json({ success: false, error: 'Failed to create note' });
+    }
+  });
+
+  app.put('/api/notes/:id', async (req, res) => {
+    if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    try {
+      const updates: Record<string, unknown> = {};
+      if (req.body.title !== undefined) updates.title = req.body.title;
+      if (req.body.content !== undefined) updates.content = req.body.content;
+      if (req.body.tags !== undefined) {
+        updates.tags = Array.isArray(req.body.tags) ? req.body.tags : String(req.body.tags).split(',').map((t: string) => t.trim()).filter(Boolean);
+      }
+      if (req.body.priority !== undefined) updates.priority = req.body.priority;
+      if (req.body.session_id !== undefined) updates.sessionId = req.body.session_id;
+      const note = await notesManager.update(req.params.id, agentTokenId || null, updates);
+      res.json({ success: true, note });
+    } catch (err: any) {
+      if (err.message?.includes('not found')) { res.status(404).json({ success: false, error: err.message }); return; }
+      logger.error({ err }, 'PUT /api/notes/:id failed');
+      res.status(500).json({ success: false, error: 'Failed to update note' });
+    }
+  });
+
+  app.delete('/api/notes/:id', async (req, res) => {
+    if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    try {
+      const deleted = await notesManager.delete(req.params.id, agentTokenId || null, false);
+      if (!deleted) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      res.json({ success: true });
+    } catch (err) {
+      logger.error({ err }, 'DELETE /api/notes/:id failed');
+      res.status(500).json({ success: false, error: 'Failed to delete note' });
+    }
+  });
+
   // Mount MCP transport (after all optional managers are created)
   mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager));
 

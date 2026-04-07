@@ -79,6 +79,16 @@
           <span>Конвенции</span>
           <span class="nav-count" id="count-conventions">0</span>
         </button>
+        <button class="nav-item" data-category="sessions">
+          <i data-lucide="message-square" class="nav-icon"></i>
+          <span>Сессии</span>
+          <span class="nav-count" id="count-sessions">0</span>
+        </button>
+        <button class="nav-item" data-category="notes">
+          <i data-lucide="sticky-note" class="nav-icon"></i>
+          <span>Заметки</span>
+          <span class="nav-count" id="count-notes">0</span>
+        </button>
 
         <div class="nav-divider"></div>
         <button class="nav-item nav-item-graph" id="btn-graph-view">
@@ -198,6 +208,49 @@
 
       <!-- Entries Grid -->
       <div class="entries-container" id="entries-container">
+        <div class="loading">
+          <i data-lucide="loader-2" class="spin"></i>
+          <span>Загрузка...</span>
+        </div>
+      </div>
+
+      <!-- Sessions List (hidden by default) -->
+      <div class="sessions-container" id="sessions-container" style="display:none">
+        <div class="loading">
+          <i data-lucide="loader-2" class="spin"></i>
+          <span>Загрузка...</span>
+        </div>
+      </div>
+
+      <!-- Session Detail View (hidden by default) -->
+      <div class="session-detail-container" id="session-detail-container" style="display:none">
+        <div class="session-detail-header">
+          <button class="btn btn-secondary session-back-btn" id="session-back-btn">
+            <i data-lucide="arrow-left"></i> Назад к сессиям
+          </button>
+          <div class="session-detail-info">
+            <h2 class="session-detail-title" id="session-detail-title"></h2>
+            <div class="session-detail-summary" id="session-detail-summary"></div>
+            <div class="session-detail-meta" id="session-detail-meta"></div>
+            <div class="session-detail-tags" id="session-detail-tags"></div>
+          </div>
+          <div class="session-search-bar">
+            <div class="search-box">
+              <i data-lucide="search" class="search-icon"></i>
+              <input type="text" id="session-message-search" placeholder="Поиск по сообщениям...">
+            </div>
+          </div>
+        </div>
+        <div class="session-messages" id="session-messages">
+          <div class="loading">
+            <i data-lucide="loader-2" class="spin"></i>
+            <span>Загрузка сообщений...</span>
+          </div>
+        </div>
+      </div>
+
+      <!-- Notes List (hidden by default) -->
+      <div class="notes-container" id="notes-container" style="display:none">
         <div class="loading">
           <i data-lucide="loader-2" class="spin"></i>
           <span>Загрузка...</span>
@@ -532,6 +585,63 @@
       <button class="context-menu-item context-menu-item--danger" data-action="delete">
         <i data-lucide="trash-2"></i> Удалить
       </button>
+    </div>
+
+    <!-- Note Modal (Create/Edit) -->
+    <div class="modal" id="note-modal">
+      <div class="modal-content">
+        <div class="modal-header">
+          <h2 id="note-modal-title">Создать заметку</h2>
+          <button class="modal-close" id="note-modal-close">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <form id="note-form">
+          <input type="hidden" id="note-id">
+          <div class="form-group">
+            <label for="note-title-input">Заголовок</label>
+            <input type="text" id="note-title-input" required placeholder="Заголовок заметки">
+          </div>
+          <div class="form-group">
+            <label for="note-content-input">Содержание</label>
+            <textarea id="note-content-input" required rows="8" placeholder="Текст заметки..."></textarea>
+          </div>
+          <div class="form-group">
+            <label for="note-tags-input">Теги (через запятую)</label>
+            <input type="text" id="note-tags-input" placeholder="tag1, tag2, tag3">
+          </div>
+          <div class="form-group">
+            <label for="note-session-select">Привязка к сессии (опционально)</label>
+            <select id="note-session-select">
+              <option value="">Без привязки</option>
+            </select>
+          </div>
+          <div class="modal-footer">
+            <button type="button" class="btn btn-secondary" id="note-btn-cancel">Отмена</button>
+            <button type="submit" class="btn btn-primary">Сохранить</button>
+          </div>
+        </form>
+      </div>
+    </div>
+
+    <!-- Note Read Modal -->
+    <div class="modal" id="note-read-modal">
+      <div class="modal-content read-modal-content">
+        <div class="modal-header">
+          <h2 id="note-read-title"></h2>
+          <div class="read-modal-actions">
+            <button class="modal-action-btn" id="note-read-edit" title="Редактировать">
+              <i data-lucide="pencil"></i>
+            </button>
+            <button class="modal-close" id="note-read-close">
+              <i data-lucide="x"></i>
+            </button>
+          </div>
+        </div>
+        <div class="read-modal-meta" id="note-read-meta"></div>
+        <div class="read-modal-body" id="note-read-body"></div>
+        <div class="read-modal-tags" id="note-read-tags"></div>
+      </div>
     </div>
 
     <!-- Toast Notifications -->

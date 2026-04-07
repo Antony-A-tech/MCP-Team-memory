@@ -80,9 +80,14 @@ export class SessionStorage {
   }
 
   async listSessions(agentTokenId: string, filters: SessionFilters): Promise<Session[]> {
-    const conditions = ['agent_token_id = $1'];
-    const params: unknown[] = [agentTokenId];
-    let idx = 2;
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (agentTokenId) {
+      conditions.push(`agent_token_id = $${idx++}`);
+      params.push(agentTokenId);
+    }
 
     if (filters.projectId) {
       conditions.push(`project_id = $${idx++}`);
@@ -111,11 +116,47 @@ export class SessionStorage {
     const offset = filters.offset ?? 0;
 
     const { rows } = await this.pool.query(
-      `SELECT * FROM sessions WHERE ${conditions.join(' AND ')} ORDER BY started_at DESC NULLS LAST LIMIT $${idx++} OFFSET $${idx++}`,
+      `SELECT * FROM sessions${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''} ORDER BY started_at DESC NULLS LAST LIMIT $${idx++} OFFSET $${idx++}`,
       [...params, limit, offset],
     );
 
     return rows.map(r => this.rowToSession(r));
+  }
+
+  async countSessions(agentTokenId: string, filters: SessionFilters): Promise<number> {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    let idx = 1;
+
+    if (agentTokenId) {
+      conditions.push(`agent_token_id = $${idx++}`);
+      params.push(agentTokenId);
+    }
+
+    if (filters.projectId) {
+      conditions.push(`project_id = $${idx++}`);
+      params.push(filters.projectId);
+    }
+    if (filters.tags && filters.tags.length > 0) {
+      conditions.push(`tags && $${idx++}`);
+      params.push(filters.tags);
+    }
+    if (filters.dateFrom) {
+      conditions.push(`started_at >= $${idx++}`);
+      params.push(filters.dateFrom);
+    }
+    if (filters.search) {
+      const escaped = filters.search.replace(/[%_\\]/g, '\\$&');
+      conditions.push(`(search_vector @@ plainto_tsquery($${idx}) OR name ILIKE $${idx + 1} ESCAPE '\\' OR summary ILIKE $${idx + 1} ESCAPE '\\')`);
+      params.push(filters.search, `%${escaped}%`);
+      idx += 2;
+    }
+
+    const { rows } = await this.pool.query(
+      `SELECT COUNT(*)::int AS count FROM sessions${conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : ''}`,
+      params,
+    );
+    return rows[0].count;
   }
 
   async getSession(sessionId: string): Promise<Session | null> {
@@ -136,6 +177,18 @@ export class SessionStorage {
     sql += ' ORDER BY message_index ASC';
 
     const { rows } = await this.pool.query(sql, params);
+    return rows.map(r => this.rowToMessage(r));
+  }
+
+  async searchMessagesByText(sessionId: string, query: string, limit: number = 20): Promise<SessionMessage[]> {
+    const escaped = query.replace(/[%_\\]/g, '\\$&');
+    const { rows } = await this.pool.query(
+      `SELECT * FROM session_messages
+       WHERE session_id = $1 AND content ILIKE $2 ESCAPE '\\'
+       ORDER BY message_index ASC
+       LIMIT $3`,
+      [sessionId, `%${escaped}%`, limit],
+    );
     return rows.map(r => this.rowToMessage(r));
   }
 
@@ -225,11 +278,12 @@ export class SessionStorage {
   }
 
   async deleteSession(sessionId: string, agentTokenId: string): Promise<boolean> {
-    // Single query with ownership check
-    const { rowCount } = await this.pool.query(
-      'DELETE FROM sessions WHERE id = $1 AND agent_token_id = $2',
-      [sessionId, agentTokenId],
-    );
+    // Single query with ownership check (skip ownership check for master token — empty agentTokenId)
+    const sql = agentTokenId
+      ? 'DELETE FROM sessions WHERE id = $1 AND agent_token_id = $2'
+      : 'DELETE FROM sessions WHERE id = $1';
+    const params = agentTokenId ? [sessionId, agentTokenId] : [sessionId];
+    const { rowCount } = await this.pool.query(sql, params);
 
     if (rowCount === 0) {
       const { rows } = await this.pool.query('SELECT id FROM sessions WHERE id = $1', [sessionId]);
