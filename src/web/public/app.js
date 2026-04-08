@@ -615,6 +615,7 @@ function initNavigation() {
         document.getElementById('entries-container').style.display = 'none';
         document.getElementById('sessions-container').style.display = '';
         document.getElementById('domain-filters').style.display = 'none';
+        statusSelect.style.display = 'none';
         pageTitle.textContent = 'Сессии';
         updateHeaderStatsForSessions();
         loadSessions();
@@ -622,10 +623,12 @@ function initNavigation() {
         document.getElementById('entries-container').style.display = 'none';
         document.getElementById('notes-container').style.display = '';
         document.getElementById('domain-filters').style.display = 'none';
+        statusSelect.style.display = 'none';
         pageTitle.textContent = 'Заметки';
         updateHeaderStatsForNotes();
         loadNotes();
       } else {
+        statusSelect.style.display = '';
         pageTitle.textContent = categoryConfig[currentCategory]?.title || 'Все записи';
         loadStats();
         loadEntries();
