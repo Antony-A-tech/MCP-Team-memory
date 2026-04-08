@@ -12,7 +12,7 @@ const https = require('https');
 // === Config ===
 const SERVER_URL = process.env.TM_SERVER_URL || 'http://10.61.11.54:3846';
 const TOKEN = process.env.TM_TOKEN;
-const MIN_MESSAGES = 3;
+const MIN_MESSAGES = 4;
 
 // === CLI args ===
 const args = process.argv.slice(2);
@@ -176,6 +176,12 @@ function parseSessionFile(filePath) {
 
     textContent = textContent.trim();
     if (!textContent) continue;
+
+    // Skip system/service messages with no useful content
+    if (/^<local-command-(caveat|stdout|stderr)>/.test(textContent)) continue;
+    if (/^<command-name>/.test(textContent) && textContent.length < 200) continue;
+    if (/^<(environment_details|system-reminder|ide_|user-prompt)/.test(textContent)) continue;
+
     if (textContent.length > 10000) {
       textContent = textContent.substring(0, 10000) + '... [truncated]';
     }

@@ -159,6 +159,20 @@ export class SessionStorage {
     return rows[0].count;
   }
 
+  async countByEmbeddingStatus(projectId?: string): Promise<Record<string, number>> {
+    const conditions: string[] = [];
+    const params: unknown[] = [];
+    if (projectId) { conditions.push('project_id = $1'); params.push(projectId); }
+    const where = conditions.length > 0 ? ' WHERE ' + conditions.join(' AND ') : '';
+    const { rows } = await this.pool.query(
+      `SELECT embedding_status, COUNT(*)::int AS count FROM sessions${where} GROUP BY embedding_status`,
+      params,
+    );
+    const result: Record<string, number> = {};
+    for (const row of rows) result[row.embedding_status] = row.count;
+    return result;
+  }
+
   async getSession(sessionId: string): Promise<Session | null> {
     const { rows } = await this.pool.query('SELECT * FROM sessions WHERE id = $1', [sessionId]);
     return rows.length > 0 ? this.rowToSession(rows[0]) : null;
@@ -236,13 +250,15 @@ export class SessionStorage {
     }
   }
 
-  async updateSessionMeta(sessionId: string, meta: { messageCount?: number; endedAt?: string | null }): Promise<void> {
+  async updateSessionMeta(sessionId: string, meta: { messageCount?: number; endedAt?: string | null; name?: string; tags?: string[] }): Promise<void> {
     const sets: string[] = [];
     const params: unknown[] = [];
     let idx = 1;
 
     if (meta.messageCount !== undefined) { sets.push(`message_count = $${idx++}`); params.push(meta.messageCount); }
     if (meta.endedAt !== undefined) { sets.push(`ended_at = $${idx++}`); params.push(meta.endedAt); }
+    if (meta.name !== undefined) { sets.push(`name = $${idx++}`); params.push(meta.name); }
+    if (meta.tags !== undefined) { sets.push(`tags = $${idx++}`); params.push(meta.tags); }
 
     if (sets.length > 0) {
       params.push(sessionId);

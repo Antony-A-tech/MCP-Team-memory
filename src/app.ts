@@ -274,7 +274,8 @@ async function main(): Promise<void> {
     try {
       const dateFrom = req.query.date_from as string || undefined;
       const count = await sessionManager.countSessions(agentTokenId || '', { projectId, dateFrom });
-      res.json({ success: true, count });
+      const embeddingCounts = dateFrom ? undefined : await sessionManager.countByEmbeddingStatus(projectId);
+      res.json({ success: true, count, embeddingCounts });
     } catch (err) {
       logger.error({ err }, 'GET /api/sessions/count failed');
       res.status(500).json({ success: false, error: 'Failed to count sessions' });

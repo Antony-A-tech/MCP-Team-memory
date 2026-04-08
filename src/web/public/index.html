@@ -79,6 +79,7 @@
           <span>Конвенции</span>
           <span class="nav-count" id="count-conventions">0</span>
         </button>
+        <div class="nav-divider"></div>
         <button class="nav-item" data-category="sessions">
           <i data-lucide="message-square" class="nav-icon"></i>
           <span>Сессии</span>
@@ -685,17 +686,27 @@
           </button>
         </div>
       </div>
-      <div class="chat-messages" id="chat-messages">
-        <div class="chat-welcome">
-          <i data-lucide="sparkles" class="chat-welcome-icon"></i>
-          <p>Привет! Я AI-ассистент Intellectika. Задавайте любые вопросы.</p>
+      <div class="chat-body-wrap">
+        <div class="chat-messages" id="chat-messages">
+          <div class="chat-welcome">
+            <i data-lucide="sparkles" class="chat-welcome-icon"></i>
+            <p>Привет! Я AI-ассистент Intellectika. Задавайте любые вопросы.</p>
+          </div>
         </div>
-      </div>
-      <div class="chat-input-wrap">
-        <textarea class="chat-input" id="chat-input" placeholder="Введите сообщение..." rows="1"></textarea>
-        <button class="chat-send-btn" id="chat-send" title="Отправить">
-          <i data-lucide="send"></i>
-        </button>
+        <div class="chat-input-wrap">
+          <textarea class="chat-input" id="chat-input" placeholder="Введите сообщение..." rows="1" disabled></textarea>
+          <button class="chat-send-btn" id="chat-send" title="Отправить" disabled>
+            <i data-lucide="send"></i>
+          </button>
+        </div>
+        <!-- Development overlay -->
+        <div class="chat-dev-overlay">
+          <div class="chat-dev-badge">
+            <i data-lucide="construction" style="width:32px;height:32px;margin-bottom:12px;opacity:0.8"></i>
+            <span class="chat-dev-title">В разработке</span>
+            <span class="chat-dev-text">AI Chat v4.0 находится в стадии разработки.<br>Сейчас модель работает на CPU, что делает ответы слишком медленными для комфортного использования.</span>
+          </div>
+        </div>
       </div>
     </div>
   </div>

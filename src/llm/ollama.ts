@@ -116,14 +116,25 @@ export class OllamaLlmClient {
       .map(m => `[${m.role}]: ${m.content.slice(0, 300)}`)
       .join('\n');
 
-    const prompt = `Summarize this development session in 3-5 sentences. Focus on: what was built/changed, key decisions made, and the outcome. Write in the same language as the conversation.
+    // Detect language: if >15% Cyrillic chars in sampled text → Russian
+    const allText = conversation.replace(/[^a-zA-Zа-яА-ЯёЁ]/g, '');
+    const cyrillicCount = (allText.match(/[а-яА-ЯёЁ]/g) || []).length;
+    const cyrillicRatio = allText.length > 0 ? cyrillicCount / allText.length : 0;
+    const lang = cyrillicRatio > 0.15 ? 'Russian' : 'English';
+
+    const prompt = `Analyze this development session and provide a title, tags, and summary. Write in ${lang}.
+
+Format your response EXACTLY as:
+Title: <short descriptive title, 5-10 words, no quotes>
+Tags: <3-6 lowercase tags separated by commas, e.g.: bugfix, auth, api, refactoring>
+Summary: <3-5 sentences about what was built/changed, key decisions, outcome>
 
 Session transcript (${messages.length} messages total):
 ${conversation}
 
-Summary:`;
+Title:`;
 
-    return this.generate(prompt, { temperature: 0.2, maxTokens: 200 });
+    return this.generate(prompt, { temperature: 0.2, maxTokens: 300 });
   }
 
   async chat(messages: Array<{ role: 'user' | 'assistant' | 'system'; content: string }>, options?: LlmGenerateOptions): Promise<string> {

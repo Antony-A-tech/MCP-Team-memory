@@ -1716,6 +1716,14 @@ function toggleGraphView(show) {
     document.getElementById('btn-graph-view').classList.add('active');
     pageTitle.textContent = 'Граф знаний';
 
+    // Hide sessions/notes containers
+    document.getElementById('sessions-container').style.display = 'none';
+    document.getElementById('session-detail-container').style.display = 'none';
+    document.getElementById('notes-container').style.display = 'none';
+
+    // Scroll to top so graph is visible
+    document.querySelector('.main').scrollTo(0, 0);
+
     // Load all entries for graph (no filters, higher limit)
     loadGraphEntries();
   } else {
@@ -2729,6 +2737,27 @@ async function updateHeaderStatsForSessions() {
     const result = await res.json();
     if (result.success) {
       document.getElementById('stat-total').textContent = result.count;
+
+      // Update vectorized indicator for sessions
+      if (result.embeddingCounts) {
+        const ec = result.embeddingCounts;
+        const total = Object.values(ec).reduce((a, b) => a + b, 0);
+        const complete = ec.complete || 0;
+        const dot = document.getElementById('embedding-dot');
+        const countEl = document.getElementById('embedding-count');
+        const indicator = document.getElementById('embedding-indicator');
+        if (dot && countEl && indicator) {
+          countEl.textContent = `${complete}/${total}`;
+          if (complete >= total && total > 0) {
+            dot.className = 'embedding-dot active';
+            indicator.setAttribute('data-tooltip', 'Все сессии проиндексированы');
+          } else if (complete > 0) {
+            dot.className = 'embedding-dot partial';
+            const pct = total > 0 ? Math.round(complete / total * 100) : 0;
+            indicator.setAttribute('data-tooltip', `${pct}% сессий проиндексировано`);
+          }
+        }
+      }
     }
 
     // 24h count
