@@ -226,9 +226,14 @@
       <!-- Session Detail View (hidden by default) -->
       <div class="session-detail-container" id="session-detail-container" style="display:none">
         <div class="session-detail-header">
-          <button class="btn btn-secondary session-back-btn" id="session-back-btn">
-            <i data-lucide="arrow-left"></i> Назад к сессиям
-          </button>
+          <div class="session-detail-actions">
+            <button class="btn btn-secondary session-back-btn" id="session-back-btn">
+              <i data-lucide="arrow-left"></i> Назад к сессиям
+            </button>
+            <button class="btn btn-secondary btn-danger-outline" id="session-delete-detail-btn" title="Удалить сессию">
+              <i data-lucide="trash-2"></i> Удалить
+            </button>
+          </div>
           <div class="session-detail-info">
             <h2 class="session-detail-title" id="session-detail-title"></h2>
             <div class="session-detail-summary" id="session-detail-summary"></div>
