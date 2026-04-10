@@ -1739,6 +1739,10 @@ function toggleGraphView(show) {
     headerRight.style.visibility = 'hidden';
     const loadMore = document.getElementById('load-more-btn');
     if (loadMore) loadMore.style.display = 'none';
+    const sessLoadMore = document.getElementById('sessions-load-more-btn');
+    if (sessLoadMore) sessLoadMore.style.display = 'none';
+    const notesLoadMore = document.getElementById('notes-load-more-btn');
+    if (notesLoadMore) notesLoadMore.style.display = 'none';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     document.getElementById('btn-graph-view').classList.add('active');
