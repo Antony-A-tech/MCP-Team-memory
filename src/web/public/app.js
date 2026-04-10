@@ -2281,7 +2281,12 @@ function renderSessions() {
 
     return `
     <div class="session-card" data-session-id="${escapeHtml(session.id)}">
-      <div class="session-title">${escapeHtml(title)}</div>
+      <div class="session-card-header">
+        <div class="session-title">${escapeHtml(title)}</div>
+        <button class="btn-icon session-delete-btn" data-action="deleteSession" data-id="${escapeHtml(session.id)}" title="Удалить сессию">
+          <i data-lucide="trash-2"></i>
+        </button>
+      </div>
       ${session.summary ? `<div class="session-summary">${escapeHtml(session.summary)}</div>` : ''}
       <div class="session-meta">
         <span><i data-lucide="calendar"></i> ${formatDate(session.importedAt)}</span>
@@ -2319,6 +2324,12 @@ function renderSessionsLoadMore(result) {
 
 // Event delegation for session cards
 document.getElementById('sessions-container').addEventListener('click', (e) => {
+  const deleteBtn = e.target.closest('[data-action="deleteSession"]');
+  if (deleteBtn) {
+    e.stopPropagation();
+    deleteSession(deleteBtn.dataset.id);
+    return;
+  }
   const card = e.target.closest('.session-card');
   if (card) {
     openSessionDetail(card.dataset.sessionId);
@@ -2445,6 +2456,41 @@ document.getElementById('session-back-btn').addEventListener('click', () => {
   if (existingLoadMore) existingLoadMore.style.display = '';
   currentSessionId = null;
   document.getElementById('session-message-search').value = '';
+});
+
+// Delete session
+async function deleteSession(id) {
+  if (!confirm('Удалить сессию навсегда?')) return;
+
+  try {
+    const response = await authFetch(`${API_BASE}/sessions/${id}`, {
+      method: 'DELETE'
+    });
+
+    const result = await response.json();
+
+    if (result.success) {
+      showToast('Сессия удалена', 'success');
+      // If in detail view, go back to list
+      if (currentSessionId === id) {
+        document.getElementById('session-detail-container').style.display = 'none';
+        document.getElementById('sessions-container').style.display = '';
+        currentSessionId = null;
+        document.getElementById('session-message-search').value = '';
+      }
+      currentSessionOffset = 0;
+      loadSessions();
+    } else {
+      showToast(result.error || 'Ошибка удаления', 'error');
+    }
+  } catch (error) {
+    showToast('Ошибка удаления сессии', 'error');
+  }
+}
+
+// Delete button in detail view
+document.getElementById('session-delete-detail-btn').addEventListener('click', () => {
+  if (currentSessionId) deleteSession(currentSessionId);
 });
 
 // Message search within session
