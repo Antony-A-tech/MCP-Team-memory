@@ -11,6 +11,7 @@ interface ConnectedClient {
   id: string;
   name: string;
   agentName?: string;  // Token-derived identity, immutable
+  readOnly?: boolean;   // true for unauthenticated viewer connections
   clientType: 'agent' | 'ui';
   projectId?: string;
   connectedAt: Date;
@@ -24,10 +25,13 @@ export class SyncWebSocketServer {
   private agentTokenStore?: AgentTokenStore;
   private unsubscribe: (() => void) | null = null;
 
-  constructor(memoryManager: MemoryManager, apiToken?: string, agentTokenStore?: AgentTokenStore) {
+  private allowReadonly: boolean;
+
+  constructor(memoryManager: MemoryManager, apiToken?: string, agentTokenStore?: AgentTokenStore, options?: { allowReadonly?: boolean }) {
     this.memoryManager = memoryManager;
     this.apiToken = apiToken;
     this.agentTokenStore = agentTokenStore;
+    this.allowReadonly = options?.allowReadonly ?? false;
   }
 
   /** Start WebSocket on a standalone port */
@@ -58,27 +62,31 @@ export class SyncWebSocketServer {
         // Prefer Authorization: Bearer header. Query param kept for WebSocket clients that can't set headers.
         const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || url.searchParams.get('token');
         if (!token) {
-          ws.close(4401, 'Unauthorized');
-          return;
-        }
-
-        // Try agent token first
-        const agentInfo = this.agentTokenStore?.resolve(token);
-        if (agentInfo) {
-          resolvedAgentName = agentInfo.agentName;
-          this.agentTokenStore!.trackLastUsed(agentInfo.id);
-        } else {
-          // Fallback: master token (timing-safe)
-          const tokenBuf = Buffer.from(token);
-          const expectedBuf = Buffer.from(effectiveToken);
-          if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+          if (!this.allowReadonly) {
             ws.close(4401, 'Unauthorized');
             return;
+          }
+          // allowReadonly: proceed without authentication (viewer mode)
+        } else {
+          // Try agent token first
+          const agentInfo = this.agentTokenStore?.resolve(token);
+          if (agentInfo) {
+            resolvedAgentName = agentInfo.agentName;
+            this.agentTokenStore!.trackLastUsed(agentInfo.id);
+          } else {
+            // Fallback: master token (timing-safe)
+            const tokenBuf = Buffer.from(token);
+            const expectedBuf = Buffer.from(effectiveToken);
+            if (tokenBuf.length !== expectedBuf.length || !crypto.timingSafeEqual(tokenBuf, expectedBuf)) {
+              ws.close(4401, 'Unauthorized');
+              return;
+            }
           }
         }
       }
 
       const clientId = this.generateClientId();
+      const isReadonlyClient = !resolvedAgentName && this.allowReadonly && !req.headers.authorization;
       const clientType = url.searchParams.get('client_type') === 'ui' ? 'ui' as const : 'agent' as const;
       const projectId = url.searchParams.get('project_id') || undefined;
       const clientName = resolvedAgentName || req.headers['x-agent-name']?.toString() || (clientType === 'ui' ? `ui-${clientId.slice(0, 8)}` : `agent-${clientId.slice(0, 8)}`);
@@ -88,6 +96,7 @@ export class SyncWebSocketServer {
         id: clientId,
         name: clientName,
         agentName: resolvedAgentName,
+        readOnly: isReadonlyClient || undefined,
         clientType,
         projectId,
         connectedAt: new Date()
@@ -164,7 +173,7 @@ export class SyncWebSocketServer {
 
       case 'rename': {
         // Token-authenticated agents have immutable names — ignore rename attempts
-        if (client.agentName) break;
+        if (client.agentName || client.readOnly) break;
         const rawName = (msg.payload as { name?: string })?.name;
         // Sanitize: limit length, strip HTML-unsafe chars to prevent XSS in broadcast/UI
         const newName = rawName?.slice(0, 64).replace(/[<>"'&]/g, '').trim();

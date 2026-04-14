@@ -14,12 +14,14 @@ import type { AgentTokenStore } from '../auth/agent-tokens.js';
  */
 export function createAuthMiddleware(
   token: string | undefined,
-  agentTokenStore?: AgentTokenStore
+  agentTokenStore?: AgentTokenStore,
+  options?: { allowReadonly?: boolean }
 ) {
   const trimmedToken = token?.trim() || undefined;
   if (token !== undefined && !trimmedToken) {
     logger.warn('MEMORY_API_TOKEN is empty/whitespace — auth is disabled');
   }
+  const allowReadonly = options?.allowReadonly ?? false;
 
   return (req: Request, res: Response, next: NextFunction): void => {
     // No token configured — auth disabled, but still extract X-Project-Id
@@ -40,6 +42,14 @@ export function createAuthMiddleware(
 
     const authHeader = req.headers.authorization;
     if (!authHeader) {
+      // Allow readonly access without token when enabled
+      if (allowReadonly) {
+        req.readOnly = true;
+        const projectId = req.headers['x-project-id'] as string | undefined;
+        (req as any).auth = { clientId: 'viewer', scopes: ['readonly'], projectId };
+        next();
+        return;
+      }
       res.status(401).json({ error: 'Authorization header required' });
       return;
     }

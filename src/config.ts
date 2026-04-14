@@ -24,6 +24,7 @@ export interface AppConfig {
   vectorStore: 'qdrant' | 'pgvector';
   qdrantUrl: string;
   qdrantApiKey: string | undefined;
+  allowReadonly: boolean;
 }
 
 /** Parse integer with fallback to default on NaN */
@@ -56,5 +57,6 @@ export function loadConfig(): AppConfig {
     vectorStore: (process.env.VECTOR_STORE as 'qdrant' | 'pgvector') || 'pgvector',
     qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
     qdrantApiKey: process.env.QDRANT_API_KEY || undefined,
+    allowReadonly: process.env.MEMORY_ALLOW_READONLY === 'true',
   };
 }

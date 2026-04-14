@@ -4,6 +4,22 @@ const btn = document.getElementById('login-btn');
 const errorEl = document.getElementById('login-error');
 const agentEl = document.getElementById('login-agent-name');
 
+// Check if readonly viewer mode is available
+(async () => {
+  try {
+    const res = await fetch('/api/auth/check');
+    const { allowReadonly } = await res.json();
+    if (allowReadonly) {
+      const viewerSection = document.getElementById('viewer-section');
+      viewerSection.style.display = '';
+      document.getElementById('viewer-btn').addEventListener('click', () => {
+        localStorage.removeItem('auth-token');
+        window.location.href = '/';
+      });
+    }
+  } catch (e) { /* ignore */ }
+})();
+
 // If token already in localStorage, try auto-login
 const saved = localStorage.getItem('auth-token');
 if (saved) {

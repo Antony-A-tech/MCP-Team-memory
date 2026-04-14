@@ -156,6 +156,40 @@
       text-align: center;
       line-height: 1.6;
     }
+
+    .login-divider {
+      display: flex;
+      align-items: center;
+      margin: 20px 0;
+      gap: 12px;
+      color: var(--text-muted);
+      font-size: 12px;
+    }
+
+    .login-divider::before,
+    .login-divider::after {
+      content: '';
+      flex: 1;
+      height: 1px;
+      background: var(--border-color);
+    }
+
+    .login-viewer-btn {
+      width: 100%;
+      padding: 10px;
+      background: transparent;
+      border: 1px solid var(--border-color);
+      border-radius: var(--radius-md);
+      color: var(--text-secondary);
+      font-size: 14px;
+      cursor: pointer;
+      transition: border-color 0.2s, color 0.2s;
+    }
+
+    .login-viewer-btn:hover {
+      border-color: var(--text-secondary);
+      color: var(--text-primary);
+    }
   </style>
 </head>
 <body>
@@ -184,6 +218,11 @@
         <div class="login-error" id="login-error"></div>
         <div class="login-agent-name" id="login-agent-name"></div>
       </form>
+
+      <div id="viewer-section" style="display:none">
+        <div class="login-divider">или</div>
+        <button class="login-viewer-btn" id="viewer-btn">Продолжить без входа (только просмотр)</button>
+      </div>
 
       <div class="login-hint">
         Получите токен у администратора сервера<br>
