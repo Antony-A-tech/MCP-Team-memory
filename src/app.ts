@@ -75,7 +75,7 @@ async function main(): Promise<void> {
   // Auth check — no auth required, tells UI if login is needed
   const authEnabled = !!config.apiToken?.trim();
   app.get('/api/auth/check', (_req, res) => {
-    res.json({ authEnabled });
+    res.json({ authEnabled, allowReadonly: config.allowReadonly });
   });
 
   // Agent token store — per-agent identity (gracefully degrades if table doesn't exist)
@@ -83,18 +83,29 @@ async function main(): Promise<void> {
   await agentTokenStore.initialize();
 
   // Auth middleware (optional — set MEMORY_API_TOKEN to enable)
-  app.use(createAuthMiddleware(config.apiToken, agentTokenStore));
+  app.use(createAuthMiddleware(config.apiToken, agentTokenStore, { allowReadonly: config.allowReadonly }));
 
   // Auth verify — after auth middleware, returns agent info if token is valid
   // isMaster: true only for MEMORY_API_TOKEN holder (the one who deployed the server)
   app.get('/api/auth/verify', (req, res) => {
-    const isMaster = !req.agentName; // master token has no agentName
+    const isMaster = !req.agentName && !req.readOnly; // master token has no agentName
     res.json({
       authenticated: true,
       agentName: req.agentName || null,
       role: req.agentRole || null, // project role from token, null for master
       isMaster,
+      readOnly: req.readOnly || false,
     });
+  });
+
+  // Readonly guard — block all write requests for readonly (viewer) users.
+  // Placed after auth middleware so req.readOnly is set. Covers REST API, MCP transport, and any future routes.
+  app.use((req, res, next) => {
+    if (req.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+      res.status(403).json({ success: false, error: 'Read-only access: authentication required for this action' });
+      return;
+    }
+    next();
   });
 
   // Rate limiting
@@ -121,7 +132,7 @@ async function main(): Promise<void> {
   const server = http.createServer(app);
 
   // Attach WebSocket to the same HTTP server
-  const wsServer = new SyncWebSocketServer(memoryManager, config.apiToken, agentTokenStore);
+  const wsServer = new SyncWebSocketServer(memoryManager, config.apiToken, agentTokenStore, { allowReadonly: config.allowReadonly });
   wsServer.attachToServer(server);
   webServer.setWsServer(wsServer);
 

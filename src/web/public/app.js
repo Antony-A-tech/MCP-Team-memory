@@ -22,6 +22,11 @@ async function authFetch(url, options = {}) {
   const headers = { ...authHeaders(), ...(options.headers || {}) };
   const res = await fetch(url, { ...options, headers });
   if (res.status === 401 || res.status === 403) {
+    // In readonly mode, don't redirect — show toast and return
+    if (isReadOnly) {
+      showToast('Требуется авторизация для этого действия', 'error');
+      return res;
+    }
     localStorage.removeItem('auth-token');
     window.location.href = '/login';
     throw new Error('Unauthorized');
@@ -41,6 +46,7 @@ let ws = null;
 let isGraphView = false;
 let isAgentsView = false;
 let isMasterUser = false;
+let isReadOnly = false;
 
 // Sessions state
 let sessionsData = [];
@@ -137,14 +143,22 @@ document.addEventListener('DOMContentLoaded', async () => {
   // Check if auth is required and redirect to login if needed
   try {
     const checkRes = await fetch('/api/auth/check');
-    const { authEnabled } = await checkRes.json();
+    const { authEnabled, allowReadonly } = await checkRes.json();
     if (authEnabled && !AUTH_TOKEN) {
-      window.location.href = '/login';
-      return;
+      if (allowReadonly) {
+        // Enter readonly viewer mode without token
+        isReadOnly = true;
+      } else {
+        window.location.href = '/login';
+        return;
+      }
     }
     if (authEnabled && AUTH_TOKEN) {
       const verifyRes = await authFetch('/api/auth/verify');
       const authInfo = await verifyRes.json();
+      if (authInfo.readOnly) {
+        isReadOnly = true;
+      }
       if (authInfo.agentName) {
         const badge = document.createElement('span');
         badge.className = 'agent-badge';
@@ -161,6 +175,14 @@ document.addEventListener('DOMContentLoaded', async () => {
         const backupBtn = document.getElementById('btn-backup');
         if (backupBtn) backupBtn.style.display = '';
       }
+    }
+    // Apply readonly mode: hide write UI, show viewer badge and login button
+    if (isReadOnly) {
+      applyReadonlyMode();
+    }
+    // Always show auth button (login or logout)
+    if (authEnabled) {
+      renderAuthButton();
     }
   } catch (e) {
     // If check fails, proceed without auth
@@ -188,6 +210,57 @@ document.addEventListener('DOMContentLoaded', async () => {
   loadStats();
   updateSessionNotesCounts();
 });
+
+// === Readonly Mode & Auth Button ===
+
+function applyReadonlyMode() {
+  // Hide write-action buttons
+  const hideSelectors = [
+    '#btn-add',                     // "Добавить" button
+    '#btn-backup',                  // Backup button
+    '#session-delete-detail-btn',   // Session delete in detail view
+  ];
+  hideSelectors.forEach(sel => {
+    const el = document.querySelector(sel);
+    if (el) el.style.display = 'none';
+  });
+
+  // Add readonly badge to sidebar footer
+  const badge = document.createElement('span');
+  badge.className = 'agent-badge readonly-badge';
+  badge.textContent = 'Viewer';
+  badge.setAttribute('data-tooltip', 'Режим просмотра — авторизуйтесь для редактирования');
+  const footer = document.querySelector('.sidebar-footer');
+  footer.insertBefore(badge, footer.firstChild);
+}
+
+function renderAuthButton() {
+  const headerRight = document.querySelector('.header-right');
+  if (!headerRight) return;
+
+  const btn = document.createElement('button');
+  btn.className = 'btn btn-icon btn-auth';
+
+  if (AUTH_TOKEN && !isReadOnly) {
+    // Logout button
+    btn.title = 'Выйти';
+    btn.innerHTML = '<i data-lucide="log-out"></i>';
+    btn.addEventListener('click', () => {
+      localStorage.removeItem('auth-token');
+      window.location.reload();
+    });
+  } else {
+    // Login button
+    btn.title = 'Войти';
+    btn.innerHTML = '<i data-lucide="log-in"></i>';
+    btn.addEventListener('click', () => {
+      window.location.href = '/login';
+    });
+  }
+
+  headerRight.appendChild(btn);
+  lucide.createIcons();
+}
 
 // === Tooltips ===
 
@@ -306,14 +379,16 @@ function copyToClipboard(text) {
 function renderDomainFilters() {
   domainFiltersContainer.innerHTML = '';
 
-  // "+" add domain button
-  const addBtn = document.createElement('button');
-  addBtn.className = 'domain-pill domain-pill--add';
-  addBtn.dataset.domain = '__add__';
-  addBtn.innerHTML = '<i data-lucide="plus"></i>';
-  addBtn.title = 'Добавить домен';
-  addBtn.addEventListener('click', () => openDomainModal());
-  domainFiltersContainer.appendChild(addBtn);
+  // "+" add domain button (hidden in readonly mode)
+  if (!isReadOnly) {
+    const addBtn = document.createElement('button');
+    addBtn.className = 'domain-pill domain-pill--add';
+    addBtn.dataset.domain = '__add__';
+    addBtn.innerHTML = '<i data-lucide="plus"></i>';
+    addBtn.title = 'Добавить домен';
+    addBtn.addEventListener('click', () => openDomainModal());
+    domainFiltersContainer.appendChild(addBtn);
+  }
 
   // "All domains" pill
   const allBtn = document.createElement('button');
@@ -330,7 +405,7 @@ function renderDomainFilters() {
     btn.dataset.domain = d.slug;
     btn.innerHTML = `<i data-lucide="${d.icon || 'tag'}"></i> ${escapeHtml(d.name)}`;
     btn.addEventListener('click', () => selectDomain(d.slug));
-    btn.addEventListener('contextmenu', (e) => showDomainContextMenu(e, d));
+    if (!isReadOnly) btn.addEventListener('contextmenu', (e) => showDomainContextMenu(e, d));
     domainFiltersContainer.appendChild(btn);
   }
 
@@ -939,10 +1014,16 @@ function openReadModal(id) {
   readModal.dataset.entryId = id;
 
   document.getElementById('read-modal-close').onclick = () => readModal.classList.remove('active');
-  document.getElementById('read-modal-edit').onclick = () => {
-    readModal.classList.remove('active');
-    editEntry(id);
-  };
+  const readEditBtn = document.getElementById('read-modal-edit');
+  if (isReadOnly) {
+    readEditBtn.style.display = 'none';
+  } else {
+    readEditBtn.style.display = '';
+    readEditBtn.onclick = () => {
+      readModal.classList.remove('active');
+      editEntry(id);
+    };
+  }
   readModal.onclick = (e) => { if (e.target === readModal) readModal.classList.remove('active'); };
   lucide.createIcons();
 }
@@ -1406,6 +1487,11 @@ function renderEntries() {
           <span class="entry-meta-author"><i data-lucide="user"></i> ${escapeHtml(entry.author)}</span>
         </div>
         <div class="entry-actions">
+          ${isReadOnly ? `
+          <button data-action="showHistory" data-id="${entry.id}" title="История">
+            <i data-lucide="history"></i>
+          </button>
+          ` : `
           <button data-action="togglePin" data-id="${entry.id}" title="${entry.pinned ? 'Открепить' : 'Закрепить'}" class="${entry.pinned ? 'active' : ''}">
             <i data-lucide="pin"></i>
           </button>
@@ -1421,6 +1507,7 @@ function renderEntries() {
           <button data-action="deleteEntry" data-id="${entry.id}" title="Удалить">
             <i data-lucide="trash-2"></i>
           </button>
+          `}
         </div>
       </div>
     </div>
@@ -2287,9 +2374,9 @@ function renderSessions() {
     <div class="session-card" data-session-id="${escapeHtml(session.id)}">
       <div class="session-card-header">
         <div class="session-title">${escapeHtml(title)}</div>
-        <button class="btn-icon session-delete-btn" data-action="deleteSession" data-id="${escapeHtml(session.id)}" title="Удалить сессию">
+        ${isReadOnly ? '' : `<button class="btn-icon session-delete-btn" data-action="deleteSession" data-id="${escapeHtml(session.id)}" title="Удалить сессию">
           <i data-lucide="trash-2"></i>
-        </button>
+        </button>`}
       </div>
       ${session.summary ? `<div class="session-summary">${escapeHtml(session.summary)}</div>` : ''}
       <div class="session-meta">
@@ -2603,14 +2690,14 @@ function renderNotes() {
         <div class="note-tags">
           ${(note.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
         </div>
-        <div class="note-actions">
+        ${isReadOnly ? '' : `<div class="note-actions">
           <button data-action="editNote" data-note-id="${escapeHtml(note.id)}" title="Редактировать">
             <i data-lucide="pencil"></i>
           </button>
           <button data-action="deleteNote" data-note-id="${escapeHtml(note.id)}" title="Удалить">
             <i data-lucide="trash-2"></i>
           </button>
-        </div>
+        </div>`}
       </div>
     </div>
   `).join('');
@@ -2671,10 +2758,16 @@ function openNoteReadModal(noteId) {
   modal.dataset.noteId = noteId;
 
   document.getElementById('note-read-close').onclick = () => modal.classList.remove('active');
-  document.getElementById('note-read-edit').onclick = () => {
-    modal.classList.remove('active');
-    openNoteModal(noteId);
-  };
+  const noteEditBtn = document.getElementById('note-read-edit');
+  if (isReadOnly) {
+    noteEditBtn.style.display = 'none';
+  } else {
+    noteEditBtn.style.display = '';
+    noteEditBtn.onclick = () => {
+      modal.classList.remove('active');
+      openNoteModal(noteId);
+    };
+  }
   modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('active'); };
   lucide.createIcons();
 }

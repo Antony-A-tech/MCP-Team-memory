@@ -50,6 +50,15 @@ export class WebServer {
   }
 
   private setupRoutes(app: Express): void {
+    /** Only master token (MEMORY_API_TOKEN) can perform admin actions.
+     *  Agent tokens — even with role 'admin' — cannot create/delete other tokens.
+     *  Readonly users are blocked by global middleware before reaching here. */
+    const requireAdmin = (req: Request, res: Response): boolean => {
+      if (!req.agentName) return true; // master token has no agentName
+      res.status(403).json({ success: false, error: 'Forbidden: only master token can manage agents' });
+      return false;
+    };
+
     // === Projects API ===
 
     app.get('/api/projects', async (_req: Request, res: Response) => {
@@ -132,6 +141,7 @@ export class WebServer {
 
     app.post('/api/projects/:id/domains', async (req: Request, res: Response) => {
       try {
+
         if ((req as any).agentName) {
           res.status(403).json({ success: false, error: 'Only administrator can manage domains' });
           return;
@@ -168,6 +178,7 @@ export class WebServer {
 
     app.put('/api/projects/:id/domains/:slug', async (req: Request, res: Response) => {
       try {
+
         if ((req as any).agentName) {
           res.status(403).json({ success: false, error: 'Only administrator can manage domains' });
           return;
@@ -187,6 +198,7 @@ export class WebServer {
 
     app.delete('/api/projects/:id/domains/:slug', async (req: Request, res: Response) => {
       try {
+
         if ((req as any).agentName) {
           res.status(403).json({ success: false, error: 'Only administrator can manage domains' });
           return;
@@ -281,6 +293,7 @@ export class WebServer {
 
     app.post('/api/memory', async (req: Request, res: Response) => {
       try {
+
         const parsed = WriteParamsSchema.safeParse(req.body);
         if (!parsed.success) {
           res.status(400).json({ success: false, error: formatZodError(parsed.error) });
@@ -300,6 +313,7 @@ export class WebServer {
 
     app.put('/api/memory/:id', async (req: Request, res: Response) => {
       try {
+
         const parsed = UpdateParamsSchema.safeParse({ id: req.params.id, ...req.body });
         if (!parsed.success) {
           res.status(400).json({ success: false, error: formatZodError(parsed.error) });
@@ -321,6 +335,7 @@ export class WebServer {
 
     app.delete('/api/memory/:id', async (req: Request, res: Response) => {
       try {
+
         const { id } = req.params;
         const archive = req.query.archive !== 'false';
 
@@ -339,6 +354,7 @@ export class WebServer {
 
     app.post('/api/memory/:id/pin', async (req: Request, res: Response) => {
       try {
+
         const { id } = req.params;
         const { pinned } = req.body;
 
@@ -451,6 +467,7 @@ export class WebServer {
 
     app.post('/api/backup', async (req: Request, res: Response) => {
       try {
+
         // Only master token holder can create backups
         if ((req as any).agentName) {
           res.status(403).json({ success: false, error: 'Only administrator can create backups' });
@@ -529,13 +546,8 @@ export class WebServer {
 
     // === Agent Tokens REST API ===
 
-    const requireAdmin = (req: Request, res: Response): boolean => {
-      // Only master token (MEMORY_API_TOKEN) can manage agent tokens.
-      // Agent tokens — even with role 'admin' — cannot create/delete other tokens.
-      if (!req.agentName) return true; // master token has no agentName
-      res.status(403).json({ success: false, error: 'Forbidden: only master token can manage agents' });
-      return false;
-    };
+    // Note: requireAdmin is defined at the top of setupRoutes().
+    // Note: readonly users are blocked by global middleware in app.ts (rejects non-GET for req.readOnly).
 
     app.get('/api/agent-tokens', async (req: Request, res: Response) => {
       try {
