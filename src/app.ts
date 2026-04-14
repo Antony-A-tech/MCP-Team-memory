@@ -101,8 +101,15 @@ async function main(): Promise<void> {
   // Readonly guard — block all write requests for readonly (viewer) users.
   // Placed after auth middleware so req.readOnly is set. Covers REST API, MCP transport, and any future routes.
   app.use((req, res, next) => {
-    if (req.readOnly && !['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
+    if (!req.readOnly) { next(); return; }
+    // Block all non-GET requests (writes)
+    if (!['GET', 'HEAD', 'OPTIONS'].includes(req.method)) {
       res.status(403).json({ success: false, error: 'Read-only access: authentication required for this action' });
+      return;
+    }
+    // Block read access to private data (sessions, notes, chat) — these are personal, not shared team knowledge
+    if (req.path.startsWith('/api/sessions') || req.path.startsWith('/api/notes') || req.path.startsWith('/api/chat')) {
+      res.status(403).json({ success: false, error: 'Read-only access: authentication required for this data' });
       return;
     }
     next();

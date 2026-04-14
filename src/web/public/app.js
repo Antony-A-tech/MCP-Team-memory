@@ -2305,6 +2305,22 @@ function initThemeSwitcher() {
 
 async function loadSessions(append = false) {
   const container = document.getElementById('sessions-container');
+
+  // Readonly: show demo placeholder instead of private data
+  if (isReadOnly) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="message-square"></i>
+        <div class="empty-state-text">Здесь могут находиться ваши сессии с AI</div>
+        <div class="empty-state-hint" style="color:var(--text-muted);font-size:13px;margin-top:8px">
+          Войдите в систему, чтобы импортировать и просматривать историю диалогов
+        </div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
   if (!append) {
     currentSessionOffset = 0;
     container.innerHTML = `
@@ -2622,6 +2638,22 @@ document.getElementById('session-message-search').addEventListener('input', (e) 
 
 async function loadNotes(append = false) {
   const container = document.getElementById('notes-container');
+
+  // Readonly: show demo placeholder instead of private data
+  if (isReadOnly) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="sticky-note"></i>
+        <div class="empty-state-text">Здесь могут находиться ваши личные заметки</div>
+        <div class="empty-state-hint" style="color:var(--text-muted);font-size:13px;margin-top:8px">
+          Войдите в систему, чтобы создавать и просматривать заметки
+        </div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
   if (!append) {
     currentNoteOffset = 0;
     container.innerHTML = `
@@ -2959,6 +2991,7 @@ async function updateHeaderStatsForNotes() {
 }
 
 async function updateSessionNotesCounts() {
+  if (isReadOnly) return; // Private data — skip API calls in viewer mode
   try {
     const sessParams = new URLSearchParams();
     if (currentProjectId) sessParams.append('project_id', currentProjectId);
