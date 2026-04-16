@@ -2209,6 +2209,10 @@ function applyTheme(themeId) {
     document.documentElement.dataset.theme = themeId;
     localStorage.setItem('tm-theme', themeId);
   }
+  // Notify graph (if loaded) to re-read theme colors
+  if (typeof window.refreshGraphTheme === 'function') {
+    window.refreshGraphTheme();
+  }
 }
 
 function renderThemePreview(colors) {
