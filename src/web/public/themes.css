@@ -137,15 +137,15 @@
   --text-secondary:    #999999;
   --text-muted:        #666666;
   --border-color:      #222222;
-  --accent-primary:    #D71921;
-  --accent-hover:      #B0141B;
+  --accent-primary:    #D77554;
+  --accent-hover:      #B85F40;
   --success:           #4A9E5C;
   --warning:           #D4A843;
-  --danger:            #D71921;
+  --danger:            #D77554;
   --priority-low:      #666666;
   --priority-medium:   #5B9BF6;
   --priority-high:     #D4A843;
-  --priority-critical: #D71921;
+  --priority-critical: #D77554;
   --radius-sm: 0px;
   --radius-md: 0px;
   --radius-lg: 2px;
@@ -584,7 +584,7 @@
 [data-theme="nothing"] .theme-row.active,
 [data-theme="nothing"] .theme-row.selected {
   border-color: var(--accent-primary);
-  background: rgba(215, 25, 33, 0.06);
+  background: rgba(215, 117, 84, 0.06);
 }
 
 [data-theme="nothing"] .stat-value,
