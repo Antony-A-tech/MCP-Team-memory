@@ -31,9 +31,10 @@ Adapted from Nothing's "instrument panel in a dark room" aesthetic:
   lifted (`#111`, `#1A1A1A`).
 - **Typography hierarchy:** display (pixelated) > heading (grotesk) > label
   (mono ALL CAPS) > body (grotesk).
-- **Accent:** Single signal red `#D71921` — used for primary actions,
-  destructive operations, critical priority badges, and "live" indicators.
-  Used sparingly (canon: one per screen as a UI element).
+- **Accent:** Single warm coral `#D77554` (originally `#D71921` red — swapped
+  per user direction during implementation; commit `3c3040a`). Used for
+  primary actions, destructive operations, critical priority badges, and
+  "live" indicators. Used sparingly (canon: one per screen as a UI element).
 - **Decoration:** Dot-matrix grid background as ambient texture; no shadows,
   no gradients, no rounded corners (radii = 0 or 2px max).
 - **Motion:** Opacity transitions only (`cubic-bezier(0.25, 0.1, 0.25, 1)`,
@@ -74,14 +75,14 @@ Mapped onto the existing CSS-variable contract used by all other themes
   /* Borders */
   --border-color:      #222222;            /* Subtle dividers */
 
-  /* Signal red — single accent */
-  --accent-primary:    #D71921;
-  --accent-hover:      #B0141B;
+  /* Warm coral — single accent (was signal red #D71921, swapped per user) */
+  --accent-primary:    #D77554;
+  --accent-hover:      #B85F40;
 
   /* Status — calibrated to Nothing palette */
   --success:           #4A9E5C;
   --warning:           #D4A843;
-  --danger:            #D71921;            /* Same as accent — errors ARE the accent */
+  --danger:            #D77554;            /* Same as accent — errors ARE the accent */
 
   /* Priority — same palette */
   --priority-low:      #666666;
