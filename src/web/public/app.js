@@ -2198,17 +2198,12 @@ async function deleteAgent(id, name) {
 // ============================================
 
 function getCurrentTheme() {
-  return document.documentElement.dataset.theme || 'default';
+  return document.documentElement.dataset.theme || 'nothing';
 }
 
 function applyTheme(themeId) {
-  if (themeId === 'default') {
-    document.documentElement.removeAttribute('data-theme');
-    localStorage.removeItem('tm-theme');
-  } else {
-    document.documentElement.dataset.theme = themeId;
-    localStorage.setItem('tm-theme', themeId);
-  }
+  document.documentElement.dataset.theme = themeId;
+  localStorage.setItem('tm-theme', themeId);
   // Notify graph (if loaded) to re-read theme colors
   if (typeof window.refreshGraphTheme === 'function') {
     window.refreshGraphTheme();

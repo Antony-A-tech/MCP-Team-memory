@@ -23,11 +23,14 @@ const EDGE_COLORS = {
 };
 
 // Read theme-driven colors from the document's computed style.
-// Called inside graph callbacks (per frame) and after theme changes.
+// Cached because graph callbacks fire per-node-per-frame; getComputedStyle is
+// browser-cheap but not free. Cache invalidated by refreshGraphTheme().
+let _themeColorsCache = null;
 function getThemeColors() {
+  if (_themeColorsCache) return _themeColorsCache;
   const style = getComputedStyle(document.documentElement);
   const read = (name, fallback) => (style.getPropertyValue(name).trim() || fallback);
-  return {
+  _themeColorsCache = {
     bg:           read('--bg-primary',     '#0f0f0f'),
     surface:      read('--bg-secondary',   '#1a1a1a'),
     border:       read('--border-color',   '#333333'),
@@ -35,6 +38,7 @@ function getThemeColors() {
     textMuted:    read('--text-muted',     '#666666'),
     accent:       read('--accent-primary', '#6366f1'),
   };
+  return _themeColorsCache;
 }
 
 let graphRef = null;
@@ -653,6 +657,7 @@ window.destroyGraph = destroyGraph;
 // Public hook: re-apply theme colors to the live graph instance.
 // Called from app.js applyTheme() after the user picks a new theme.
 window.refreshGraphTheme = function() {
+  _themeColorsCache = null;
   if (!graphRef) return;
   graphRef.backgroundColor(getThemeColors().bg);
   refreshGraph();
