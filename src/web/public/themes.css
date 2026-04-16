@@ -739,3 +739,40 @@
   justify-content: flex-end;
   gap: 10px;
 }
+
+/* Legacy theme section divider (universal — applies to all themes) */
+.theme-section-divider {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  padding: 14px 12px 6px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.theme-legacy-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  vertical-align: middle;
+  text-transform: uppercase;
+}
+
+.theme-row.legacy {
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.theme-row.legacy:hover,
+.theme-row.legacy.active,
+.theme-row.legacy.selected {
+  opacity: 1;
+}
