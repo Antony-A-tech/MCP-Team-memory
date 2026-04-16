@@ -68,8 +68,8 @@ const THEMES = [
   {
     id: 'nothing',
     name: 'Nothing',
-    desc: 'OLED-чёрная типографическая, сигнальный красный',
-    colors: { bg: '#000000', sidebar: '#000000', sidebarBorder: '1px solid #222', accent: '#D71921', line1: '#222', line2: '#D71921', line3: '#1A1A1A', line4: '#1A1A1A' }
+    desc: 'OLED-чёрная типографическая, сигнальный оранжевый',
+    colors: { bg: '#000000', sidebar: '#000000', sidebarBorder: '1px solid #222', accent: '#D77554', line1: '#222', line2: '#D77554', line3: '#1A1A1A', line4: '#1A1A1A' }
   },
   {
     id: 'brutalist',
