@@ -63,36 +63,40 @@ let notesData = [];
 let currentNoteOffset = 0;
 const NOTES_LIMIT = 20;
 
-// Theme configuration
+// Theme configuration — Nothing is the canonical default. Others remain selectable but rendered under a "LEGACY" divider.
 const THEMES = [
   {
-    id: 'default',
-    name: 'Default',
-    desc: 'Тёмная тема с indigo-акцентом',
-    colors: { bg: '#0f0f0f', sidebar: '#1a1a1a', sidebarBorder: '1px solid #333', accent: '#6366f1', line1: '#333', line2: '#6366f1', line3: '#252525', line4: '#252525' }
+    id: 'nothing',
+    name: 'Nothing',
+    desc: 'OLED-чёрная типографическая, сигнальный оранжевый',
+    colors: { bg: '#000000', sidebar: '#000000', sidebarBorder: '1px solid #222', accent: '#D77554', line1: '#222', line2: '#D77554', line3: '#1A1A1A', line4: '#1A1A1A' }
   },
   {
     id: 'brutalist',
     name: 'Brutalist',
     desc: 'Жёсткий геометричный стиль, толстые рамки',
+    legacy: true,
     colors: { bg: '#F8F6F1', sidebar: '#fff', sidebarBorder: '3px solid #111', accent: '#D42B2B', line1: '#D8D4CC', line2: '#D42B2B', line3: '#EDEAE4', line4: '#EDEAE4' }
   },
   {
     id: 'gazette',
     name: 'Gazette',
     desc: 'Газетный editorial-стиль, тёплые тона',
+    legacy: true,
     colors: { bg: '#F6F1E9', sidebar: '#FAF7F1', sidebarBorder: '2px solid #2A241C', accent: '#8B2020', line1: '#D4C9B8', line2: '#8B2020', line3: '#E2D9CA', line4: '#E2D9CA' }
   },
   {
     id: 'sport',
     name: 'Sport',
     desc: 'Тёмный спортивный с неоновым акцентом',
+    legacy: true,
     colors: { bg: '#0A0A0A', sidebar: '#161616', sidebarBorder: '1px solid #3A3A3A', accent: '#CCFF00', line1: '#3A3A3A', line2: '#CCFF00', line3: '#1C1C1C', line4: '#1C1C1C' }
   },
   {
     id: 'dashboard',
     name: 'Dashboard',
     desc: 'Aurora-градиенты, тёплые и холодные тона',
+    legacy: true,
     colors: { bg: '#07070B', sidebar: '#0D0D14', sidebarBorder: '1px solid rgba(255,255,255,0.05)', accent: '#FF8C42', line1: '#2A2A34', line2: 'linear-gradient(90deg, #FF8C42, #FF3B6C)', line3: '#15151E', line4: '#15151E' }
   }
 ];
@@ -2194,16 +2198,15 @@ async function deleteAgent(id, name) {
 // ============================================
 
 function getCurrentTheme() {
-  return document.documentElement.dataset.theme || 'default';
+  return document.documentElement.dataset.theme || 'nothing';
 }
 
 function applyTheme(themeId) {
-  if (themeId === 'default') {
-    document.documentElement.removeAttribute('data-theme');
-    localStorage.removeItem('tm-theme');
-  } else {
-    document.documentElement.dataset.theme = themeId;
-    localStorage.setItem('tm-theme', themeId);
+  document.documentElement.dataset.theme = themeId;
+  localStorage.setItem('tm-theme', themeId);
+  // Notify graph (if loaded) to re-read theme colors
+  if (typeof window.refreshGraphTheme === 'function') {
+    window.refreshGraphTheme();
   }
 }
 
@@ -2225,16 +2228,26 @@ function openThemeModal() {
   const current = getCurrentTheme();
   const list = document.getElementById('theme-list');
 
-  list.innerHTML = THEMES.map(t => `
-    <div class="theme-row ${t.id === current ? 'active' : ''}" data-theme-id="${t.id}">
+  const renderRow = (t) => `
+    <div class="theme-row ${t.id === current ? 'active' : ''} ${t.legacy ? 'legacy' : ''}" data-theme-id="${t.id}">
       ${renderThemePreview(t.colors)}
       <div class="theme-info">
-        <div class="theme-name">${t.name}</div>
+        <div class="theme-name">
+          ${t.name}
+          ${t.legacy ? '<span class="theme-legacy-badge">LEGACY</span>' : ''}
+        </div>
         <div class="theme-desc">${t.desc}</div>
       </div>
       <div class="theme-check">\u2713</div>
     </div>
-  `).join('');
+  `;
+
+  const primary = THEMES.filter(t => !t.legacy);
+  const legacy = THEMES.filter(t => t.legacy);
+
+  list.innerHTML = primary.map(renderRow).join('')
+    + (legacy.length ? '<div class="theme-section-divider">LEGACY THEMES</div>' : '')
+    + legacy.map(renderRow).join('');
 
   let selectedId = null;
   list.querySelectorAll('.theme-row').forEach(row => {
