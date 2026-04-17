@@ -22,6 +22,25 @@ const EDGE_COLORS = {
   domain:  '#2a4a6b',
 };
 
+// Read theme-driven colors from the document's computed style.
+// Cached because graph callbacks fire per-node-per-frame; getComputedStyle is
+// browser-cheap but not free. Cache invalidated by refreshGraphTheme().
+let _themeColorsCache = null;
+function getThemeColors() {
+  if (_themeColorsCache) return _themeColorsCache;
+  const style = getComputedStyle(document.documentElement);
+  const read = (name, fallback) => (style.getPropertyValue(name).trim() || fallback);
+  _themeColorsCache = {
+    bg:           read('--bg-primary',     '#0f0f0f'),
+    surface:      read('--bg-secondary',   '#1a1a1a'),
+    border:       read('--border-color',   '#333333'),
+    textPrimary:  read('--text-primary',   '#e5e5e5'),
+    textMuted:    read('--text-muted',     '#666666'),
+    accent:       read('--accent-primary', '#6366f1'),
+  };
+  return _themeColorsCache;
+}
+
 let graphRef = null;
 let graphEntries = [];
 let selectedNode = null;
@@ -165,16 +184,17 @@ function renderGraph(entries) {
 
   graphRef = ForceGraph()(container)
     .graphData(data)
-    .backgroundColor('#0f0f0f')
+    .backgroundColor(getThemeColors().bg)
     .nodeId('id')
     .nodeLabel(node => {
       const entry = graphEntries.find(e => e.id === node.id);
       if (!entry) return node.label;
-      return `<div style="background:#1a1a1a;border:1px solid #333;border-radius:6px;padding:8px 12px;max-width:300px;font-family:sans-serif">
-        <div style="font-weight:600;font-size:13px;color:#f5f5f5;margin-bottom:4px">${escapeHtml(entry.title)}</div>
+      const tc = getThemeColors();
+      return `<div style="background:${tc.surface};border:1px solid ${tc.border};border-radius:2px;padding:8px 12px;max-width:300px;font-family:var(--font-primary, sans-serif)">
+        <div style="font-weight:600;font-size:13px;color:${tc.textPrimary};margin-bottom:4px">${escapeHtml(entry.title)}</div>
         <div style="font-size:11px">
-          <span style="color:${CATEGORY_COLORS[entry.category] || '#999'};font-weight:500">${categoryLabel(entry.category)}</span>
-          ${entry.domain ? `<span style="color:#666;margin-left:8px">${escapeHtml(entry.domain)}</span>` : ''}
+          <span style="color:${CATEGORY_COLORS[entry.category] || tc.textMuted};font-weight:500">${categoryLabel(entry.category)}</span>
+          ${entry.domain ? `<span style="color:${tc.textMuted};margin-left:8px">${escapeHtml(entry.domain)}</span>` : ''}
         </div>
       </div>`;
     })
@@ -188,6 +208,7 @@ function renderGraph(entries) {
       const dimmedBySelection = selectedNode && !isSelected && !isNeighbor;
       const dimmedBySearch = graphSearchMatchIds && !isSearchMatch;
       const dimmed = dimmedBySelection || dimmedBySearch;
+      const tc = getThemeColors();
 
       // Node circle
       ctx.beginPath();
@@ -197,13 +218,13 @@ function renderGraph(entries) {
 
       // Search match glow
       if (isSearchMatch && !dimmedBySelection) {
-        ctx.strokeStyle = '#06b6d4';
+        ctx.strokeStyle = tc.accent;
         ctx.lineWidth = 2.5;
         ctx.stroke();
       }
 
       if (isSelected) {
-        ctx.strokeStyle = '#06b6d4';
+        ctx.strokeStyle = tc.accent;
         ctx.lineWidth = 2;
         ctx.stroke();
       }
@@ -215,7 +236,7 @@ function renderGraph(entries) {
         ctx.font = `${fontSize}px sans-serif`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'top';
-        ctx.fillStyle = dimmed ? '#33333320' : '#e5e5e5';
+        ctx.fillStyle = dimmed ? tc.border + '30' : tc.textPrimary;
         ctx.fillText(label, node.x, node.y + r + 2);
       }
     })
@@ -225,9 +246,9 @@ function renderGraph(entries) {
         const sid = selectedNode.id;
         const srcId = typeof link.source === 'object' ? link.source.id : link.source;
         const tgtId = typeof link.target === 'object' ? link.target.id : link.target;
-        if (srcId !== sid && tgtId !== sid) return '#ffffff08';
+        if (srcId !== sid && tgtId !== sid) return getThemeColors().border + '40';
       }
-      return EDGE_COLORS[link.type] || '#333';
+      return EDGE_COLORS[link.type] || getThemeColors().border;
     })
     .linkWidth(link => {
       if (selectedNode) {
@@ -243,7 +264,7 @@ function renderGraph(entries) {
       return 0;
     })
     .linkDirectionalParticleWidth(2)
-    .linkDirectionalParticleColor(() => '#6366f1')
+    .linkDirectionalParticleColor(() => getThemeColors().accent)
     .onNodeClick(node => {
       try {
         if (selectedNode && selectedNode.id === node.id) {
@@ -277,7 +298,7 @@ function renderGraph(entries) {
       const endX = transform2.x;
       const endY = transform2.y;
 
-      ctx.fillStyle = '#ffffff18';
+      ctx.fillStyle = getThemeColors().textMuted + '30';
       for (let x = startX; x < endX; x += spacing) {
         for (let y = startY; y < endY; y += spacing) {
           ctx.beginPath();
@@ -632,3 +653,12 @@ document.addEventListener('click', (e) => {
 
 window.renderGraph = renderGraph;
 window.destroyGraph = destroyGraph;
+
+// Public hook: re-apply theme colors to the live graph instance.
+// Called from app.js applyTheme() after the user picks a new theme.
+window.refreshGraphTheme = function() {
+  _themeColorsCache = null;
+  if (!graphRef) return;
+  graphRef.backgroundColor(getThemeColors().bg);
+  refreshGraph();
+};
