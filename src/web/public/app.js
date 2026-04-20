@@ -1339,6 +1339,9 @@ async function loadEntries() {
     if (currentCategory !== 'all' && currentCategory !== 'pinned') {
       params.append('category', currentCategory);
     }
+    if (currentCategory === 'pinned') {
+      params.append('pinned', 'true');
+    }
     if (currentDomain) params.append('domain', currentDomain);
     if (currentSearch) params.append('search', currentSearch);
     if (currentStatus) params.append('status', currentStatus);
@@ -1348,11 +1351,6 @@ async function loadEntries() {
 
     if (result.success) {
       entries = result.entries;
-
-      if (currentCategory === 'pinned') {
-        entries = entries.filter(e => e.pinned === true);
-      }
-
       renderEntries();
       renderLoadMoreButton(result);
     }
@@ -1387,6 +1385,7 @@ async function loadMoreEntries(offset) {
     const params = new URLSearchParams();
     if (currentProjectId) params.append('project_id', currentProjectId);
     if (currentCategory !== 'all' && currentCategory !== 'pinned') params.append('category', currentCategory);
+    if (currentCategory === 'pinned') params.append('pinned', 'true');
     if (currentDomain) params.append('domain', currentDomain);
     if (currentSearch) params.append('search', currentSearch);
     if (currentStatus) params.append('status', currentStatus);

@@ -229,6 +229,7 @@ export class WebServer {
 
     app.get('/api/memory', async (req: Request, res: Response) => {
       try {
+        const pinnedQuery = req.query.pinned;
         const parsed = ReadParamsSchema.safeParse({
           project_id: req.query.project_id,
           category: req.query.category || 'all',
@@ -237,6 +238,7 @@ export class WebServer {
           status: req.query.status,
           limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
           offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
+          pinned: pinnedQuery === 'true' ? true : pinnedQuery === 'false' ? false : undefined,
         });
 
         if (!parsed.success) {
@@ -244,7 +246,7 @@ export class WebServer {
           return;
         }
 
-        const { project_id, category, domain, search, status, limit, offset } = parsed.data;
+        const { project_id, category, domain, search, status, limit, offset, pinned } = parsed.data;
         const entries = await this.memoryManager.read({
           projectId: project_id,
           category,
@@ -253,6 +255,7 @@ export class WebServer {
           status,
           limit,
           offset,
+          pinned,
           mode: 'full',
         });
 

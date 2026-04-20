@@ -157,6 +157,7 @@ export interface ReadParams {
   tags?: string[];
   ids?: string[];
   mode?: 'compact' | 'full';
+  pinned?: boolean;
 }
 
 // Параметры для записи в память

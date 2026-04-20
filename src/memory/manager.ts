@@ -143,7 +143,7 @@ export class MemoryManager {
 
   async read(params: ReadParams): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
     const projectId = params.projectId || DEFAULT_PROJECT_ID;
-    const { category = 'all', domain, search, limit = 50, offset = 0, status, tags, ids, mode = 'compact' } = params;
+    const { category = 'all', domain, search, limit = 50, offset = 0, status, tags, ids, mode = 'compact', pinned } = params;
 
     // Branch 1: batch fetch by IDs → always full
     if (ids && ids.length > 0) {
@@ -151,7 +151,7 @@ export class MemoryManager {
     }
 
     const cat = category === 'all' ? undefined : category;
-    const filters = { category: cat, domain, status, tags, limit, offset };
+    const filters = { category: cat, domain, status, tags, limit, offset, pinned };
     const isCompact = mode === 'compact';
 
     if (search) {
@@ -192,7 +192,7 @@ export class MemoryManager {
   private async qdrantHybridSearch(
     projectId: string,
     query: string,
-    filters: { category?: string; domain?: string; status?: string; tags?: string[]; limit?: number; offset?: number },
+    filters: { category?: string; domain?: string; status?: string; tags?: string[]; limit?: number; offset?: number; pinned?: boolean },
     compact: boolean,
   ): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
     const queryVector = await this.embeddingProvider!.embed(query, 'query');
@@ -204,6 +204,7 @@ export class MemoryManager {
     if (filters.category) qdrantFilter.must!.push({ key: 'category', match: { value: filters.category } });
     if (filters.status) qdrantFilter.must!.push({ key: 'status', match: { value: filters.status } });
     if (filters.domain) qdrantFilter.must!.push({ key: 'domain', match: { value: filters.domain } });
+    if (filters.pinned !== undefined) qdrantFilter.must!.push({ key: 'pinned', match: { value: filters.pinned } });
 
     const limit = filters.limit ?? 50;
 
