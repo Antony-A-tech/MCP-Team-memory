@@ -23,6 +23,7 @@ export const ReadParamsSchema = z.object({
   tags: z.array(z.string().max(50)).max(20).optional(),
   ids: z.array(UuidSchema).max(100).optional(),
   mode: z.enum(['compact', 'full']).default('compact'),
+  pinned: z.boolean().optional(),
 });
 
 export const WriteParamsSchema = z.object({
