@@ -200,7 +200,6 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDomainModal();
   initDomainContextMenu();
   initEntryActions();
-  initAgentsPopup();
   await loadProjects();
   await loadProjectDomains();
   renderDomainFilters();
@@ -1424,9 +1423,6 @@ async function loadStats() {
       document.getElementById('stat-total').textContent = stats.totalEntries;
       document.getElementById('stat-24h').textContent = stats.recentActivity?.last24h || 0;
 
-      // Update agent/UI counters from agents API
-      updateAgentCounters();
-
       // Pinned count from stats (server-side, accurate)
       document.getElementById('count-pinned').textContent = stats.pinnedCount || 0;
 
@@ -1620,86 +1616,6 @@ window.showHistory = async function(id) {
   }
 };
 
-// === Agents Popup ===
-
-function initAgentsPopup() {
-  const btn = document.getElementById('agents-status-btn');
-  const popup = document.getElementById('agents-popup');
-  if (!btn || !popup) return;
-
-  btn.addEventListener('click', async (e) => {
-    e.stopPropagation();
-    const isOpen = popup.style.display !== 'none';
-    if (isOpen) {
-      popup.style.display = 'none';
-      return;
-    }
-    await loadAgentsPopup();
-    popup.style.display = '';
-  });
-
-  document.addEventListener('click', (e) => {
-    if (!popup.contains(e.target) && !btn.contains(e.target)) {
-      popup.style.display = 'none';
-    }
-  });
-}
-
-async function loadAgentsPopup() {
-  const agentsList = document.getElementById('agents-popup-agents');
-  const uiList = document.getElementById('agents-popup-ui');
-  if (!agentsList || !uiList) return;
-
-  try {
-    const params = currentProjectId ? `?project_id=${currentProjectId}` : '';
-    const response = await authFetch(`${API_BASE}/agents${params}`);
-    const result = await response.json();
-    const all = result.success ? (result.agents || []) : [];
-
-    const agents = all.filter(a => a.clientType === 'agent');
-    const uiClients = all.filter(a => a.clientType === 'ui');
-
-    agentsList.innerHTML = agents.length
-      ? agents.map(a => renderAgentItem(a, 'agents-popup-dot')).join('')
-      : '<div class="agents-popup-empty">Нет агентов</div>';
-
-    uiList.innerHTML = uiClients.length
-      ? uiClients.map(a => renderAgentItem(a, 'agents-popup-dot agents-popup-dot--ui')).join('')
-      : '<div class="agents-popup-empty">Нет UI-клиентов</div>';
-
-    // Update counters
-    document.getElementById('agents-count-agents').textContent = `Агенты: ${agents.length}`;
-    document.getElementById('agents-count-ui').textContent = `UI: ${uiClients.length}`;
-  } catch (err) {
-    agentsList.innerHTML = '<div class="agents-popup-empty">Ошибка загрузки</div>';
-    uiList.innerHTML = '';
-  }
-}
-
-async function updateAgentCounters() {
-  try {
-    const params = currentProjectId ? `?project_id=${currentProjectId}` : '';
-    const response = await authFetch(`${API_BASE}/agents${params}`);
-    const result = await response.json();
-    const all = result.success ? (result.agents || []) : [];
-    const agents = all.filter(a => a.clientType === 'agent');
-    const uiClients = all.filter(a => a.clientType === 'ui');
-    document.getElementById('agents-count-agents').textContent = `Агенты: ${agents.length}`;
-    document.getElementById('agents-count-ui').textContent = `UI: ${uiClients.length}`;
-  } catch (e) { /* ignore */ }
-}
-
-function renderAgentItem(agent, dotClass) {
-  return `
-    <div class="agents-popup-item">
-      <span class="${dotClass}"></span>
-      <div class="agents-popup-info">
-        <div class="agents-popup-name">${escapeHtml(agent.name || 'Unknown')}</div>
-        <div class="agents-popup-time">подключён ${formatDate(agent.connectedAt)}</div>
-      </div>
-    </div>`;
-}
-
 // === WebSocket ===
 
 function initWebSocket() {
@@ -1764,28 +1680,14 @@ function handleWSMessage(data) {
       break;
 
     case 'agent:connected':
-      if (isEventForCurrentProject(data.payload)) {
-        if (!data.payload.renamed) {
-          loadStats();
-        }
-        const popupVisible = document.getElementById('agents-popup')?.style.display !== 'none';
-        if (popupVisible) {
-          loadAgentsPopup();
-        } else {
-          updateAgentCounters();
-        }
+      if (isEventForCurrentProject(data.payload) && !data.payload.renamed) {
+        loadStats();
       }
       break;
 
     case 'agent:disconnected':
       if (isEventForCurrentProject(data.payload)) {
         loadStats();
-        const popupVisible = document.getElementById('agents-popup')?.style.display !== 'none';
-        if (popupVisible) {
-          loadAgentsPopup();
-        } else {
-          updateAgentCounters();
-        }
       }
       break;
   }
