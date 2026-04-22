@@ -3,6 +3,7 @@
 @import url('https://fonts.googleapis.com/css2?family=Newsreader:ital,opsz,wght@0,6..72,300;0,6..72,400;0,6..72,600;0,6..72,700;1,6..72,300;1,6..72,400&family=Nanum+Myeongjo:wght@400;700;800&family=Source+Code+Pro:wght@200;300;400&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Anton&family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&family=DM+Mono:wght@300;400;500&display=swap');
 @import url('https://fonts.googleapis.com/css2?family=Syne:wght@400;500;600;700;800&family=Azeret+Mono:wght@200;300;400;500&display=swap');
+@import url('https://fonts.googleapis.com/css2?family=Onest:wght@300;400;500;600;700;800&family=JetBrains+Mono:wght@300;400;500;700&family=Pixelify+Sans:wght@400;500;600;700&display=swap');
 
 /* ============================================
    BRUTALIST THEME
@@ -122,6 +123,37 @@
   --font-primary: 'Plus Jakarta Sans', sans-serif;
   --font-heading: 'Syne', sans-serif;
   --font-mono: 'Azeret Mono', monospace;
+}
+
+/* ============================================
+   NOTHING THEME
+   ============================================ */
+[data-theme="nothing"] {
+  --bg-primary:        #000000;
+  --bg-secondary:      #111111;
+  --bg-tertiary:       #1A1A1A;
+  --bg-hover:          #222222;
+  --text-primary:      #E8E8E8;
+  --text-secondary:    #999999;
+  --text-muted:        #666666;
+  --border-color:      #222222;
+  --accent-primary:    #D77554;
+  --accent-hover:      #B85F40;
+  --success:           #4A9E5C;
+  --warning:           #D4A843;
+  --danger:            #D77554;
+  --priority-low:      #666666;
+  --priority-medium:   #5B9BF6;
+  --priority-high:     #D4A843;
+  --priority-critical: #D77554;
+  --radius-sm: 0px;
+  --radius-md: 0px;
+  --radius-lg: 2px;
+  --shadow:    none;
+  --font-primary: 'Onest', system-ui, sans-serif;
+  --font-heading: 'Onest', system-ui, sans-serif;
+  --font-mono:    'JetBrains Mono', 'IBM Plex Mono', monospace;
+  --font-display: 'Pixelify Sans', 'Onest', sans-serif;
 }
 
 
@@ -397,6 +429,179 @@
   border-right-color: rgba(255, 255, 255, 0.05);
 }
 
+/* --- Nothing: structural overrides --- */
+[data-theme="nothing"] body {
+  background-color: #000000;
+  background-image: radial-gradient(circle, #1A1A1A 1px, transparent 1px);
+  background-size: 16px 16px;
+  background-attachment: fixed;
+}
+
+[data-theme="nothing"] .entry-card {
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  background: var(--bg-secondary);
+  box-shadow: none;
+}
+
+[data-theme="nothing"] .entry-card:hover {
+  border-color: #444444;
+  transform: none;
+  box-shadow: none;
+}
+
+[data-theme="nothing"] .entry-badge {
+  border-radius: 0;
+  text-transform: uppercase;
+  letter-spacing: 0.08em;
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border: 1px solid currentColor;
+  background: transparent;
+}
+
+[data-theme="nothing"] .entry-tag {
+  border-radius: 0;
+  font-family: var(--font-mono);
+  text-transform: lowercase;
+  letter-spacing: 0.04em;
+}
+
+[data-theme="nothing"] .filter-pill {
+  border-radius: 0;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 11px;
+}
+
+[data-theme="nothing"] .filter-pill.active {
+  background: var(--accent-primary);
+  color: #000000;
+  border-color: var(--accent-primary);
+}
+
+[data-theme="nothing"] .domain-pill,
+[data-theme="nothing"] .domain-pill.active {
+  border-radius: 0;
+  font-family: var(--font-mono);
+}
+
+[data-theme="nothing"] .domain-pill.active {
+  background: var(--accent-primary);
+  color: #000000;
+}
+
+[data-theme="nothing"] .modal-content {
+  border: 1px solid var(--border-color);
+  border-radius: 0;
+  box-shadow: none;
+}
+
+[data-theme="nothing"] .btn {
+  border-radius: 0;
+  font-family: var(--font-mono);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  font-size: 12px;
+}
+
+[data-theme="nothing"] .btn-primary,
+[data-theme="nothing"] .btn-add {
+  background: transparent;
+  border: 1px solid var(--accent-primary);
+  color: var(--accent-primary);
+}
+
+[data-theme="nothing"] .btn-primary:hover,
+[data-theme="nothing"] .btn-add:hover {
+  background: var(--accent-primary);
+  color: #000000;
+}
+
+[data-theme="nothing"] .btn-secondary {
+  background: transparent;
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="nothing"] .btn-secondary:hover {
+  border-color: var(--text-primary);
+}
+
+[data-theme="nothing"] input,
+[data-theme="nothing"] textarea,
+[data-theme="nothing"] select,
+[data-theme="nothing"] .custom-select-trigger {
+  border-radius: 0;
+  background: var(--bg-tertiary);
+  border: 1px solid var(--border-color);
+  color: var(--text-primary);
+}
+
+[data-theme="nothing"] input:focus,
+[data-theme="nothing"] textarea:focus,
+[data-theme="nothing"] .custom-select-trigger:focus {
+  border-color: var(--accent-primary);
+  box-shadow: none;
+  outline: none;
+}
+
+[data-theme="nothing"] .custom-select-options {
+  border-radius: 0;
+  border: 1px solid var(--border-color);
+  background: var(--bg-secondary);
+  box-shadow: none;
+}
+
+[data-theme="nothing"] .nav-item.active {
+  background: transparent;
+  border-left: 3px solid var(--accent-primary);
+  color: var(--text-primary);
+}
+
+[data-theme="nothing"] .nav-item.active .nav-icon,
+[data-theme="nothing"] .nav-item.active .nav-count {
+  color: var(--text-primary);
+}
+
+[data-theme="nothing"] .header,
+[data-theme="nothing"] .sidebar {
+  border-color: var(--border-color);
+  background: #000000;
+}
+
+[data-theme="nothing"] .toast {
+  border-radius: 0;
+  background: var(--bg-secondary);
+  border-left: 3px solid var(--text-secondary);
+}
+
+[data-theme="nothing"] .toast.success { border-left-color: var(--success); }
+[data-theme="nothing"] .toast.warning { border-left-color: var(--warning); }
+[data-theme="nothing"] .toast.error   { border-left-color: var(--accent-primary); }
+
+[data-theme="nothing"] .theme-row.active,
+[data-theme="nothing"] .theme-row.selected {
+  border-color: var(--accent-primary);
+  background: rgba(215, 117, 84, 0.06);
+}
+
+[data-theme="nothing"] .stat-value,
+[data-theme="nothing"] .page-title,
+[data-theme="nothing"] .logo-text {
+  font-family: var(--font-display);
+  letter-spacing: -0.02em;
+  font-weight: 600;
+}
+
+[data-theme="nothing"] .logo-text {
+  -webkit-text-fill-color: var(--text-primary);
+  background: none;
+  background-clip: initial;
+  -webkit-background-clip: initial;
+}
+
 
 /* ============================================
    THEME MODAL & BUTTON STYLES
@@ -533,4 +738,41 @@
   display: flex;
   justify-content: flex-end;
   gap: 10px;
+}
+
+/* Legacy theme section divider (universal — applies to all themes) */
+.theme-section-divider {
+  font-family: var(--font-mono);
+  font-size: 10px;
+  letter-spacing: 0.12em;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  padding: 14px 12px 6px;
+  margin-top: 8px;
+  border-top: 1px solid var(--border-color);
+}
+
+.theme-legacy-badge {
+  display: inline-block;
+  margin-left: 8px;
+  padding: 1px 6px;
+  font-family: var(--font-mono);
+  font-size: 9px;
+  letter-spacing: 0.1em;
+  color: var(--text-muted);
+  border: 1px solid var(--border-color);
+  border-radius: 2px;
+  vertical-align: middle;
+  text-transform: uppercase;
+}
+
+.theme-row.legacy {
+  opacity: 0.6;
+  transition: opacity 0.15s;
+}
+
+.theme-row.legacy:hover,
+.theme-row.legacy.active,
+.theme-row.legacy.selected {
+  opacity: 1;
 }
