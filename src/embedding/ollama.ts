@@ -3,17 +3,21 @@ import logger from '../logger.js';
 
 /**
  * Ollama embedding provider using nomic-embed-text-v2-moe model.
- * 768 dimensions, 100+ languages (excellent Russian/English), 8192 token context.
+ * 768 dimensions, 100+ languages (excellent Russian/English).
+ * Effective context window observed via /api/ps is 512 tokens — see
+ * MAX_EMBED_CHARS below for how inputs are bounded.
  * Requires Ollama running locally: curl -fsSL https://ollama.com/install.sh | sh
  * Model pulled automatically on first use.
  */
 const DEFAULT_MODEL = 'nomic-embed-text-v2-moe';
 
-// nomic-embed-text-v2-moe supports 8192 tokens context.
-// Cyrillic chars tokenize as ~2 tokens each.
-// Safe limit: ~8000 tokens / ~2 tokens/char = ~4000 Cyrillic chars.
-// Mixed text (code + Cyrillic): use 6000 chars as a balanced limit.
-const MAX_EMBED_CHARS = 6000;
+// nomic-embed-text-v2-moe advertises 8192 tokens, but the live model
+// reports context_length: 512 via /api/ps, and Ollama rejects entire
+// batches (HTTP 400) when any single input exceeds that window — its
+// `truncate: true` flag only applies to single-input requests.
+// Mixed text (code + Cyrillic) tokenizes at ~2-3 tokens/char, so 2000
+// chars gives ~1500 token headroom while leaving useful context.
+const MAX_EMBED_CHARS = 2000;
 const EMBED_BATCH_SIZE = 50;        // max texts per single Ollama API call
 const EMBED_TIMEOUT_MS = 5 * 60_000; // 5 min per sub-batch (Ollama is slow on CPU)
 
@@ -104,12 +108,67 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
         body: JSON.stringify({ model: this.modelName, truncate: true, input: batch.map(t => prefix + truncateForEmbed(t)) }),
         signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
       });
+
+      // Ollama rejects the entire batch (HTTP 400) when any single input
+      // exceeds the embedding context window. Fall back to single-text
+      // embedding where `truncate: true` does work, substituting a
+      // zero-vector for inputs that still fail so one bad text cannot
+      // take down the whole session.
+      if (res.status === 400) {
+        const errorBody = await res.text();
+        const batchNum = Math.floor(i / EMBED_BATCH_SIZE) + 1;
+        logger.warn({ batchNum, batchSize: batch.length, error: errorBody },
+          'Batch embedding rejected, falling back to single-text mode');
+        const fallback = await this.embedBatchSingleFallback(batch, prefix);
+        allEmbeddings.push(...fallback);
+        continue;
+      }
+
       if (!res.ok) throw new Error(`Ollama embed error ${res.status}: ${await res.text()}`);
       const data = await res.json() as { embeddings: number[][] };
       allEmbeddings.push(...data.embeddings);
     }
 
     return allEmbeddings;
+  }
+
+  private async embedBatchSingleFallback(batch: string[], prefix: string): Promise<number[][]> {
+    const results: number[][] = [];
+    for (let idx = 0; idx < batch.length; idx++) {
+      const text = batch[idx];
+      try {
+        const singleRes = await fetch(`${this.baseUrl}/api/embed`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ model: this.modelName, truncate: true, input: prefix + truncateForEmbed(text) }),
+          signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
+        });
+        if (singleRes.ok) {
+          const singleData = await singleRes.json() as { embeddings: number[][] };
+          results.push(singleData.embeddings[0]);
+        } else {
+          const errorBody = await singleRes.text();
+          // textPreview deliberately omitted — imported session content can contain
+          // tokens/secrets pasted during development. Index + length are enough to
+          // correlate against the source batch.
+          logger.warn({ status: singleRes.status, idx, textLength: text.length, error: errorBody },
+            'Single text embedding failed, using zero vector');
+          results.push(new Array(this.dimensions).fill(0));
+        }
+      } catch (err) {
+        // Timeouts/aborts are a different failure class than "input too long after
+        // truncate" — don't silently mask them as zero-vectors; let the caller fail
+        // the whole batch the same way any other non-400 error would.
+        const name = (err as { name?: string } | undefined)?.name;
+        if (name === 'TimeoutError' || name === 'AbortError') {
+          throw err;
+        }
+        logger.warn({ err, idx, textLength: text.length },
+          'Single text embedding threw, using zero vector');
+        results.push(new Array(this.dimensions).fill(0));
+      }
+    }
+    return results;
   }
 
   async close(): Promise<void> { this.ready = false; }
