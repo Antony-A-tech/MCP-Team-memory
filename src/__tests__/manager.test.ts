@@ -142,6 +142,29 @@ describe('MemoryManager', () => {
       );
     });
 
+    it('passes pinned=true filter to storage.getAll for pinned tab', async () => {
+      await manager.read({ category: 'all', pinned: true });
+      expect(storage.getAll).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000000',
+        expect.objectContaining({ pinned: true })
+      );
+    });
+
+    it('passes pinned filter to storage.search when combined with search', async () => {
+      await manager.read({ search: 'test', pinned: true });
+      expect(storage.search).toHaveBeenCalledWith(
+        '00000000-0000-0000-0000-000000000000',
+        'test',
+        expect.objectContaining({ pinned: true })
+      );
+    });
+
+    it('does not pass pinned to storage when param is undefined', async () => {
+      await manager.read({ category: 'tasks' });
+      const callArgs = (storage.getAll as any).mock.calls.at(-1)[1];
+      expect(callArgs.pinned).toBeUndefined();
+    });
+
     it('ignores filters when ids is provided', async () => {
       storage.getByIds = vi.fn().mockResolvedValue([storage._mockEntry]);
       await manager.read({ ids: ['550e8400-e29b-41d4-a716-446655440000'], search: 'test', category: 'tasks' });

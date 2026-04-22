@@ -377,10 +377,12 @@ export class PgStorage {
   // Overloads: compact → CompactMemoryEntry[], default → MemoryEntry[]
   async getAll(projectId: string, filters: {
     category?: string; domain?: string; status?: string; tags?: string[];
+    pinned?: boolean;
     limit?: number; offset?: number; compact: true;
   }): Promise<CompactMemoryEntry[]>;
   async getAll(projectId: string, filters?: {
     category?: string; domain?: string; status?: string; tags?: string[];
+    pinned?: boolean;
     limit?: number; offset?: number; compact?: false;
   }): Promise<MemoryEntry[]>;
   async getAll(projectId: string, filters?: {
@@ -388,6 +390,7 @@ export class PgStorage {
     domain?: string;
     status?: string;
     tags?: string[];
+    pinned?: boolean;
     limit?: number;
     offset?: number;
     compact?: boolean;
@@ -411,6 +414,10 @@ export class PgStorage {
     if (filters?.tags && filters.tags.length > 0) {
       conditions.push(`tags && $${paramIdx++}`);
       values.push(filters.tags);
+    }
+    if (filters?.pinned !== undefined) {
+      conditions.push(`pinned = $${paramIdx++}`);
+      values.push(filters.pinned);
     }
 
     const limit = filters?.limit || 50;
@@ -457,10 +464,12 @@ export class PgStorage {
   // Overloads: compact → CompactMemoryEntry[], default → MemoryEntry[]
   async search(projectId: string, query: string, filters: {
     category?: string; domain?: string; status?: string; tags?: string[];
+    pinned?: boolean;
     limit?: number; offset?: number; compact: true;
   }): Promise<CompactMemoryEntry[]>;
   async search(projectId: string, query: string, filters?: {
     category?: string; domain?: string; status?: string; tags?: string[];
+    pinned?: boolean;
     limit?: number; offset?: number; compact?: false;
   }): Promise<MemoryEntry[]>;
   async search(projectId: string, query: string, filters?: {
@@ -468,6 +477,7 @@ export class PgStorage {
     domain?: string;
     status?: string;
     tags?: string[];
+    pinned?: boolean;
     limit?: number;
     offset?: number;
     compact?: boolean;
@@ -496,6 +506,10 @@ export class PgStorage {
     if (filters?.tags && filters.tags.length > 0) {
       conditions.push(`tags && $${paramIdx++}`);
       values.push(filters.tags);
+    }
+    if (filters?.pinned !== undefined) {
+      conditions.push(`pinned = $${paramIdx++}`);
+      values.push(filters.pinned);
     }
 
     const limit = filters?.limit || 50;
@@ -759,11 +773,11 @@ export class PgStorage {
   /** Hybrid search: combines full-text search with vector similarity */
   async hybridSearch(
     projectId: string, query: string, queryEmbedding: number[] | undefined,
-    filters: { category?: string; domain?: string; status?: string; tags?: string[]; limit?: number; offset?: number; compact: true; }
+    filters: { category?: string; domain?: string; status?: string; tags?: string[]; pinned?: boolean; limit?: number; offset?: number; compact: true; }
   ): Promise<CompactMemoryEntry[]>;
   async hybridSearch(
     projectId: string, query: string, queryEmbedding: number[] | undefined,
-    filters?: { category?: string; domain?: string; status?: string; tags?: string[]; limit?: number; offset?: number; compact?: false; }
+    filters?: { category?: string; domain?: string; status?: string; tags?: string[]; pinned?: boolean; limit?: number; offset?: number; compact?: false; }
   ): Promise<MemoryEntry[]>;
   async hybridSearch(
     projectId: string,
@@ -774,6 +788,7 @@ export class PgStorage {
       domain?: string;
       status?: string;
       tags?: string[];
+      pinned?: boolean;
       limit?: number;
       offset?: number;
       compact?: boolean;
@@ -818,6 +833,10 @@ export class PgStorage {
     if (filters?.tags && filters.tags.length > 0) {
       conditions.push(`tags && $${paramIdx++}`);
       values.push(filters.tags);
+    }
+    if (filters?.pinned !== undefined) {
+      conditions.push(`pinned = $${paramIdx++}`);
+      values.push(filters.pinned);
     }
 
     const limit = filters?.limit || 50;
