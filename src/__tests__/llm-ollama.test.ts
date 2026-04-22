@@ -45,6 +45,6 @@ describe('OllamaLlmClient', () => {
     // Messages should be truncated to 300 chars each
     expect(prompt).not.toContain('A'.repeat(1000));
     expect(prompt.indexOf('A'.repeat(300))).toBeGreaterThan(-1);
-    expect(prompt).toContain('Summarize this development session');
+    expect(prompt).toContain('Analyze this development session');
   });
 });
