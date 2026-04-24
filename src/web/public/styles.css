@@ -3290,11 +3290,42 @@ select:focus {
 }
 .chat-session-item:hover { background: rgba(255,255,255,0.03); }
 .chat-session-item.active { background: rgba(255,255,255,0.06); border-left-color: var(--accent-strong, #5a8dff); }
-.chat-session-item .chat-session-delete {
-  margin-left: auto;
-  background: none; border: none; color: var(--text-dim, #888); cursor: pointer; padding: 2px 6px;
+.chat-session-item .chat-session-title {
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
 }
+.chat-session-item .chat-session-rename,
+.chat-session-item .chat-session-delete {
+  background: none;
+  border: none;
+  color: var(--text-dim, #888);
+  cursor: pointer;
+  padding: 2px 6px;
+  opacity: 0;
+  transition: opacity 0.12s ease, color 0.12s ease;
+  font-size: 14px;
+  line-height: 1;
+}
+.chat-session-item:hover .chat-session-rename,
+.chat-session-item:hover .chat-session-delete,
+.chat-session-item.active .chat-session-rename,
+.chat-session-item.active .chat-session-delete {
+  opacity: 1;
+}
+.chat-session-item .chat-session-rename:hover { color: var(--accent-primary); }
 .chat-session-item .chat-session-delete:hover { color: #ff6b6b; }
+.chat-session-title-edit {
+  flex: 1;
+  padding: 2px 6px;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--accent-primary);
+  border-radius: 3px;
+  font-family: inherit;
+  font-size: 13px;
+  outline: none;
+}
 
 .chat-main {
   flex: 1;
