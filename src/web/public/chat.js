@@ -12,11 +12,17 @@
 
   const $ = (sel) => document.querySelector(sel);
 
+  function authHeaders() {
+    const token = localStorage.getItem('auth-token') || '';
+    return token ? { 'Authorization': `Bearer ${token}` } : {};
+  }
+
   async function api(path, opts = {}) {
     const res = await fetch(path, {
       ...opts,
       headers: {
         'Content-Type': 'application/json',
+        ...authHeaders(),
         ...(opts.headers || {}),
       },
       credentials: 'include',
@@ -30,16 +36,12 @@
   }
 
   async function loadProjects() {
-    // Try /api/memory/projects first (existing endpoint); fall back to /api/projects if 404.
     let projects = [];
     try {
-      const res = await api('/api/memory/projects');
+      const res = await api('/api/projects');
       projects = Array.isArray(res) ? res : res?.projects ?? [];
     } catch (err) {
-      try {
-        const res = await api('/api/projects');
-        projects = Array.isArray(res) ? res : res?.projects ?? [];
-      } catch { /* both failed */ }
+      showToast('error', `Не удалось загрузить проекты: ${err.message}`);
     }
     state.projects = projects;
     const select = $('#chat-project-select');
