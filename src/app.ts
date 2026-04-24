@@ -521,3 +521,72 @@ main().catch(err => {
   logger.fatal({ err }, 'Fatal error');
   process.exit(1);
 });
+
+export interface ChatRouteDeps {
+  chatManager: import('./chat/manager.js').ChatManager;
+  ragAgentFactory: ((projectId: string, agentTokenId: string) => import('./rag/agent.js').RagAgent) | null;
+  titleGenerator: import('./rag/title-generator.js').TitleGenerator | null;
+  providerModel?: string | null;
+}
+
+export function registerChatRoutes(app: import('express').Express, deps: ChatRouteDeps): void {
+  const { chatManager } = deps;
+
+  app.post('/api/chat/sessions', async (req, res) => {
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    try {
+      const session = await chatManager.create({
+        agentTokenId,
+        projectId: req.body?.project_id ?? null,
+        title: req.body?.title,
+      });
+      res.status(201).json(session);
+    } catch {
+      res.status(500).json({ error: 'Failed to create chat session' });
+    }
+  });
+
+  app.get('/api/chat/sessions', async (req, res) => {
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    try {
+      const sessions = await chatManager.list(agentTokenId, {
+        projectId: req.query.project_id as string | undefined,
+        limit: req.query.limit ? Number(req.query.limit) : 50,
+        offset: req.query.offset ? Number(req.query.offset) : 0,
+      });
+      res.json(sessions);
+    } catch {
+      res.status(500).json({ error: 'Failed to list chat sessions' });
+    }
+  });
+
+  app.get('/api/chat/sessions/:id', async (req, res) => {
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const session = await chatManager.loadSessionWithMessages(req.params.id, agentTokenId);
+    if (!session) { res.status(404).json({ error: 'Not found' }); return; }
+    res.json(session);
+  });
+
+  app.patch('/api/chat/sessions/:id', async (req, res) => {
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const title = req.body?.title;
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      res.status(400).json({ error: 'title is required' });
+      return;
+    }
+    await chatManager.rename(req.params.id, agentTokenId, title.trim().slice(0, 200));
+    res.status(204).end();
+  });
+
+  app.delete('/api/chat/sessions/:id', async (req, res) => {
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    await chatManager.softDelete(req.params.id, agentTokenId);
+    res.status(204).end();
+  });
+}
+
