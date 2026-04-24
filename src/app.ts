@@ -588,5 +588,78 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
     await chatManager.softDelete(req.params.id, agentTokenId);
     res.status(204).end();
   });
+
+  app.post('/api/chat/stream', async (req, res) => {
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+
+    const { session_id, message } = req.body ?? {};
+    if (typeof session_id !== 'string' || typeof message !== 'string' || message.trim().length === 0) {
+      res.status(400).json({ error: 'session_id and message required' });
+      return;
+    }
+    if (message.length > 10_000) {
+      res.status(400).json({ error: 'Message too long (max 10,000 chars)' });
+      return;
+    }
+
+    if (!deps.ragAgentFactory) {
+      res.status(503).json({ error: 'RAG agent not configured (check GEMINI_API_KEY)' });
+      return;
+    }
+
+    const session = await chatManager.loadSessionWithMessages(session_id, agentTokenId);
+    if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+    if (!session.projectId) {
+      res.status(400).json({ error: 'Session has no project_id; RAG requires project scope' });
+      return;
+    }
+
+    const ragAgent = deps.ragAgentFactory(session.projectId, agentTokenId);
+
+    res.status(200);
+    res.setHeader('Content-Type', 'text/event-stream');
+    res.setHeader('Cache-Control', 'no-cache');
+    res.setHeader('Connection', 'keep-alive');
+    res.setHeader('X-Accel-Buffering', 'no');
+    res.flushHeaders();
+
+    const controller = new AbortController();
+    req.on('close', () => controller.abort());
+
+    const keepAlive = setInterval(() => res.write(':\n\n'), 15_000);
+
+    const emit = (type: string, data: unknown) => {
+      res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+    };
+
+    const isFirstUserMessage = session.messages.filter((m: any) => m.role === 'user').length === 0;
+    let firstAssistantReply = '';
+
+    try {
+      for await (const ev of ragAgent.run(session as any, message, controller.signal)) {
+        if (ev.type === 'text') firstAssistantReply += (ev as any).delta;
+        const { type, ...data } = ev as any;
+        emit(type, data);
+      }
+    } catch (err: any) {
+      emit('error', { code: 'internal_error', message: err?.message ?? 'Internal error' });
+    } finally {
+      clearInterval(keepAlive);
+      res.end();
+    }
+
+    if (isFirstUserMessage && firstAssistantReply.length > 0 && deps.titleGenerator) {
+      deps.titleGenerator.generate(session_id, message, firstAssistantReply).catch(() => { /* logged inside */ });
+    }
+  });
+
+  app.get('/api/chat/status', (_req, res) => {
+    res.json({
+      available: !!deps.ragAgentFactory,
+      provider: deps.ragAgentFactory ? 'gemini' : null,
+      model: deps.providerModel ?? null,
+    });
+  });
 }
 

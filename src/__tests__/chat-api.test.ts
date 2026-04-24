@@ -78,3 +78,88 @@ describe('DELETE /api/chat/sessions/:id', () => {
     expect(chatManager.softDelete).toHaveBeenCalledWith('sess-1', 'tok-1');
   });
 });
+
+describe('POST /api/chat/stream', () => {
+  function mockRagAgent() {
+    return {
+      async *run() {
+        yield { type: 'text', delta: 'Hello' };
+        yield { type: 'done' };
+      },
+    };
+  }
+
+  it('streams SSE events from RagAgent', async () => {
+    const chatManager = {
+      loadSessionWithMessages: vi.fn().mockResolvedValue({
+        id: 'sess-1', agentTokenId: 'tok-1', projectId: 'proj',
+        onboardInjected: true, messages: [{ role: 'system', content: 's' }],
+      }),
+    };
+    const ragAgentFactory = vi.fn(() => mockRagAgent());
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).auth = { agentTokenId: 'tok-1' }; next(); });
+    registerChatRoutes(app, { chatManager, ragAgentFactory, titleGenerator: null } as any);
+
+    const res = await request(app)
+      .post('/api/chat/stream')
+      .send({ session_id: 'sess-1', message: 'Hi' })
+      .buffer(true)
+      .parse((r, cb) => {
+        let data = '';
+        r.on('data', (c: any) => { data += c.toString(); });
+        r.on('end', () => cb(null, data));
+      });
+
+    expect(res.status).toBe(200);
+    expect(res.headers['content-type']).toContain('text/event-stream');
+    expect(res.body).toContain('event: text');
+    expect(res.body).toContain('event: done');
+    expect(ragAgentFactory).toHaveBeenCalledWith('proj', 'tok-1');
+  });
+
+  it('returns 404 when session not found', async () => {
+    const chatManager = { loadSessionWithMessages: vi.fn().mockResolvedValue(null) };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).auth = { agentTokenId: 'tok-1' }; next(); });
+    registerChatRoutes(app, { chatManager, ragAgentFactory: () => mockRagAgent(), titleGenerator: null } as any);
+    const res = await request(app).post('/api/chat/stream').send({ session_id: 'missing', message: 'hi' });
+    expect(res.status).toBe(404);
+  });
+
+  it('returns 400 when session has no project_id', async () => {
+    const chatManager = {
+      loadSessionWithMessages: vi.fn().mockResolvedValue({
+        id: 'sess-1', projectId: null, messages: [],
+      }),
+    };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).auth = { agentTokenId: 'tok-1' }; next(); });
+    registerChatRoutes(app, { chatManager, ragAgentFactory: () => mockRagAgent(), titleGenerator: null } as any);
+    const res = await request(app).post('/api/chat/stream').send({ session_id: 'sess-1', message: 'hi' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 400 when message missing', async () => {
+    const chatManager = { loadSessionWithMessages: vi.fn() };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).auth = { agentTokenId: 'tok-1' }; next(); });
+    registerChatRoutes(app, { chatManager, ragAgentFactory: () => mockRagAgent(), titleGenerator: null } as any);
+    const res = await request(app).post('/api/chat/stream').send({ session_id: 'sess-1' });
+    expect(res.status).toBe(400);
+  });
+
+  it('returns 503 when ragAgentFactory is null', async () => {
+    const chatManager = { loadSessionWithMessages: vi.fn() };
+    const app = express();
+    app.use(express.json());
+    app.use((req, _res, next) => { (req as any).auth = { agentTokenId: 'tok-1' }; next(); });
+    registerChatRoutes(app, { chatManager, ragAgentFactory: null, titleGenerator: null } as any);
+    const res = await request(app).post('/api/chat/stream').send({ session_id: 'sess-1', message: 'hi' });
+    expect(res.status).toBe(503);
+  });
+});
