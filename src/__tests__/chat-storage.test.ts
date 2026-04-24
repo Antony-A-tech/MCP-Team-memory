@@ -60,4 +60,44 @@ describe('ChatStorage', () => {
       expect(sql).toContain('project_id = $2');
     });
   });
+
+  describe('renameSession', () => {
+    it('updates title and sets title_is_user_set=true', async () => {
+      pool.query.mockResolvedValue({ rowCount: 1 });
+      await storage.renameSession('sess-1', 'tok-1', 'My chat');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('UPDATE chat_sessions');
+      expect(sql).toContain('title = $3');
+      expect(sql).toContain('title_is_user_set = TRUE');
+      expect(pool.query.mock.calls[0][1]).toEqual(['sess-1', 'tok-1', 'My chat']);
+    });
+  });
+
+  describe('markOnboarded', () => {
+    it('sets onboard_injected=true', async () => {
+      pool.query.mockResolvedValue({ rowCount: 1 });
+      await storage.markOnboarded('sess-1');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('onboard_injected = TRUE');
+    });
+  });
+
+  describe('softDeleteSession', () => {
+    it('sets archived_at=NOW()', async () => {
+      pool.query.mockResolvedValue({ rowCount: 1 });
+      await storage.softDeleteSession('sess-1', 'tok-1');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('archived_at = NOW()');
+      expect(sql).toContain('agent_token_id = $2');
+    });
+  });
+
+  describe('touchSession', () => {
+    it('updates updated_at=NOW()', async () => {
+      pool.query.mockResolvedValue({ rowCount: 1 });
+      await storage.touchSession('sess-1');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('updated_at = NOW()');
+    });
+  });
 });
