@@ -71,11 +71,11 @@ describe('PATCH /api/chat/sessions/:id', () => {
 });
 
 describe('DELETE /api/chat/sessions/:id', () => {
-  it('soft deletes', async () => {
-    const chatManager = { softDelete: vi.fn().mockResolvedValue(undefined) };
+  it('hard deletes', async () => {
+    const chatManager = { delete: vi.fn().mockResolvedValue(undefined) };
     const res = await request(buildTestApp(chatManager)).delete('/api/chat/sessions/sess-1');
     expect(res.status).toBe(204);
-    expect(chatManager.softDelete).toHaveBeenCalledWith('sess-1', 'tok-1');
+    expect(chatManager.delete).toHaveBeenCalledWith('sess-1', 'tok-1');
   });
 });
 

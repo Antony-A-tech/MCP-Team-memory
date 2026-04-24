@@ -217,6 +217,8 @@ document.addEventListener('DOMContentLoaded', async () => {
 // === Readonly Mode & Auth Button ===
 
 function applyReadonlyMode() {
+  // Mark body so CSS + other scripts (chat.js) can scope their behaviour.
+  document.body.classList.add('readonly-mode');
   // Hide write-action buttons
   const hideSelectors = [
     '#btn-add',                     // "Добавить" button

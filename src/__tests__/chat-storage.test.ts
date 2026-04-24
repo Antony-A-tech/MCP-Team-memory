@@ -82,13 +82,14 @@ describe('ChatStorage', () => {
     });
   });
 
-  describe('softDeleteSession', () => {
-    it('sets archived_at=NOW()', async () => {
+  describe('deleteSession', () => {
+    it('physically deletes the row scoped to owner', async () => {
       pool.query.mockResolvedValue({ rowCount: 1 });
-      await storage.softDeleteSession('sess-1', 'tok-1');
+      await storage.deleteSession('sess-1', 'tok-1');
       const sql = pool.query.mock.calls[0][0] as string;
-      expect(sql).toContain('archived_at = NOW()');
+      expect(sql).toContain('DELETE FROM chat_sessions');
       expect(sql).toContain('agent_token_id = $2');
+      expect(pool.query.mock.calls[0][1]).toEqual(['sess-1', 'tok-1']);
     });
   });
 

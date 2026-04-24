@@ -36,8 +36,8 @@ export class ChatManager {
     return this.storage.renameSession(id, agentTokenId, title);
   }
 
-  softDelete(id: string, agentTokenId: string): Promise<void> {
-    return this.storage.softDeleteSession(id, agentTokenId);
+  delete(id: string, agentTokenId: string): Promise<void> {
+    return this.storage.deleteSession(id, agentTokenId);
   }
 
   appendMessage(sessionId: string, msg: ChatMessage): Promise<PersistedChatMessage> {

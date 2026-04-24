@@ -6,7 +6,7 @@
   <title>Team Memory - Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <script src="theme-init.js"></script>
-  <link rel="stylesheet" href="styles.css?v=10">
+  <link rel="stylesheet" href="styles.css?v=13">
   <link rel="stylesheet" href="themes.css?v=2">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <!-- Graph visualization: force-graph (2D canvas, d3-force) -->
@@ -336,6 +336,24 @@
               <i data-lucide="panel-left" class="icon-toggle"></i>
             </button>
           </div>
+
+          <!-- Readonly banner: shown instead of the chat UI for viewers without token -->
+          <div id="chat-readonly-banner" class="chat-readonly-banner">
+            <div class="chat-readonly-card">
+              <div class="chat-readonly-icon">
+                <i data-lucide="key-round"></i>
+              </div>
+              <h2 class="chat-readonly-title">Нужен токен для доступа</h2>
+              <p class="chat-readonly-text">
+                AI-ассистент работает только для авторизованных агентов. Запроси персональный токен у владельца проекта и войди, чтобы начать чат.
+              </p>
+              <button id="chat-readonly-login-btn" class="btn btn-primary chat-readonly-btn">
+                <i data-lucide="log-in"></i>
+                <span>Войти по токену</span>
+              </button>
+            </div>
+          </div>
+
           <div class="chat-messages-scroll">
             <div id="chat-messages" class="chat-messages"></div>
           </div>
@@ -669,6 +687,25 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
+    <!-- Chat delete confirmation modal -->
+    <div class="modal" id="chat-delete-modal">
+      <div class="modal-content" style="max-width: 420px;">
+        <div class="modal-header">
+          <h2>Удалить чат?</h2>
+          <button class="modal-close" id="chat-delete-modal-close" aria-label="Закрыть">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p>Чат <strong id="chat-delete-title-text"></strong> будет удалён вместе со всей историей. Действие необратимо.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="chat-delete-cancel">Отменить</button>
+          <button class="btn btn-danger" id="chat-delete-confirm">Удалить</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Theme Modal -->
     <div class="modal" id="theme-modal">
       <div class="modal-content" style="max-width: 480px;">
@@ -689,8 +726,8 @@
     </div>
   </div>
 
-  <script src="app.js?v=5"></script>
+  <script src="app.js?v=6"></script>
   <script src="graph.js?v=6"></script>
-  <script src="chat.js?v=3"></script>
+  <script src="chat.js?v=10"></script>
 </body>
 </html>

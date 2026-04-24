@@ -591,7 +591,7 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
   app.delete('/api/chat/sessions/:id', async (req, res) => {
     const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
-    await chatManager.softDelete(req.params.id, agentTokenId);
+    await chatManager.delete(req.params.id, agentTokenId);
     res.status(204).end();
   });
 

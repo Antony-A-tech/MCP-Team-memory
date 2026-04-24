@@ -10,7 +10,7 @@ function createMockStorage(): ChatStorage {
     renameSession: vi.fn(),
     updateAutoTitle: vi.fn(),
     markOnboarded: vi.fn(),
-    softDeleteSession: vi.fn(),
+    deleteSession: vi.fn(),
     touchSession: vi.fn(),
     appendMessage: vi.fn(),
     listMessages: vi.fn(),
