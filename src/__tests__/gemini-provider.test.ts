@@ -63,3 +63,84 @@ describe('GeminiChatProvider lifecycle', () => {
     expect(provider.isReady()).toBe(false);
   });
 });
+
+describe('GeminiChatProvider.stream', () => {
+  const originalFetch = globalThis.fetch;
+  afterEach(() => { globalThis.fetch = originalFetch; });
+
+  function mockSseResponse(chunks: string[]) {
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      start(controller) {
+        for (const c of chunks) controller.enqueue(encoder.encode(c));
+        controller.close();
+      },
+    });
+    return { ok: true, status: 200, body: stream } as any;
+  }
+
+  it('parses text deltas from SSE stream', async () => {
+    const chunks = [
+      'data: {"candidates":[{"content":{"parts":[{"text":"Hel"}]}}]}\n\n',
+      'data: {"candidates":[{"content":{"parts":[{"text":"lo"}]}}]}\n\n',
+      'data: {"candidates":[{"finishReason":"STOP"}],"usageMetadata":{"promptTokenCount":5,"candidatesTokenCount":2}}\n\n',
+    ];
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSseResponse(chunks)) as any;
+
+    const provider = new GeminiChatProvider({ apiKey: 'k', model: 'gemini-2.5-flash' });
+    const events: any[] = [];
+    for await (const ev of provider.stream({ messages: [{ role: 'user', content: 'Hi' }] })) {
+      events.push(ev);
+    }
+    expect(events.filter(e => e.type === 'text').map(e => e.delta).join('')).toBe('Hello');
+    expect(events[events.length - 1].type).toBe('done');
+  });
+
+  it('parses functionCall events', async () => {
+    const chunks = [
+      `data: {"candidates":[{"content":{"parts":[{"functionCall":{"name":"memory_read","args":{"search":"foo"}}}]}}]}\n\n`,
+      `data: {"candidates":[{"finishReason":"STOP"}]}\n\n`,
+    ];
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSseResponse(chunks)) as any;
+
+    const provider = new GeminiChatProvider({ apiKey: 'k', model: 'gemini-2.5-flash' });
+    const events: any[] = [];
+    for await (const ev of provider.stream({ messages: [{ role: 'user', content: 'Find foo' }] })) {
+      events.push(ev);
+    }
+    const toolCall = events.find(e => e.type === 'tool_call');
+    expect(toolCall).toBeDefined();
+    expect(toolCall.call.name).toBe('memory_read');
+    expect(toolCall.call.args).toEqual({ search: 'foo' });
+    expect(typeof toolCall.call.id).toBe('string');
+  });
+
+  it('emits safety_block when finishReason is SAFETY', async () => {
+    const chunks = [`data: {"candidates":[{"finishReason":"SAFETY"}]}\n\n`];
+    globalThis.fetch = vi.fn().mockResolvedValue(mockSseResponse(chunks)) as any;
+    const provider = new GeminiChatProvider({ apiKey: 'k', model: 'gemini-2.5-flash' });
+    const events: any[] = [];
+    for await (const ev of provider.stream({ messages: [{ role: 'user', content: 'x' }] })) events.push(ev);
+    expect(events.some(e => e.type === 'error' && e.code === 'safety_block')).toBe(true);
+  });
+
+  it('converts role=tool into functionResponse in request body', async () => {
+    const chunks = [`data: {"candidates":[{"content":{"parts":[{"text":"ok"}]}, "finishReason":"STOP"}]}\n\n`];
+    const fetchMock = vi.fn().mockResolvedValue(mockSseResponse(chunks));
+    globalThis.fetch = fetchMock as any;
+    const provider = new GeminiChatProvider({ apiKey: 'k', model: 'gemini-2.5-flash' });
+
+    for await (const _ of provider.stream({
+      messages: [
+        { role: 'user', content: 'Find' },
+        { role: 'assistant', content: '', toolCalls: [{ id: 'c1', name: 'memory_read', args: {} }] },
+        { role: 'tool', content: '[]', toolCallId: 'c1', toolName: 'memory_read' },
+      ],
+    })) { /* consume */ }
+
+    const body = JSON.parse((fetchMock.mock.calls[0][1] as any).body);
+    const lastContent = body.contents[body.contents.length - 1];
+    expect(lastContent.role).toBe('user');
+    expect(lastContent.parts[0].functionResponse.name).toBe('memory_read');
+  });
+});
