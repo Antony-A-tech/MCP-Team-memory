@@ -3223,6 +3223,12 @@ select:focus {
   height: 100vh;
   background: var(--bg-primary);
   min-width: 0;
+  /* .sidebar is position:fixed, so we offset like .main does */
+  margin-left: 260px;
+  transition: margin-left 0.3s ease;
+}
+.sidebar.collapsed ~ .chat-panel {
+  margin-left: 60px;
 }
 
 .chat-sidebar {
