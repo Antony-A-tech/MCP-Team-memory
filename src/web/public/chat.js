@@ -429,6 +429,7 @@
       openBtn.addEventListener('click', () => {
         showChatPanel();
         loadProjects();
+        try { localStorage.setItem('active-tab', 'chat'); } catch {}
       });
     }
 
@@ -533,12 +534,21 @@
     document.querySelectorAll('.nav-item').forEach(navItem => {
       if (navItem.id === 'btn-ai-chat') return;
       navItem.addEventListener('click', () => {
-        const panel = document.getElementById('chat-panel');
+        const panelEl = document.getElementById('chat-panel');
         const mainEl = document.querySelector('main.main');
-        if (panel) panel.style.display = 'none';
+        if (panelEl) panelEl.style.display = 'none';
         if (mainEl) mainEl.style.display = '';
+        try { localStorage.removeItem('active-tab'); } catch {}
       });
     });
+
+    // Restore: if user was on the chat tab before refresh, reopen it.
+    let wasOnChat = false;
+    try { wasOnChat = localStorage.getItem('active-tab') === 'chat'; } catch {}
+    if (wasOnChat) {
+      showChatPanel();
+      loadProjects();
+    }
   }
 
   if (document.readyState === 'loading') {
