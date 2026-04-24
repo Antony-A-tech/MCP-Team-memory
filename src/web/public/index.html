@@ -320,8 +320,9 @@
       <aside class="chat-sidebar">
         <div class="chat-sidebar-header">
           <div class="chat-sidebar-top">
-            <button id="chat-sidebar-toggle" class="chat-sidebar-toggle" title="Свернуть панель чатов">
-              <i data-lucide="panel-left-close"></i>
+            <button id="chat-sidebar-toggle" class="chat-sidebar-toggle" aria-label="Переключить панель чатов">
+              <i data-lucide="menu" class="icon-menu"></i>
+              <i data-lucide="panel-left-close" class="icon-close"></i>
             </button>
           </div>
           <div class="custom-select" id="chat-project-select">
@@ -336,9 +337,6 @@
         <ul id="chat-session-list" class="chat-session-list"></ul>
       </aside>
       <main class="chat-main">
-        <button id="chat-sidebar-open" class="chat-sidebar-open" title="Открыть панель чатов" style="display:none">
-          <i data-lucide="panel-left-open"></i>
-        </button>
         <div class="chat-messages-scroll">
           <div id="chat-messages" class="chat-messages"></div>
         </div>

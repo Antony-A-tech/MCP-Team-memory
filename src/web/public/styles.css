@@ -3255,8 +3255,7 @@ select:focus {
   justify-content: flex-end;
   margin-bottom: 4px;
 }
-.chat-sidebar-toggle,
-.chat-sidebar-open {
+.chat-sidebar-toggle {
   background: none;
   border: none;
   color: var(--text-dim, #888);
@@ -3268,38 +3267,35 @@ select:focus {
   justify-content: center;
   transition: background 0.12s ease, color 0.12s ease;
 }
-.chat-sidebar-toggle:hover,
-.chat-sidebar-open:hover {
+.chat-sidebar-toggle:hover {
   background: rgba(255,255,255,0.06);
   color: var(--text-primary);
 }
-.chat-sidebar-toggle i,
-.chat-sidebar-open i {
+.chat-sidebar-toggle i {
   width: 18px;
   height: 18px;
 }
-.chat-sidebar-open {
-  position: absolute;
-  top: 12px;
-  left: 12px;
-  z-index: 3;
-  background: var(--bg-secondary);
-  border: 1px solid var(--border-color);
-}
+/* Icon visibility: show close when open, menu when collapsed */
+.chat-sidebar-toggle .icon-menu { display: none; }
+.chat-sidebar-toggle .icon-close { display: inline-flex; }
+.chat-panel.sidebar-collapsed .chat-sidebar-toggle .icon-menu { display: inline-flex; }
+.chat-panel.sidebar-collapsed .chat-sidebar-toggle .icon-close { display: none; }
 
-.chat-main {
-  position: relative;
-}
-
-/* Collapsed sidebar state */
-.chat-panel.sidebar-collapsed .chat-sidebar {
-  width: 0;
-  border-right: none;
-  overflow: hidden;
-  opacity: 0;
-}
+/* Sidebar width transition + collapsed rail mode */
 .chat-sidebar {
-  transition: width 0.22s ease, opacity 0.22s ease;
+  transition: width 0.22s ease;
+}
+.chat-panel.sidebar-collapsed .chat-sidebar {
+  width: 56px;
+}
+.chat-panel.sidebar-collapsed .chat-sidebar-top {
+  justify-content: center;
+}
+.chat-panel.sidebar-collapsed .chat-sidebar-header > *:not(.chat-sidebar-top) {
+  display: none;
+}
+.chat-panel.sidebar-collapsed .chat-session-list {
+  display: none;
 }
 
 .chat-new-btn {
