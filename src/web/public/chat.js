@@ -327,6 +327,13 @@
       if (el) el.style.display = 'none';
     });
 
+    // Hide load-more buttons from entries/sessions/notes views
+    const loadMoreIds = ['load-more-btn', 'sessions-load-more-btn', 'notes-load-more-btn'];
+    loadMoreIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
     if (chatBtn) chatBtn.classList.add('active');
