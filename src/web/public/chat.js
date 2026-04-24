@@ -498,8 +498,7 @@
     const pageTitle = document.getElementById('page-title');
     if (pageTitle) pageTitle.innerHTML =
       '<span class="intellectika-brand">Intellectika</span> ' +
-      '<span class="intellectika-ai">AI</span> ' +
-      '<span class="intellectika-chat">Chat</span>';
+      '<span class="intellectika-chat">AIChat</span>';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
