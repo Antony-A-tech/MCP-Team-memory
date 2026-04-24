@@ -313,9 +313,13 @@
       <div id="chat-panel" class="chat-panel" style="display:none">
         <aside class="chat-sidebar">
           <div class="chat-sidebar-header">
-            <select id="chat-project-select" class="chat-project-select">
-              <option value="">— Выбери проект —</option>
-            </select>
+            <div class="custom-select" id="chat-project-select">
+              <button class="custom-select-trigger" type="button">
+                <span class="custom-select-value">— Выбери проект —</span>
+                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+              </button>
+              <div class="custom-select-options" id="chat-project-options"></div>
+            </div>
             <button id="chat-new-btn" class="chat-new-btn" disabled>+ Новый чат</button>
           </div>
           <ul id="chat-session-list" class="chat-session-list"></ul>

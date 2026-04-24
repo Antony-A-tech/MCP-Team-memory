@@ -222,11 +222,37 @@ async function main(): Promise<void> {
     titleGenerator = new TitleGenerator(chatProvider, chatManager);
   }
 
+  // Lazy-resolved default agent_token_id used when master-token auth is in play.
+  // We cache the first active agent_token.id after the first successful lookup so
+  // subsequent master-token chat requests hit an in-memory value.
+  let cachedMasterAgentId: string | null = null;
+  async function fetchDefaultAgentId(): Promise<string | null> {
+    if (cachedMasterAgentId) return cachedMasterAgentId;
+    try {
+      const { rows } = await storage.getPool().query(
+        `SELECT id FROM agent_tokens WHERE is_active = TRUE ORDER BY created_at ASC LIMIT 1`,
+      );
+      cachedMasterAgentId = rows[0]?.id ?? null;
+      return cachedMasterAgentId;
+    } catch {
+      return null;
+    }
+  }
+  // Warm the cache in the background so first master request is fast.
+  fetchDefaultAgentId().catch(() => { /* logged via pg error elsewhere */ });
+
   registerChatRoutes(app, {
     chatManager,
     ragAgentFactory,
     titleGenerator,
     providerModel: chatProvider?.name ?? null,
+    resolveAgentTokenId: (req) => {
+      const auth = (req as any).auth;
+      if (auth?.agentTokenId) return auth.agentTokenId as string;
+      // Master-token auth: fall back to the cached default agent id (if any).
+      if (auth?.scopes?.includes?.('admin')) return cachedMasterAgentId;
+      return null;
+    },
   });
 
   // === Sessions REST API ===
@@ -493,13 +519,19 @@ export interface ChatRouteDeps {
   ragAgentFactory: ((projectId: string, agentTokenId: string) => import('./rag/agent.js').RagAgent) | null;
   titleGenerator: import('./rag/title-generator.js').TitleGenerator | null;
   providerModel?: string | null;
+  /** Resolves effective agent_token_id for a request. Returns per-agent id when
+   * agent-token auth was used; falls back to a default agent when master-token
+   * auth was used; returns null when no agent can be resolved. */
+  resolveAgentTokenId?: (req: import('express').Request) => string | null;
 }
 
 export function registerChatRoutes(app: import('express').Express, deps: ChatRouteDeps): void {
   const { chatManager } = deps;
+  const resolve = deps.resolveAgentTokenId
+    ?? ((req: import('express').Request) => ((req as any).auth?.agentTokenId as string | undefined) ?? null);
 
   app.post('/api/chat/sessions', async (req, res) => {
-    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     try {
       const session = await chatManager.create({
@@ -514,7 +546,7 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
   });
 
   app.get('/api/chat/sessions', async (req, res) => {
-    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     try {
       const sessions = await chatManager.list(agentTokenId, {
@@ -529,7 +561,7 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
   });
 
   app.get('/api/chat/sessions/:id', async (req, res) => {
-    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     const session = await chatManager.loadSessionWithMessages(req.params.id, agentTokenId);
     if (!session) { res.status(404).json({ error: 'Not found' }); return; }
@@ -537,7 +569,7 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
   });
 
   app.patch('/api/chat/sessions/:id', async (req, res) => {
-    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     const title = req.body?.title;
     if (typeof title !== 'string' || title.trim().length === 0) {
@@ -549,14 +581,14 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
   });
 
   app.delete('/api/chat/sessions/:id', async (req, res) => {
-    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     await chatManager.softDelete(req.params.id, agentTokenId);
     res.status(204).end();
   });
 
   app.post('/api/chat/stream', async (req, res) => {
-    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
 
     const { session_id, message } = req.body ?? {};

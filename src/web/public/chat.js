@@ -44,10 +44,31 @@
       showToast('error', `Не удалось загрузить проекты: ${err.message}`);
     }
     state.projects = projects;
-    const select = $('#chat-project-select');
-    if (!select) return;
-    select.innerHTML = '<option value="">— Выбери проект —</option>' +
-      projects.map(p => `<option value="${escapeHtml(p.id)}">${escapeHtml(p.name || p.id)}</option>`).join('');
+    renderProjectOptions();
+  }
+
+  function renderProjectOptions() {
+    const opts = $('#chat-project-options');
+    if (!opts) return;
+    const items = [{ id: '', name: '— Выбери проект —' }, ...state.projects];
+    opts.innerHTML = items.map(p => `
+      <div class="custom-select-option${p.id === (state.currentProjectId || '') ? ' selected' : ''}" data-value="${escapeHtml(p.id)}">
+        <span class="custom-select-option-name">${escapeHtml(p.name || p.id)}</span>
+      </div>
+    `).join('');
+  }
+
+  function setProjectValue(id, displayName) {
+    state.currentProjectId = id || null;
+    const valueEl = $('#chat-project-select .custom-select-value');
+    if (valueEl) valueEl.textContent = displayName || '— Выбери проект —';
+    const newBtn = $('#chat-new-btn');
+    if (newBtn) newBtn.disabled = !state.currentProjectId;
+    renderProjectOptions();
+    state.currentSessionId = null;
+    const msgs = $('#chat-messages');
+    if (msgs) msgs.innerHTML = '';
+    loadSessions();
   }
 
   async function loadSessions() {
@@ -339,6 +360,11 @@
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
     if (chatBtn) chatBtn.classList.add('active');
+
+    // Render lucide icons inside chat panel (chevron on select trigger, etc.)
+    if (typeof lucide !== 'undefined' && typeof lucide.createIcons === 'function') {
+      lucide.createIcons({ nodes: panel?.querySelectorAll('[data-lucide]') });
+    }
   }
 
   function init() {
@@ -357,14 +383,31 @@
       });
     }
 
-    projSel.addEventListener('change', (e) => {
-      state.currentProjectId = e.target.value || null;
-      newBtn.disabled = !state.currentProjectId;
-      state.currentSessionId = null;
-      const msgs = $('#chat-messages');
-      if (msgs) msgs.innerHTML = '';
-      loadSessions();
+    // Custom-select: toggle open on trigger click
+    const trigger = projSel.querySelector('.custom-select-trigger');
+    const optionsEl = $('#chat-project-options');
+    if (trigger) {
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        projSel.classList.toggle('open');
+      });
+    }
+    // Option click handler (delegated — options are re-rendered)
+    if (optionsEl) {
+      optionsEl.addEventListener('click', (e) => {
+        const opt = e.target.closest('.custom-select-option');
+        if (!opt) return;
+        const id = opt.dataset.value;
+        const name = opt.querySelector('.custom-select-option-name')?.textContent || '';
+        projSel.classList.remove('open');
+        setProjectValue(id, name);
+      });
+    }
+    // Close dropdown on outside click
+    document.addEventListener('click', (e) => {
+      if (!projSel.contains(e.target)) projSel.classList.remove('open');
     });
+
     newBtn.addEventListener('click', createNewChat);
     sessionList.addEventListener('click', (e) => {
       const delBtn = e.target.closest('.chat-session-delete');
