@@ -81,10 +81,11 @@ export class ChatStorage {
     );
   }
 
-  async softDeleteSession(id: string, agentTokenId: string): Promise<void> {
+  /** Hard delete — physically removes the session and its messages (via FK cascade).
+   * Chat sessions are personal, so the owner can always wipe their own data. */
+  async deleteSession(id: string, agentTokenId: string): Promise<void> {
     await this.pool.query(
-      `UPDATE chat_sessions SET archived_at = NOW()
-       WHERE id = $1 AND agent_token_id = $2`,
+      `DELETE FROM chat_sessions WHERE id = $1 AND agent_token_id = $2`,
       [id, agentTokenId],
     );
   }

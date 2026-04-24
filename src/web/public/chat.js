@@ -8,6 +8,7 @@
     currentSessionId: null,
     messagesBySession: {},
     sending: false,
+    pendingDeleteId: null,
   };
 
   const $ = (sel) => document.querySelector(sel);
@@ -34,6 +35,13 @@
   function authHeaders() {
     const token = localStorage.getItem('auth-token') || '';
     return token ? { 'Authorization': `Bearer ${token}` } : {};
+  }
+
+  /** True when the viewer has no token — write endpoints are blocked by
+   * server auth middleware. Chat.js short-circuits all POST/DELETE and shows
+   * the readonly banner instead of firing doomed API calls. */
+  function isReadonly() {
+    return document.body.classList.contains('readonly-mode');
   }
 
   async function api(path, opts = {}) {
@@ -90,6 +98,31 @@
     loadSessions();
   }
 
+  /** Polls the session's title a couple of times after the first exchange
+   * to pick up the server-side auto-generated title without a full refresh. */
+  function scheduleTitleRefresh(sessionId) {
+    if (!sessionId) return;
+    const session = state.sessions.find(s => s.id === sessionId);
+    const originalTitle = session?.title ?? '';
+    const check = async () => {
+      try {
+        const res = await api(`/api/chat/sessions/${sessionId}`);
+        if (!res) return;
+        const s = state.sessions.find(x => x.id === sessionId);
+        if (s && res.title && res.title !== originalTitle) {
+          s.title = res.title;
+          renderSessionList();
+          return true;
+        }
+      } catch { /* ignore */ }
+      return false;
+    };
+    setTimeout(async () => {
+      const ok = await check();
+      if (!ok) setTimeout(check, 2500);
+    }, 1500);
+  }
+
   async function loadSessions() {
     if (!state.currentProjectId) {
       state.sessions = [];
@@ -111,9 +144,9 @@
     }
     ul.innerHTML = state.sessions.map(s => `
       <li class="chat-session-item ${s.id === state.currentSessionId ? 'active' : ''}" data-id="${escapeHtml(s.id)}">
-        <span class="chat-session-title" title="Двойной клик — переименовать">${escapeHtml(s.title)}</span>
-        <button class="chat-session-rename" data-id="${escapeHtml(s.id)}" title="Переименовать">✎</button>
-        <button class="chat-session-delete" data-id="${escapeHtml(s.id)}" title="Удалить">×</button>
+        <span class="chat-session-title">${escapeHtml(s.title)}</span>
+        <button class="chat-session-rename" data-id="${escapeHtml(s.id)}" aria-label="Переименовать чат">✎</button>
+        <button class="chat-session-delete" data-id="${escapeHtml(s.id)}" aria-label="Удалить чат">×</button>
       </li>
     `).join('');
   }
@@ -173,17 +206,38 @@
     renderChatMessages();
   }
 
-  async function deleteChat(sessionId, ev) {
-    ev.stopPropagation();
-    if (!confirm('Удалить чат?')) return;
-    await api(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' });
-    state.sessions = state.sessions.filter(s => s.id !== sessionId);
-    if (state.currentSessionId === sessionId) {
-      state.currentSessionId = null;
-      const msgs = $('#chat-messages');
-      if (msgs) msgs.innerHTML = '';
+  function openDeleteChatModal(sessionId, ev) {
+    if (ev) ev.stopPropagation();
+    const session = state.sessions.find(s => s.id === sessionId);
+    state.pendingDeleteId = sessionId;
+    const titleEl = $('#chat-delete-title-text');
+    if (titleEl) titleEl.textContent = session?.title ?? 'Новый чат';
+    const modal = document.getElementById('chat-delete-modal');
+    if (modal) modal.classList.add('active');
+  }
+
+  function closeDeleteChatModal() {
+    state.pendingDeleteId = null;
+    const modal = document.getElementById('chat-delete-modal');
+    if (modal) modal.classList.remove('active');
+  }
+
+  async function confirmDeleteChat() {
+    const sessionId = state.pendingDeleteId;
+    if (!sessionId) return;
+    closeDeleteChatModal();
+    try {
+      await api(`/api/chat/sessions/${sessionId}`, { method: 'DELETE' });
+      state.sessions = state.sessions.filter(s => s.id !== sessionId);
+      if (state.currentSessionId === sessionId) {
+        state.currentSessionId = null;
+        const msgs = $('#chat-messages');
+        if (msgs) msgs.innerHTML = '';
+      }
+      renderSessionList();
+    } catch (err) {
+      showToast('error', `Не удалось удалить чат: ${err.message}`);
     }
-    renderSessionList();
   }
 
   function renderChatMessages() {
@@ -211,8 +265,12 @@
         container.appendChild(assistantBubble(m.content, traceNode));
       }
     }
-    const scrollEl = document.querySelector('.chat-messages-scroll');
-    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+    // Scroll to bottom after layout: rAF waits for paint so scrollHeight
+    // reflects the final (markdown-rendered) content size.
+    requestAnimationFrame(() => {
+      const scrollEl = document.querySelector('.chat-messages-scroll');
+      if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
+    });
   }
 
   function bubble(role, text) {
@@ -369,6 +427,10 @@
 
       if (finalText) messages.push({ role: 'assistant', content: finalText });
       await loadSessions();
+      // Auto-title is generated server-side fire-and-forget after the stream
+      // ends (Gemini call ~0.5–1 s). Poll twice to pick up the new name
+      // without forcing the user to refresh.
+      scheduleTitleRefresh(state.currentSessionId);
     } catch (err) {
       showToast('error', err.message);
     } finally {
@@ -422,8 +484,9 @@
     });
     const domainEl = document.getElementById('domain-filters');
     if (domainEl) domainEl.style.display = 'none';
-    const headerRight = document.querySelector('.header-right');
-    if (headerRight) headerRight.style.visibility = 'hidden';
+    // .header-right visibility is scoped via body.chat-active in CSS so that
+    // leaving the chat tab restores search / export / theme / login without
+    // each nav-item handler having to reset inline styles.
 
     if (panel) panel.style.display = 'flex';
 
@@ -459,10 +522,16 @@
     if (openBtn) {
       openBtn.addEventListener('click', () => {
         showChatPanel();
-        loadProjects();
+        // Skip API calls in readonly — the banner is shown instead.
+        if (!isReadonly()) loadProjects();
         try { localStorage.setItem('active-tab', 'chat'); } catch {}
       });
     }
+
+    // Readonly banner login button — mirrors the header login flow in app.js
+    document.getElementById('chat-readonly-login-btn')?.addEventListener('click', () => {
+      window.location.href = '/login';
+    });
 
     // Sidebar collapse toggle (persisted in localStorage)
     const panel = document.getElementById('chat-panel');
@@ -482,6 +551,20 @@
         applySidebarState(nowCollapsed);
       });
     }
+
+    // Chat-delete modal wiring
+    const delModal = document.getElementById('chat-delete-modal');
+    document.getElementById('chat-delete-modal-close')?.addEventListener('click', closeDeleteChatModal);
+    document.getElementById('chat-delete-cancel')?.addEventListener('click', closeDeleteChatModal);
+    document.getElementById('chat-delete-confirm')?.addEventListener('click', confirmDeleteChat);
+    // Close on backdrop click
+    delModal?.addEventListener('click', (e) => {
+      if (e.target === delModal) closeDeleteChatModal();
+    });
+    // Close on Escape
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape' && delModal?.classList.contains('active')) closeDeleteChatModal();
+    });
 
     // Custom-select: toggle open on trigger click
     const trigger = projSel.querySelector('.custom-select-trigger');
@@ -511,7 +594,7 @@
     newBtn.addEventListener('click', createNewChat);
     sessionList.addEventListener('click', (e) => {
       const delBtn = e.target.closest('.chat-session-delete');
-      if (delBtn) return deleteChat(delBtn.dataset.id, e);
+      if (delBtn) return openDeleteChatModal(delBtn.dataset.id, e);
       const renameBtn = e.target.closest('.chat-session-rename');
       if (renameBtn) {
         e.stopPropagation();
@@ -548,13 +631,27 @@
       });
     }
 
-    form.addEventListener('submit', (e) => {
+    form.addEventListener('submit', async (e) => {
       e.preventDefault();
+      if (isReadonly()) return;  // banner is shown; form is hidden via CSS but guard anyway
       const inp = $('#chat-input');
       const text = inp.value.trim();
-      if (!text || !state.currentSessionId) return;
+      if (!text) return;
+      // Auto-create a new chat if the user just typed without opening one.
+      if (!state.currentSessionId) {
+        if (!state.currentProjectId) {
+          showToast('error', 'Сначала выбери проект сверху в левой панели');
+          return;
+        }
+        try {
+          await createNewChat();
+        } catch (err) {
+          showToast('error', `Не удалось создать чат: ${err.message}`);
+          return;
+        }
+      }
       inp.value = '';
-      if (inp) { inp.style.height = 'auto'; }
+      inp.style.height = 'auto';
       sendMessage(text);
     });
 
@@ -576,7 +673,7 @@
     try { wasOnChat = localStorage.getItem('active-tab') === 'chat'; } catch {}
     if (wasOnChat) {
       showChatPanel();
-      loadProjects();
+      if (!isReadonly()) loadProjects();
     }
   }
 

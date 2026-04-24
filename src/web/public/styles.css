@@ -2975,6 +2975,75 @@ body.chat-active #notes-load-more-btn,
 body.chat-active .stats {
   display: none !important;
 }
+
+/* Search / export / theme / login on the right side of the app header
+   are irrelevant on the chat tab — hide while active, auto-restore on leave. */
+body.chat-active .header-right {
+  visibility: hidden !important;
+}
+
+/* Bound .main to the viewport when chat tab is active so the chat-panel
+   (and its sidebar) can't grow taller than the window. Scrolling lives
+   inside .chat-messages-scroll, not .main. */
+body.chat-active .main {
+  height: 100vh;
+  overflow: hidden;
+}
+
+/* Readonly banner — shown inside chat-main when user has no token.
+   Hide the normal chat UI (messages, form) + sidebar contents. */
+.chat-readonly-banner { display: none; }
+body.readonly-mode .chat-readonly-banner {
+  display: flex;
+  flex: 1;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+}
+body.readonly-mode .chat-messages-scroll,
+body.readonly-mode .chat-form,
+body.readonly-mode .chat-sidebar-header > *:not(.chat-sidebar-top),
+body.readonly-mode .chat-session-list {
+  display: none !important;
+}
+.chat-readonly-card {
+  max-width: 420px;
+  text-align: center;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: 16px;
+  padding: 36px 28px;
+}
+.chat-readonly-icon {
+  width: 56px;
+  height: 56px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto 16px;
+  color: var(--accent-primary);
+}
+.chat-readonly-icon i { width: 28px; height: 28px; }
+.chat-readonly-title {
+  font-size: 20px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  color: var(--text-primary);
+}
+.chat-readonly-text {
+  color: var(--text-dim, var(--text-secondary));
+  line-height: 1.55;
+  margin: 0 0 24px;
+}
+.chat-readonly-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.chat-readonly-btn i { width: 16px; height: 16px; }
 .chat-sidebar-toggle {
   background: none;
   border: none;
@@ -3025,7 +3094,9 @@ body.chat-active .stats {
   margin: 0;
   padding: 4px 0;
   overflow-y: auto;
+  overflow-x: hidden;  /* no horizontal scroll bar */
   flex: 1;
+  min-width: 0;
 }
 .chat-session-empty {
   padding: 12px;
