@@ -35,6 +35,7 @@ export class RagAgent {
     const runStart = Date.now();
     let iterations = 0;
     const toolsCalled: string[] = [];
+    const aggregateUsage = { promptTokens: 0, completionTokens: 0 };
 
     // 1. Onboard (once per chat session)
     let systemPrompt = SYSTEM_PROMPT;
@@ -86,6 +87,10 @@ export class RagAgent {
           providerError = { code: ev.code, message: ev.message };
           break;
         } else if (ev.type === 'done') {
+          if (ev.usage) {
+            aggregateUsage.promptTokens += ev.usage.promptTokens;
+            aggregateUsage.completionTokens += ev.usage.completionTokens;
+          }
           break;
         }
       }
@@ -160,8 +165,10 @@ export class RagAgent {
         iterations,
         toolsCalled,
         totalLatencyMs: Date.now() - runStart,
+        promptTokens: aggregateUsage.promptTokens,
+        completionTokens: aggregateUsage.completionTokens,
       }, 'RagAgent run completed');
-      yield { type: 'done' };
+      yield { type: 'done', usage: aggregateUsage };
       return;
     }
 

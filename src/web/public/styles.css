@@ -2934,6 +2934,7 @@ select:focus {
      sits below the app header. */
   background: var(--bg-primary);
   min-width: 0;
+  min-height: 0;  /* required for inner overflow:auto to engage in a flex column */
   overflow: hidden;
 }
 
@@ -3091,11 +3092,15 @@ body.chat-active .stats {
   overflow: hidden;
   background: var(--bg-primary);
   min-width: 0;
+  min-height: 0;
 }
 
 .chat-messages-scroll {
   flex: 1;
+  min-height: 0;
   overflow-y: auto;
+  /* The form below is fixed-height; messages grow inside this scroll container
+     and push old content upward instead of pushing the form off-screen. */
 }
 
 .chat-messages {

@@ -253,6 +253,12 @@ async function main(): Promise<void> {
       if (auth?.scopes?.includes?.('admin')) return cachedMasterAgentId;
       return null;
     },
+    recordUsage: (tokenId, promptTokens, completionTokens) => {
+      const costUsd =
+        (promptTokens / 1_000_000) * config.geminiInputUsdPerMtok +
+        (completionTokens / 1_000_000) * config.geminiOutputUsdPerMtok;
+      agentTokenStore.addUsage(tokenId, promptTokens, completionTokens, costUsd);
+    },
   });
 
   // === Sessions REST API ===
@@ -523,6 +529,8 @@ export interface ChatRouteDeps {
    * agent-token auth was used; falls back to a default agent when master-token
    * auth was used; returns null when no agent can be resolved. */
   resolveAgentTokenId?: (req: import('express').Request) => string | null;
+  /** Accounting hook called after each chat stream completes successfully. */
+  recordUsage?: (tokenId: string, promptTokens: number, completionTokens: number) => void;
 }
 
 export function registerChatRoutes(app: import('express').Express, deps: ChatRouteDeps): void {
@@ -634,9 +642,11 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
     const isFirstUserMessage = session.messages.filter((m: any) => m.role === 'user').length === 0;
     let firstAssistantReply = '';
 
+    let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
     try {
       for await (const ev of ragAgent.run(session as any, message, controller.signal)) {
         if (ev.type === 'text') firstAssistantReply += (ev as any).delta;
+        if (ev.type === 'done' && (ev as any).usage) finalUsage = (ev as any).usage;
         const { type, ...data } = ev as any;
         emit(type, data);
       }
@@ -645,6 +655,11 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
     } finally {
       clearInterval(keepAlive);
       res.end();
+    }
+
+    // Record usage for billing/accounting on agent_token_id (fire-and-forget).
+    if (finalUsage && deps.recordUsage) {
+      deps.recordUsage(agentTokenId, finalUsage.promptTokens, finalUsage.completionTokens);
     }
 
     if (isFirstUserMessage && firstAssistantReply.length > 0 && deps.titleGenerator) {

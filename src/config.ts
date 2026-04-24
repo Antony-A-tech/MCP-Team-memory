@@ -29,7 +29,16 @@ export interface AppConfig {
   geminiModel: string;
   ragMaxIterations: number;
   ragToolResponseMaxChars: number;
+  // Gemini pricing per 1M tokens, USD — used to attribute chat cost to each agent
+  geminiInputUsdPerMtok: number;
+  geminiOutputUsdPerMtok: number;
   allowReadonly: boolean;
+}
+
+/** Parse float with fallback to default on NaN */
+export function parseFloatSafe(value: string, defaultValue: number): number {
+  const parsed = parseFloat(value);
+  return Number.isNaN(parsed) ? defaultValue : parsed;
 }
 
 /** Parse integer with fallback to default on NaN */
@@ -37,6 +46,7 @@ export function parseIntSafe(value: string, defaultValue: number): number {
   const parsed = parseInt(value, 10);
   return Number.isNaN(parsed) ? defaultValue : parsed;
 }
+
 
 export function loadConfig(): AppConfig {
   const decayWeightsRaw = process.env.MEMORY_DECAY_WEIGHTS || '0.3,0.2,0.3,0.2';
@@ -66,6 +76,10 @@ export function loadConfig(): AppConfig {
     geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
     ragMaxIterations: parseIntSafe(process.env.RAG_MAX_ITERATIONS || '5', 5),
     ragToolResponseMaxChars: parseIntSafe(process.env.RAG_TOOL_RESPONSE_MAX_CHARS || '20000', 20_000),
+    // Gemini 2.5 Flash pricing (Apr 2026): $0.30 / 1M input, $2.50 / 1M output.
+    // Override via env if model or pricing changes.
+    geminiInputUsdPerMtok: parseFloatSafe(process.env.GEMINI_INPUT_USD_PER_MTOK || '0.30', 0.30),
+    geminiOutputUsdPerMtok: parseFloatSafe(process.env.GEMINI_OUTPUT_USD_PER_MTOK || '2.50', 2.50),
     allowReadonly: process.env.MEMORY_ALLOW_READONLY === 'true',
   };
 }
