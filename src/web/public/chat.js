@@ -433,7 +433,10 @@
     document.body.classList.add('chat-active');
 
     const pageTitle = document.getElementById('page-title');
-    if (pageTitle) pageTitle.textContent = 'Team Memory AI';
+    if (pageTitle) pageTitle.innerHTML =
+      '<span class="teammemory-brand">Team Memory</span> ' +
+      '<span class="teammemory-ai">AI</span> ' +
+      '<span class="teammemory-chat">Chat</span>';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
