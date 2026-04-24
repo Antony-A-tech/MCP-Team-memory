@@ -50,6 +50,7 @@ h1, h2, h3, h4 {
 .app {
   display: flex;
   min-height: 100vh;
+  position: relative;
 }
 
 /* Sidebar */
