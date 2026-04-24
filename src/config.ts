@@ -24,6 +24,11 @@ export interface AppConfig {
   vectorStore: 'qdrant' | 'pgvector';
   qdrantUrl: string;
   qdrantApiKey: string | undefined;
+  // RAG chat config
+  geminiApiKey: string | undefined;
+  geminiModel: string;
+  ragMaxIterations: number;
+  ragToolResponseMaxChars: number;
   allowReadonly: boolean;
 }
 
@@ -57,6 +62,10 @@ export function loadConfig(): AppConfig {
     vectorStore: (process.env.VECTOR_STORE as 'qdrant' | 'pgvector') || 'pgvector',
     qdrantUrl: process.env.QDRANT_URL || 'http://localhost:6333',
     qdrantApiKey: process.env.QDRANT_API_KEY || undefined,
+    geminiApiKey: process.env.GEMINI_API_KEY || undefined,
+    geminiModel: process.env.GEMINI_MODEL || 'gemini-2.5-flash',
+    ragMaxIterations: parseIntSafe(process.env.RAG_MAX_ITERATIONS || '5', 5),
+    ragToolResponseMaxChars: parseIntSafe(process.env.RAG_TOOL_RESPONSE_MAX_CHARS || '20000', 20_000),
     allowReadonly: process.env.MEMORY_ALLOW_READONLY === 'true',
   };
 }
