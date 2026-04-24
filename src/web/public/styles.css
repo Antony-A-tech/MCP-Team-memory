@@ -3224,10 +3224,20 @@ select:focus {
 
 .chat-sidebar {
   width: 280px;
-  border-right: 1px solid var(--border-color, #2a2a2a);
+  flex-shrink: 0;
+  border-right: 1px solid var(--border-color);
   display: flex;
   flex-direction: column;
-  overflow: hidden;
+  /* overflow visible so custom-select popups can escape the sidebar.
+     Scrolling for long session lists is handled inside .chat-session-list. */
+  overflow: visible;
+  position: relative;
+  z-index: 5;
+}
+
+#chat-project-select .custom-select-options {
+  /* Popup must layer above sibling list items and the main chat area. */
+  z-index: 20;
 }
 
 .chat-sidebar-header {
