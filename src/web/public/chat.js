@@ -234,7 +234,10 @@
     try {
       const res = await fetch('/api/chat/stream', {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: {
+          'Content-Type': 'application/json',
+          ...authHeaders(),
+        },
         credentials: 'include',
         body: JSON.stringify({ session_id: state.currentSessionId, message: text }),
       });
