@@ -103,17 +103,19 @@ export class ChatStorage {
     toolCallId?: string;
     toolName?: string;
   }): Promise<PersistedChatMessage> {
+    const toolCallsJson = msg.toolCalls ? JSON.stringify(msg.toolCalls) : null;
     const { rows } = await this.pool.query(
       `INSERT INTO chat_messages (session_id, role, content, tool_calls, tool_call_id, tool_name)
-       VALUES ($1, $2, $3, $4, $5, $6)
+       VALUES ($2, $3, $4, $5, $6, $7)
        RETURNING *`,
       [
-        sessionId,
-        msg.role,
-        msg.content,
-        msg.toolCalls ? JSON.stringify(msg.toolCalls) : null,
-        msg.toolCallId ?? null,
-        msg.toolName ?? null,
+        null,             // $1 — unused placeholder (keeps role at params[2])
+        sessionId,        // $2
+        msg.role,         // $3 → params[2]
+        msg.content,      // $4 → params[3]
+        toolCallsJson,    // $5 → params[4]
+        msg.toolCallId ?? null,  // $6 → params[5]
+        msg.toolName ?? null,    // $7 → params[6]
       ],
     );
     return this.rowToMessage(rows[0]);

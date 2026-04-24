@@ -100,4 +100,72 @@ describe('ChatStorage', () => {
       expect(sql).toContain('updated_at = NOW()');
     });
   });
+
+  describe('appendMessage', () => {
+    it('inserts user message with null tool fields', async () => {
+      pool.query.mockResolvedValue({
+        rows: [{
+          id: 1, session_id: 'sess-1', role: 'user', content: 'Hi',
+          tool_calls: null, tool_call_id: null, tool_name: null,
+          created_at: '2026-04-23T00:00:00Z',
+        }],
+      });
+      const result = await storage.appendMessage('sess-1', {
+        role: 'user',
+        content: 'Hi',
+      });
+      expect(result.id).toBe(1);
+      expect(result.role).toBe('user');
+      const params = pool.query.mock.calls[0][1];
+      expect(params[2]).toBe('user');
+      expect(params[4]).toBeNull();
+    });
+
+    it('serializes tool_calls JSONB for assistant message', async () => {
+      pool.query.mockResolvedValue({
+        rows: [{
+          id: 2, session_id: 'sess-1', role: 'assistant', content: 'Let me check',
+          tool_calls: [{ id: 'c1', name: 'memory_read', args: {} }],
+          tool_call_id: null, tool_name: null,
+          created_at: '2026-04-23T00:00:00Z',
+        }],
+      });
+      await storage.appendMessage('sess-1', {
+        role: 'assistant',
+        content: 'Let me check',
+        toolCalls: [{ id: 'c1', name: 'memory_read', args: {} }],
+      });
+      const params = pool.query.mock.calls[0][1];
+      expect(JSON.parse(params[4] as string)).toEqual([{ id: 'c1', name: 'memory_read', args: {} }]);
+    });
+
+    it('stores tool_call_id and tool_name for tool message', async () => {
+      pool.query.mockResolvedValue({
+        rows: [{
+          id: 3, session_id: 'sess-1', role: 'tool', content: '{}',
+          tool_calls: null, tool_call_id: 'c1', tool_name: 'memory_read',
+          created_at: '2026-04-23T00:00:00Z',
+        }],
+      });
+      await storage.appendMessage('sess-1', {
+        role: 'tool',
+        content: '{}',
+        toolCallId: 'c1',
+        toolName: 'memory_read',
+      });
+      const params = pool.query.mock.calls[0][1];
+      expect(params[5]).toBe('c1');
+      expect(params[6]).toBe('memory_read');
+    });
+  });
+
+  describe('listMessages', () => {
+    it('orders by id ascending', async () => {
+      pool.query.mockResolvedValue({ rows: [] });
+      await storage.listMessages('sess-1');
+      const sql = pool.query.mock.calls[0][0] as string;
+      expect(sql).toContain('session_id = $1');
+      expect(sql).toContain('ORDER BY id ASC');
+    });
+  });
 });
