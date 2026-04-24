@@ -1713,6 +1713,21 @@ function formatDate(dateString) {
   return `${date.toLocaleDateString('ru-RU')}, ${time}`;
 }
 
+/** Format cumulative chat-API cost for an agent. Returns a $ string with
+ * a per-token tooltip. Uses ¢ for amounts under $0.01 to stay readable. */
+function formatAgentCost(costUsd, promptTokens, completionTokens) {
+  const cost = Number(costUsd ?? 0);
+  const pt = Number(promptTokens ?? 0);
+  const ct = Number(completionTokens ?? 0);
+  let label;
+  if (cost === 0) label = '—';
+  else if (cost < 0.01) label = `${(cost * 100).toFixed(2)}¢`;
+  else if (cost < 1) label = `$${cost.toFixed(4)}`;
+  else label = `$${cost.toFixed(2)}`;
+  const tooltip = cost === 0 ? 'Расходов пока не было' : `${pt.toLocaleString('ru-RU')} in / ${ct.toLocaleString('ru-RU')} out токенов`;
+  return `<span title="${tooltip}">${label}</span>`;
+}
+
 // === Graph View Toggle ===
 
 function toggleGraphView(show) {
@@ -1965,7 +1980,7 @@ async function loadAgents() {
     const data = await res.json();
 
     if (!data.success || !data.tokens?.length) {
-      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--text-muted);padding:32px">Нет агентов. Создайте первый токен.</td></tr>';
+      tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--text-muted);padding:32px">Нет агентов. Создайте первый токен.</td></tr>';
       return;
     }
 
@@ -1978,6 +1993,7 @@ async function loadAgents() {
       const roleBadge = `<span class="agent-role-badge ${escapeHtml(t.role)}"><i data-lucide="${roleIcon}"></i> ${roleLabel}</span>`;
       const created = t.createdAt ? new Date(t.createdAt).toLocaleDateString('ru-RU') : '—';
       const lastUsed = t.lastUsedAt ? formatDate(t.lastUsedAt) : 'никогда';
+      const cost = formatAgentCost(t.totalCostUsd, t.totalPromptTokens, t.totalCompletionTokens);
 
       const actions = [];
       if (t.isActive) {
@@ -1994,10 +2010,11 @@ async function loadAgents() {
         <td>${roleBadge}</td>
         <td>${created}</td>
         <td>${lastUsed}</td>
+        <td class="agent-cost">${cost}</td>
         <td class="agents-actions">${actions.join(' ')}</td>
       </tr>
       <tr class="agent-token-row" id="${rowId}" style="display:none">
-        <td colspan="6">
+        <td colspan="7">
           <div class="agent-token-inline">
             <code>${escapeHtml(t.token)}</code>
             <button class="btn-copy-inline" data-action="copy" data-token="${escapeHtml(t.token)}" title="Копировать">
@@ -2010,7 +2027,7 @@ async function loadAgents() {
     lucide.createIcons();
   } catch (e) {
     console.error('Failed to load agents:', e);
-    tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;color:var(--red)">Ошибка загрузки агентов</td></tr>';
+    tbody.innerHTML = '<tr><td colspan="7" style="text-align:center;color:var(--red)">Ошибка загрузки агентов</td></tr>';
   }
 }
 

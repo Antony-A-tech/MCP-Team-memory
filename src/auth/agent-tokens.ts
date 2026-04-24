@@ -10,6 +10,9 @@ export interface AgentInfo {
   isActive: boolean;
   createdAt?: string;
   lastUsedAt?: string;
+  totalPromptTokens?: number;
+  totalCompletionTokens?: number;
+  totalCostUsd?: number;
 }
 
 /**
@@ -120,7 +123,8 @@ export class AgentTokenStore {
   async list(): Promise<(AgentInfo & { token: string })[]> {
     if (!this.tableExists) return [];
     const { rows } = await this.pool.query(
-      `SELECT id, token, agent_name, role, is_active, created_at, last_used_at
+      `SELECT id, token, agent_name, role, is_active, created_at, last_used_at,
+              total_prompt_tokens, total_completion_tokens, total_cost_usd
        FROM agent_tokens ORDER BY created_at DESC`
     );
     return rows.map(r => ({
@@ -131,7 +135,23 @@ export class AgentTokenStore {
       isActive: r.is_active,
       createdAt: r.created_at?.toISOString?.() || r.created_at,
       lastUsedAt: r.last_used_at?.toISOString?.() || r.last_used_at,
+      totalPromptTokens: Number(r.total_prompt_tokens ?? 0),
+      totalCompletionTokens: Number(r.total_completion_tokens ?? 0),
+      totalCostUsd: Number(r.total_cost_usd ?? 0),
     }));
+  }
+
+  /** Fire-and-forget: increment cumulative usage for a token after a chat turn. */
+  addUsage(tokenId: string, promptTokens: number, completionTokens: number, costUsd: number): void {
+    if (!this.tableExists) return;
+    this.pool.query(
+      `UPDATE agent_tokens
+         SET total_prompt_tokens = total_prompt_tokens + $1,
+             total_completion_tokens = total_completion_tokens + $2,
+             total_cost_usd = total_cost_usd + $3
+       WHERE id = $4`,
+      [promptTokens, completionTokens, costUsd, tokenId],
+    ).catch(err => logger.error({ err, tokenId }, 'Failed to record agent usage'));
   }
 
   /** Fire-and-forget: update last_used_at (debounced — at most once per 60s per token) */

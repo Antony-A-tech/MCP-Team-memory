@@ -19,7 +19,7 @@ export type SseEvent =
   | { type: 'text'; delta: string }
   | { type: 'tool_start'; id: string; name: string; args: Record<string, unknown> }
   | { type: 'tool_end'; id: string; name: string; ok: boolean; summary?: string; error?: string }
-  | { type: 'done' }
+  | { type: 'done'; usage?: { promptTokens: number; completionTokens: number } }
   | { type: 'error'; code: string; message: string };
 
 export interface ChatLlmProvider {
