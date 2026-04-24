@@ -3219,16 +3219,12 @@ select:focus {
 
 .chat-panel {
   flex: 1;
-  /* display toggled by JS: 'none' (default via inline style) or 'flex' when active */
-  height: 100vh;
+  /* display toggled by JS: 'none' (default via inline style) or 'flex' when active.
+     Lives inside <main class="main"> so it inherits the app sidebar offset and
+     sits below the app header. */
   background: var(--bg-primary);
   min-width: 0;
-  /* .sidebar is position:fixed, so we offset like .main does */
-  margin-left: 260px;
-  transition: margin-left 0.3s ease;
-}
-.sidebar.collapsed ~ .chat-panel {
-  margin-left: 60px;
+  overflow: hidden;
 }
 
 .chat-sidebar {
@@ -3250,52 +3246,37 @@ select:focus {
   gap: 8px;
   border-bottom: 1px solid var(--border-color);
 }
-.chat-sidebar-top {
+/* Plain toggle button inside chat-main top-bar (no background, small icon) */
+.chat-main-topbar {
+  flex-shrink: 0;
+  padding: 8px 12px;
   display: flex;
-  justify-content: flex-end;
-  margin-bottom: 4px;
+  align-items: center;
+  gap: 6px;
 }
 .chat-sidebar-toggle {
   background: none;
   border: none;
   color: var(--text-dim, #888);
   cursor: pointer;
-  padding: 6px;
-  border-radius: 6px;
-  display: flex;
+  padding: 4px;
+  border-radius: 4px;
+  display: inline-flex;
   align-items: center;
   justify-content: center;
-  transition: background 0.12s ease, color 0.12s ease;
+  transition: color 0.12s ease;
 }
-.chat-sidebar-toggle:hover {
-  background: rgba(255,255,255,0.06);
-  color: var(--text-primary);
-}
-.chat-sidebar-toggle i {
-  width: 18px;
-  height: 18px;
-}
-/* Icon visibility: show close when open, menu when collapsed */
-.chat-sidebar-toggle .icon-menu { display: none; }
-.chat-sidebar-toggle .icon-close { display: inline-flex; }
-.chat-panel.sidebar-collapsed .chat-sidebar-toggle .icon-menu { display: inline-flex; }
-.chat-panel.sidebar-collapsed .chat-sidebar-toggle .icon-close { display: none; }
+.chat-sidebar-toggle:hover { color: var(--text-primary); }
+.chat-sidebar-toggle i { width: 16px; height: 16px; }
 
-/* Sidebar width transition + collapsed rail mode */
+/* Sidebar collapse: width 0 when collapsed, no rail */
 .chat-sidebar {
   transition: width 0.22s ease;
+  overflow: hidden;
 }
 .chat-panel.sidebar-collapsed .chat-sidebar {
-  width: 56px;
-}
-.chat-panel.sidebar-collapsed .chat-sidebar-top {
-  justify-content: center;
-}
-.chat-panel.sidebar-collapsed .chat-sidebar-header > *:not(.chat-sidebar-top) {
-  display: none;
-}
-.chat-panel.sidebar-collapsed .chat-session-list {
-  display: none;
+  width: 0;
+  border-right: none;
 }
 
 .chat-new-btn {
