@@ -11,6 +11,10 @@
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <!-- Graph visualization: force-graph (2D canvas, d3-force) -->
   <script src="https://unpkg.com/force-graph@1.43.5/dist/force-graph.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/marked@12.0.2/marked.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/dompurify@3.0.11/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://cdn.jsdelivr.net/npm/highlight.js@11.9.0/lib/common.min.js"></script>
 </head>
 <body>
   <div class="app">
@@ -309,30 +313,33 @@
         </div>
       </div>
 
-      <!-- AI Chat Panel (RAG v4.0) -->
-      <div id="chat-panel" class="chat-panel" style="display:none">
-        <aside class="chat-sidebar">
-          <div class="chat-sidebar-header">
-            <div class="custom-select" id="chat-project-select">
-              <button class="custom-select-trigger" type="button">
-                <span class="custom-select-value">— Выбери проект —</span>
-                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
-              </button>
-              <div class="custom-select-options" id="chat-project-options"></div>
-            </div>
-            <button id="chat-new-btn" class="chat-new-btn" disabled>+ Новый чат</button>
-          </div>
-          <ul id="chat-session-list" class="chat-session-list"></ul>
-        </aside>
-        <main class="chat-main">
-          <div id="chat-messages" class="chat-messages"></div>
-          <form id="chat-form" class="chat-form">
-            <textarea id="chat-input" placeholder="Спроси что-нибудь о проекте..." rows="2"></textarea>
-            <button type="submit" id="chat-send">→</button>
-          </form>
-        </main>
-      </div>
     </main>
+
+    <!-- AI Chat Panel (RAG v4.0) — outside <main> for full-viewport layout -->
+    <div id="chat-panel" class="chat-panel" style="display:none">
+      <aside class="chat-sidebar">
+        <div class="chat-sidebar-header">
+          <div class="custom-select" id="chat-project-select">
+            <button class="custom-select-trigger" type="button">
+              <span class="custom-select-value">— Выбери проект —</span>
+              <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+            </button>
+            <div class="custom-select-options" id="chat-project-options"></div>
+          </div>
+          <button id="chat-new-btn" class="chat-new-btn" disabled>+ Новый чат</button>
+        </div>
+        <ul id="chat-session-list" class="chat-session-list"></ul>
+      </aside>
+      <main class="chat-main">
+        <div class="chat-messages-scroll">
+          <div id="chat-messages" class="chat-messages"></div>
+        </div>
+        <form id="chat-form" class="chat-form">
+          <textarea id="chat-input" placeholder="Спроси что-нибудь о проекте..." rows="1"></textarea>
+          <button type="submit" id="chat-send" title="Отправить">→</button>
+        </form>
+      </main>
+    </div>
 
     <!-- Agent create modal (outside main for proper fixed positioning) -->
     <div class="agents-create-modal" id="agents-create-modal" style="display:none">

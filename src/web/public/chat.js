@@ -12,6 +12,25 @@
 
   const $ = (sel) => document.querySelector(sel);
 
+  function renderMarkdown(text) {
+    if (typeof marked === 'undefined' || typeof DOMPurify === 'undefined') {
+      // Graceful fallback to plain text if CDN didn't load
+      const div = document.createElement('div');
+      div.style.whiteSpace = 'pre-wrap';
+      div.textContent = text;
+      return div.outerHTML;
+    }
+    const html = marked.parse(text, { gfm: true, breaks: true });
+    return DOMPurify.sanitize(html);
+  }
+
+  function highlightCodeIn(el) {
+    if (typeof hljs === 'undefined') return;
+    el.querySelectorAll('pre code').forEach(block => {
+      try { hljs.highlightElement(block); } catch { /* ignore */ }
+    });
+  }
+
   function authHeaders() {
     const token = localStorage.getItem('auth-token') || '';
     return token ? { 'Authorization': `Bearer ${token}` } : {};
@@ -192,14 +211,23 @@
         container.appendChild(assistantBubble(m.content, traceNode));
       }
     }
-    container.scrollTop = container.scrollHeight;
+    const scrollEl = document.querySelector('.chat-messages-scroll');
+    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
   }
 
   function bubble(role, text) {
-    const el = document.createElement('div');
-    el.className = `msg ${role}`;
-    el.textContent = text;
-    return el;
+    const wrap = document.createElement('div');
+    wrap.className = `msg ${role}`;
+    const inner = document.createElement('div');
+    inner.className = 'msg-text';
+    if (role === 'assistant') {
+      inner.innerHTML = renderMarkdown(text);
+      highlightCodeIn(inner);
+    } else {
+      inner.textContent = text;
+    }
+    wrap.appendChild(inner);
+    return wrap;
   }
 
   function assistantBubble(text, traceNode) {
@@ -208,7 +236,8 @@
     if (traceNode) el.appendChild(traceNode);
     const txt = document.createElement('div');
     txt.className = 'msg-text';
-    txt.textContent = text;
+    txt.innerHTML = renderMarkdown(text);
+    highlightCodeIn(txt);
     el.appendChild(txt);
     return el;
   }
@@ -265,7 +294,8 @@
     textEl.className = 'msg-text';
     assistantEl.appendChild(textEl);
     msgContainer.appendChild(assistantEl);
-    msgContainer.scrollTop = msgContainer.scrollHeight;
+    const scrollEl = document.querySelector('.chat-messages-scroll');
+    if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
 
     const toolStartItems = {};
 
@@ -301,7 +331,7 @@
           if (!ev) continue;
           if (ev.type === 'text') {
             finalText += ev.delta;
-            textEl.textContent = finalText;
+            textEl.innerHTML = renderMarkdown(finalText);
           } else if (ev.type === 'tool_start') {
             toolDetails.style.display = 'block';
             const li = document.createElement('li');
@@ -327,11 +357,13 @@
             if (toolOl.children.length) {
               toolSummary.textContent = `🔧 Использовано ${toolOl.children.length} инстр.`;
             }
+            highlightCodeIn(textEl);
           } else if (ev.type === 'error') {
             showToast('error', ev.message || ev.code);
             toolSummary.textContent = `⚠ Ошибка: ${ev.code}`;
           }
-          msgContainer.scrollTop = msgContainer.scrollHeight;
+          const scrollEl = document.querySelector('.chat-messages-scroll');
+          if (scrollEl) scrollEl.scrollTop = scrollEl.scrollHeight;
         }
       }
 
@@ -370,39 +402,15 @@
 
   function showChatPanel() {
     const panel = document.getElementById('chat-panel');
-    const entriesEl = document.getElementById('entries-container');
-    const domainEl = document.getElementById('domain-filters');
-    const graphEl = document.getElementById('graph-view');
-    const agentsEl = document.getElementById('agents-panel');
-    const headerRight = document.querySelector('.header-right');
-    const pageTitle = document.getElementById('page-title');
+    const mainEl = document.querySelector('main.main');
 
+    if (mainEl) mainEl.style.display = 'none';
     if (panel) panel.style.display = 'flex';
-    if (entriesEl) entriesEl.style.display = 'none';
-    if (domainEl) domainEl.style.display = 'none';
-    if (graphEl) graphEl.style.display = 'none';
-    if (agentsEl) agentsEl.style.display = 'none';
-    if (headerRight) headerRight.style.visibility = 'hidden';
-    if (pageTitle) pageTitle.textContent = 'Intellectika AI';
-
-    const containers = ['sessions-container', 'session-detail-container', 'notes-container'];
-    containers.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.style.display = 'none';
-    });
-
-    // Hide load-more buttons from entries/sessions/notes views
-    const loadMoreIds = ['load-more-btn', 'sessions-load-more-btn', 'notes-load-more-btn'];
-    loadMoreIds.forEach(id => {
-      const el = document.getElementById(id);
-      if (el) el.style.display = 'none';
-    });
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
     if (chatBtn) chatBtn.classList.add('active');
 
-    // Render lucide icons inside chat panel (chevron on select trigger, etc.)
     if (typeof lucide !== 'undefined' && typeof lucide.createIcons === 'function') {
       lucide.createIcons({ nodes: panel?.querySelectorAll('[data-lucide]') });
     }
@@ -474,13 +482,40 @@
         renameChatInline(item.dataset.id, titleEl);
       }
     });
+    const input = $('#chat-input');
+    if (input) {
+      input.addEventListener('input', () => {
+        input.style.height = 'auto';
+        input.style.height = Math.min(input.scrollHeight, 240) + 'px';
+      });
+      input.addEventListener('keydown', (e) => {
+        // Enter sends, Shift+Enter inserts newline
+        if (e.key === 'Enter' && !e.shiftKey) {
+          e.preventDefault();
+          form.requestSubmit();
+        }
+      });
+    }
+
     form.addEventListener('submit', (e) => {
       e.preventDefault();
-      const input = $('#chat-input');
-      const text = input.value.trim();
+      const inp = $('#chat-input');
+      const text = inp.value.trim();
       if (!text || !state.currentSessionId) return;
-      input.value = '';
+      inp.value = '';
+      if (inp) { inp.style.height = 'auto'; }
       sendMessage(text);
+    });
+
+    // When another nav item (not #btn-ai-chat) is clicked, restore main and hide chat panel.
+    document.querySelectorAll('.nav-item').forEach(navItem => {
+      if (navItem.id === 'btn-ai-chat') return;
+      navItem.addEventListener('click', () => {
+        const panel = document.getElementById('chat-panel');
+        const mainEl = document.querySelector('main.main');
+        if (panel) panel.style.display = 'none';
+        if (mainEl) mainEl.style.display = '';
+      });
     });
   }
 
