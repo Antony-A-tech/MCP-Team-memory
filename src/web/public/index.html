@@ -319,6 +319,11 @@
     <div id="chat-panel" class="chat-panel" style="display:none">
       <aside class="chat-sidebar">
         <div class="chat-sidebar-header">
+          <div class="chat-sidebar-top">
+            <button id="chat-sidebar-toggle" class="chat-sidebar-toggle" title="Свернуть панель чатов">
+              <i data-lucide="panel-left-close"></i>
+            </button>
+          </div>
           <div class="custom-select" id="chat-project-select">
             <button class="custom-select-trigger" type="button">
               <span class="custom-select-value">— Выбери проект —</span>
@@ -331,6 +336,9 @@
         <ul id="chat-session-list" class="chat-session-list"></ul>
       </aside>
       <main class="chat-main">
+        <button id="chat-sidebar-open" class="chat-sidebar-open" title="Открыть панель чатов" style="display:none">
+          <i data-lucide="panel-left-open"></i>
+        </button>
         <div class="chat-messages-scroll">
           <div id="chat-messages" class="chat-messages"></div>
         </div>
