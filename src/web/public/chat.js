@@ -432,6 +432,28 @@
       });
     }
 
+    // Sidebar collapse toggle (persisted in localStorage)
+    const panel = document.getElementById('chat-panel');
+    const sidebarToggle = document.getElementById('chat-sidebar-toggle');
+    const sidebarOpen = document.getElementById('chat-sidebar-open');
+    const applySidebarState = (collapsed) => {
+      if (!panel) return;
+      panel.classList.toggle('sidebar-collapsed', collapsed);
+      if (sidebarOpen) sidebarOpen.style.display = collapsed ? '' : 'none';
+      try { localStorage.setItem('chat-sidebar-collapsed', collapsed ? '1' : '0'); } catch {}
+    };
+    // Restore saved state
+    let savedCollapsed = false;
+    try { savedCollapsed = localStorage.getItem('chat-sidebar-collapsed') === '1'; } catch {}
+    applySidebarState(savedCollapsed);
+
+    if (sidebarToggle) {
+      sidebarToggle.addEventListener('click', () => applySidebarState(true));
+    }
+    if (sidebarOpen) {
+      sidebarOpen.addEventListener('click', () => applySidebarState(false));
+    }
+
     // Custom-select: toggle open on trigger click
     const trigger = projSel.querySelector('.custom-select-trigger');
     const optionsEl = $('#chat-project-options');

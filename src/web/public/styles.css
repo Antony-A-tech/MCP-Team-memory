@@ -3250,6 +3250,57 @@ select:focus {
   gap: 8px;
   border-bottom: 1px solid var(--border-color);
 }
+.chat-sidebar-top {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 4px;
+}
+.chat-sidebar-toggle,
+.chat-sidebar-open {
+  background: none;
+  border: none;
+  color: var(--text-dim, #888);
+  cursor: pointer;
+  padding: 6px;
+  border-radius: 6px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: background 0.12s ease, color 0.12s ease;
+}
+.chat-sidebar-toggle:hover,
+.chat-sidebar-open:hover {
+  background: rgba(255,255,255,0.06);
+  color: var(--text-primary);
+}
+.chat-sidebar-toggle i,
+.chat-sidebar-open i {
+  width: 18px;
+  height: 18px;
+}
+.chat-sidebar-open {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 3;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+}
+
+.chat-main {
+  position: relative;
+}
+
+/* Collapsed sidebar state */
+.chat-panel.sidebar-collapsed .chat-sidebar {
+  width: 0;
+  border-right: none;
+  overflow: hidden;
+  opacity: 0;
+}
+.chat-sidebar {
+  transition: width 0.22s ease, opacity 0.22s ease;
+}
 
 .chat-new-btn {
   width: 100%;
