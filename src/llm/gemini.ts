@@ -30,6 +30,9 @@ export class GeminiChatProvider implements ChatLlmProvider {
       generationConfig: {
         maxOutputTokens: input.maxTokens ?? 200,
         temperature: input.temperature ?? 0.3,
+        // Disable Gemini 2.5 Flash thinking mode — it consumes the token
+        // budget on hidden reasoning and leaves nothing for the actual reply.
+        thinkingConfig: { thinkingBudget: 0 },
       },
     };
     const res = await fetch(url, {
@@ -59,7 +62,13 @@ export class GeminiChatProvider implements ChatLlmProvider {
     const url = `${API_BASE}/${this.model}:streamGenerateContent?alt=sse&key=${this.apiKey}`;
     const body: Record<string, unknown> = {
       contents: this.messagesToContents(input.messages),
-      generationConfig: { temperature: 0.7, maxOutputTokens: 2048 },
+      generationConfig: {
+        temperature: 0.7,
+        maxOutputTokens: 2048,
+        // Disable thinking mode — tool calls already structure the agent loop,
+        // and the hidden thinking budget would starve the actual response.
+        thinkingConfig: { thinkingBudget: 0 },
+      },
     };
     if (input.systemInstruction) {
       body.systemInstruction = { parts: [{ text: input.systemInstruction }] };
@@ -105,6 +114,9 @@ export class GeminiChatProvider implements ChatLlmProvider {
         const { value, done } = await reader.read();
         if (done) break;
         buf += decoder.decode(value, { stream: true });
+        // Gemini SSE uses CRLF line endings (\r\n\r\n between events).
+        // Normalize to LF so the \n\n split below works uniformly.
+        buf = buf.replace(/\r\n/g, '\n');
 
         let idx: number;
         while ((idx = buf.indexOf('\n\n')) >= 0) {
@@ -202,7 +214,11 @@ export class GeminiChatProvider implements ChatLlmProvider {
   private parseToolResult(content: string): Record<string, unknown> {
     try {
       const parsed = JSON.parse(content);
-      return typeof parsed === 'object' && parsed !== null ? parsed : { result: parsed };
+      // Gemini's functionResponse.response must be an object (not a list/primitive).
+      // Wrap arrays and scalars so the API accepts them.
+      if (Array.isArray(parsed)) return { result: parsed };
+      if (parsed === null || typeof parsed !== 'object') return { result: parsed };
+      return parsed as Record<string, unknown>;
     } catch {
       return { result: content };
     }
