@@ -402,10 +402,33 @@
 
   function showChatPanel() {
     const panel = document.getElementById('chat-panel');
-    const mainEl = document.querySelector('main.main');
+    // Keep <main class="main"> and <header class="header"> visible so the
+    // app header (page title + stats) stays at the top like on other tabs.
+    // Only hide the per-tab content containers and filter rails.
+    const hideIds = [
+      'entries-container',
+      'graph-view',
+      'agents-panel',
+      'sessions-container',
+      'session-detail-container',
+      'notes-container',
+      'load-more-btn',
+      'sessions-load-more-btn',
+      'notes-load-more-btn',
+    ];
+    hideIds.forEach(id => {
+      const el = document.getElementById(id);
+      if (el) el.style.display = 'none';
+    });
+    const domainEl = document.getElementById('domain-filters');
+    if (domainEl) domainEl.style.display = 'none';
+    const headerRight = document.querySelector('.header-right');
+    if (headerRight) headerRight.style.visibility = 'hidden';
 
-    if (mainEl) mainEl.style.display = 'none';
     if (panel) panel.style.display = 'flex';
+
+    const pageTitle = document.getElementById('page-title');
+    if (pageTitle) pageTitle.textContent = 'Intellectika AI';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
@@ -532,9 +555,9 @@
       if (navItem.id === 'btn-ai-chat') return;
       navItem.addEventListener('click', () => {
         const panelEl = document.getElementById('chat-panel');
-        const mainEl = document.querySelector('main.main');
         if (panelEl) panelEl.style.display = 'none';
-        if (mainEl) mainEl.style.display = '';
+        // app.js's own nav handlers restore the content containers and
+        // header-right visibility for each target tab.
         try { localStorage.removeItem('active-tab'); } catch {}
       });
     });
