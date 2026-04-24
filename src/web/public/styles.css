@@ -3253,6 +3253,17 @@ select:focus {
   display: flex;
   align-items: center;
   gap: 6px;
+  /* Pin to top; ensure nothing above can push it down */
+  order: -1;
+}
+
+/* Hide app-level UI elements that don't belong on the chat tab */
+body.chat-active #load-more-btn,
+body.chat-active #sessions-load-more-btn,
+body.chat-active #notes-load-more-btn,
+body.chat-active .embedding-indicator,
+body.chat-active .stat-divider {
+  display: none !important;
 }
 .chat-sidebar-toggle {
   background: none;
@@ -3387,8 +3398,9 @@ select:focus {
 .chat-form {
   max-width: 820px;
   width: 100%;
-  margin: 0 auto;
+  align-self: center;  /* explicit center in chat-main column flex */
   padding: 12px 24px 24px 24px;
+  box-sizing: border-box;
   display: flex;
   gap: 8px;
   align-items: flex-end;

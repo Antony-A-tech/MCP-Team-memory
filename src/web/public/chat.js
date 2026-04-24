@@ -427,6 +427,11 @@
 
     if (panel) panel.style.display = 'flex';
 
+    // body class lets CSS hide anything that should be invisible on chat tab
+    // (vectorized indicator, pagination, etc.) — more resilient than per-element
+    // inline display:none which later code paths can overwrite.
+    document.body.classList.add('chat-active');
+
     const pageTitle = document.getElementById('page-title');
     if (pageTitle) pageTitle.textContent = 'Intellectika AI';
 
@@ -556,6 +561,7 @@
       navItem.addEventListener('click', () => {
         const panelEl = document.getElementById('chat-panel');
         if (panelEl) panelEl.style.display = 'none';
+        document.body.classList.remove('chat-active');
         // app.js's own nav handlers restore the content containers and
         // header-right visibility for each target tab.
         try { localStorage.removeItem('active-tab'); } catch {}
