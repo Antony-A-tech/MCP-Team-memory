@@ -117,8 +117,9 @@ describe('ChatStorage', () => {
       expect(result.id).toBe(1);
       expect(result.role).toBe('user');
       const params = pool.query.mock.calls[0][1];
-      expect(params[2]).toBe('user');
-      expect(params[4]).toBeNull();
+      expect(params[0]).toBe('sess-1');
+      expect(params[1]).toBe('user');
+      expect(params[3]).toBeNull();
     });
 
     it('serializes tool_calls JSONB for assistant message', async () => {
@@ -136,7 +137,7 @@ describe('ChatStorage', () => {
         toolCalls: [{ id: 'c1', name: 'memory_read', args: {} }],
       });
       const params = pool.query.mock.calls[0][1];
-      expect(JSON.parse(params[4] as string)).toEqual([{ id: 'c1', name: 'memory_read', args: {} }]);
+      expect(JSON.parse(params[3] as string)).toEqual([{ id: 'c1', name: 'memory_read', args: {} }]);
     });
 
     it('stores tool_call_id and tool_name for tool message', async () => {
@@ -154,8 +155,8 @@ describe('ChatStorage', () => {
         toolName: 'memory_read',
       });
       const params = pool.query.mock.calls[0][1];
-      expect(params[5]).toBe('c1');
-      expect(params[6]).toBe('memory_read');
+      expect(params[4]).toBe('c1');
+      expect(params[5]).toBe('memory_read');
     });
   });
 
