@@ -3218,14 +3218,11 @@ select:focus {
 /* === RAG chat v4.0 — Claude-like full-viewport layout === */
 
 .chat-panel {
-  position: absolute;
-  top: 0;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
+  flex: 1;
+  /* display toggled by JS: 'none' (default via inline style) or 'flex' when active */
+  height: 100vh;
   background: var(--bg-primary);
-  z-index: 50;
+  min-width: 0;
 }
 
 .chat-sidebar {
