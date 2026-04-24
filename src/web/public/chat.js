@@ -92,10 +92,48 @@
     }
     ul.innerHTML = state.sessions.map(s => `
       <li class="chat-session-item ${s.id === state.currentSessionId ? 'active' : ''}" data-id="${escapeHtml(s.id)}">
-        <span class="chat-session-title">${escapeHtml(s.title)}</span>
+        <span class="chat-session-title" title="Двойной клик — переименовать">${escapeHtml(s.title)}</span>
+        <button class="chat-session-rename" data-id="${escapeHtml(s.id)}" title="Переименовать">✎</button>
         <button class="chat-session-delete" data-id="${escapeHtml(s.id)}" title="Удалить">×</button>
       </li>
     `).join('');
+  }
+
+  async function renameChatInline(sessionId, titleEl) {
+    const current = titleEl.textContent;
+    const input = document.createElement('input');
+    input.type = 'text';
+    input.className = 'chat-session-title-edit';
+    input.value = current;
+    titleEl.replaceWith(input);
+    input.focus();
+    input.select();
+    let committed = false;
+    const commit = async (save) => {
+      if (committed) return;
+      committed = true;
+      const next = input.value.trim();
+      if (!save || !next || next === current) {
+        renderSessionList();
+        return;
+      }
+      try {
+        await api(`/api/chat/sessions/${sessionId}`, {
+          method: 'PATCH',
+          body: JSON.stringify({ title: next }),
+        });
+        const session = state.sessions.find(s => s.id === sessionId);
+        if (session) session.title = next;
+      } catch (err) {
+        showToast('error', `Не удалось переименовать: ${err.message}`);
+      }
+      renderSessionList();
+    };
+    input.addEventListener('blur', () => commit(true));
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') { e.preventDefault(); input.blur(); }
+      else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+    });
   }
 
   async function createNewChat() {
@@ -415,8 +453,26 @@
     sessionList.addEventListener('click', (e) => {
       const delBtn = e.target.closest('.chat-session-delete');
       if (delBtn) return deleteChat(delBtn.dataset.id, e);
+      const renameBtn = e.target.closest('.chat-session-rename');
+      if (renameBtn) {
+        e.stopPropagation();
+        const item = renameBtn.closest('.chat-session-item');
+        const titleEl = item?.querySelector('.chat-session-title');
+        if (titleEl) renameChatInline(renameBtn.dataset.id, titleEl);
+        return;
+      }
       const item = e.target.closest('.chat-session-item');
       if (item) openChat(item.dataset.id);
+    });
+    sessionList.addEventListener('dblclick', (e) => {
+      const titleEl = e.target.closest('.chat-session-title');
+      if (!titleEl) return;
+      const item = titleEl.closest('.chat-session-item');
+      if (item) {
+        e.preventDefault();
+        e.stopPropagation();
+        renameChatInline(item.dataset.id, titleEl);
+      }
     });
     form.addEventListener('submit', (e) => {
       e.preventDefault();
