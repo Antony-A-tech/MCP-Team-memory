@@ -259,6 +259,11 @@ async function main(): Promise<void> {
         (completionTokens / 1_000_000) * config.geminiOutputUsdPerMtok;
       agentTokenStore.addUsage(tokenId, promptTokens, completionTokens, costUsd);
     },
+    invalidateAgentCache: () => {
+      cachedMasterAgentId = null;
+      // Re-warm in background; failures are tolerated (next call retries).
+      fetchDefaultAgentId().catch(() => {});
+    },
   });
 
   // === Sessions REST API ===
@@ -531,10 +536,31 @@ export interface ChatRouteDeps {
   resolveAgentTokenId?: (req: import('express').Request) => string | null;
   /** Accounting hook called after each chat stream completes successfully. */
   recordUsage?: (tokenId: string, promptTokens: number, completionTokens: number) => void;
+  /** Drops the cached master-agent id so it gets re-resolved next call.
+   * Invoked when an FK violation suggests the cached agent was revoked. */
+  invalidateAgentCache?: () => void;
 }
 
 export function registerChatRoutes(app: import('express').Express, deps: ChatRouteDeps): void {
   const { chatManager } = deps;
+
+  // Per-session in-process mutex for /api/chat/stream. Two concurrent POSTs
+  // to the same session would each load+append messages independently and
+  // interleave INSERTs, leaving the conversation with mismatched tool_call
+  // / tool reply sequences that Gemini rejects on the next turn.
+  const streamLocks = new Map<string, Promise<void>>();
+  function acquireStreamLock(sessionId: string): { release: () => void; waitFor: Promise<void> } {
+    const previous = streamLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const chained = previous.then(() => current);
+    streamLocks.set(sessionId, chained);
+    // Auto-cleanup the map entry after release so it doesn't grow unbounded.
+    chained.finally(() => {
+      if (streamLocks.get(sessionId) === chained) streamLocks.delete(sessionId);
+    });
+    return { release, waitFor: previous };
+  }
   const resolve = deps.resolveAgentTokenId
     ?? ((req: import('express').Request) => ((req as any).auth?.agentTokenId as string | undefined) ?? null);
 
@@ -614,56 +640,74 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
       return;
     }
 
-    const session = await chatManager.loadSessionWithMessages(session_id, agentTokenId);
-    if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
-    if (!session.projectId) {
-      res.status(400).json({ error: 'Session has no project_id; RAG requires project scope' });
-      return;
-    }
+    // Serialize concurrent POSTs to the same session — see streamLocks above.
+    const lock = acquireStreamLock(session_id);
+    await lock.waitFor;
 
-    const ragAgent = deps.ragAgentFactory(session.projectId, agentTokenId);
-
-    res.status(200);
-    res.setHeader('Content-Type', 'text/event-stream');
-    res.setHeader('Cache-Control', 'no-cache');
-    res.setHeader('Connection', 'keep-alive');
-    res.setHeader('X-Accel-Buffering', 'no');
-    res.flushHeaders();
-
-    const controller = new AbortController();
-    req.on('close', () => controller.abort());
-
-    const keepAlive = setInterval(() => res.write(':\n\n'), 15_000);
-
-    const emit = (type: string, data: unknown) => {
-      res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
-    };
-
-    const isFirstUserMessage = session.messages.filter((m: any) => m.role === 'user').length === 0;
-    let firstAssistantReply = '';
-
-    let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
     try {
-      for await (const ev of ragAgent.run(session as any, message, controller.signal)) {
-        if (ev.type === 'text') firstAssistantReply += (ev as any).delta;
-        if (ev.type === 'done' && (ev as any).usage) finalUsage = (ev as any).usage;
-        const { type, ...data } = ev as any;
-        emit(type, data);
+      const session = await chatManager.loadSessionWithMessages(session_id, agentTokenId);
+      if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+      if (!session.projectId) {
+        res.status(400).json({ error: 'Session has no project_id; RAG requires project scope' });
+        return;
       }
-    } catch (err: any) {
-      emit('error', { code: 'internal_error', message: err?.message ?? 'Internal error' });
+
+      const ragAgent = deps.ragAgentFactory(session.projectId, agentTokenId);
+
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      const controller = new AbortController();
+      const keepAlive = setInterval(() => res.write(':\n\n'), 15_000);
+      // Stop the keep-alive timer the moment the client drops, not just when
+      // the agent loop exits. Avoids ERR_STREAM_WRITE_AFTER_END warnings.
+      req.on('close', () => {
+        controller.abort();
+        clearInterval(keepAlive);
+      });
+
+      const emit = (type: string, data: unknown) => {
+        res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const isFirstUserMessage = session.messages.filter((m: any) => m.role === 'user').length === 0;
+      let firstAssistantReply = '';
+
+      let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
+      try {
+        for await (const ev of ragAgent.run(session as any, message, controller.signal)) {
+          if (ev.type === 'text') firstAssistantReply += (ev as any).delta;
+          if (ev.type === 'done' && (ev as any).usage) finalUsage = (ev as any).usage;
+          const { type, ...data } = ev as any;
+          emit(type, data);
+        }
+      } catch (err: any) {
+        // FK violation here usually means the cached master-agent id points
+        // at a token that's been revoked since startup. Invalidate so the
+        // next request re-resolves a live agent.
+        if (err?.code === '23503' && deps.invalidateAgentCache) {
+          deps.invalidateAgentCache();
+        }
+        emit('error', { code: 'internal_error', message: err?.message ?? 'Internal error' });
+      } finally {
+        clearInterval(keepAlive);
+        res.end();
+      }
+
+      // Record usage for billing/accounting on agent_token_id (fire-and-forget).
+      if (finalUsage && deps.recordUsage) {
+        deps.recordUsage(agentTokenId, finalUsage.promptTokens, finalUsage.completionTokens);
+      }
+
+      if (isFirstUserMessage && firstAssistantReply.length > 0 && deps.titleGenerator) {
+        deps.titleGenerator.generate(session_id, message, firstAssistantReply).catch(() => { /* logged inside */ });
+      }
     } finally {
-      clearInterval(keepAlive);
-      res.end();
-    }
-
-    // Record usage for billing/accounting on agent_token_id (fire-and-forget).
-    if (finalUsage && deps.recordUsage) {
-      deps.recordUsage(agentTokenId, finalUsage.promptTokens, finalUsage.completionTokens);
-    }
-
-    if (isFirstUserMessage && firstAssistantReply.length > 0 && deps.titleGenerator) {
-      deps.titleGenerator.generate(session_id, message, firstAssistantReply).catch(() => { /* logged inside */ });
+      lock.release();
     }
   });
 

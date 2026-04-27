@@ -96,6 +96,13 @@ export class RagAgent {
       }
 
       if (providerError) {
+        // Persist whatever partial text streamed before the upstream error
+        // so a refresh shows the same content the user already saw on screen.
+        if (assistantText.trim().length > 0) {
+          const partialMsg: ChatMessage = { role: 'assistant', content: assistantText };
+          await chatManager.appendMessage(session.id, partialMsg);
+          session.messages.push(partialMsg as any);
+        }
         yield { type: 'error', code: providerError.code, message: providerError.message };
         return;
       }
@@ -177,6 +184,10 @@ export class RagAgent {
       iterations,
       toolsCalled,
     }, 'RagAgent exceeded max iterations');
+    // Note: when iterations exhaust mid-conversation, the per-iteration code
+    // above has already persisted assistant+tool messages. We don't have an
+    // un-persisted assistantText buffer here because the for-loop body already
+    // handles each iteration's persistence. Just emit error.
     yield { type: 'error', code: 'max_iterations', message: `Agent exceeded ${maxIterations} iterations` };
   }
 

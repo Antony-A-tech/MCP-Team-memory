@@ -68,15 +68,43 @@ export class ChatManager {
   }
 
   /**
-   * Drops tool messages whose tool_call_id has no matching assistant tool_call
-   * in preceding messages. Happens when a turn was interrupted mid-execution.
+   * Cleans up unbalanced function-call sequences left over from interrupted
+   * turns:
+   *   1. tool messages whose tool_call_id has no matching assistant beforehand
+   *   2. assistant messages with tool_calls where some/all calls never received
+   *      a tool reply (the next iteration would crash Gemini, which rejects
+   *      function-call sequences without responses).
+   *
+   * Pass 1 collects every tool_call_id that DID receive a tool reply.
+   * Pass 2 drops orphan tools (case 1) and strips/drops assistants whose
+   * tool_calls reference unanswered call ids (case 2).
    */
   private filterOrphanToolMessages(messages: PersistedChatMessage[]): PersistedChatMessage[] {
+    // Pass 1: collect call ids that got a tool reply.
+    const repliedCallIds = new Set<string>();
+    for (const m of messages) {
+      if (m.role === 'tool' && m.toolCallId) repliedCallIds.add(m.toolCallId);
+    }
+
+    // Pass 2: assemble the cleaned list.
     const knownCallIds = new Set<string>();
     const result: PersistedChatMessage[] = [];
     for (const m of messages) {
-      if (m.role === 'assistant' && m.toolCalls) {
-        for (const tc of m.toolCalls) knownCallIds.add(tc.id);
+      if (m.role === 'assistant' && m.toolCalls && m.toolCalls.length > 0) {
+        const balanced = m.toolCalls.filter(tc => repliedCallIds.has(tc.id));
+        if (balanced.length === 0) {
+          // No replies arrived for any of this assistant's tool_calls —
+          // dropping toolCalls keeps the text content (if any) alive while
+          // shielding the next turn from an unanswered function-call request.
+          if (m.content && m.content.trim().length > 0) {
+            result.push({ ...m, toolCalls: undefined });
+          }
+          continue;
+        }
+        const cleaned = balanced.length === m.toolCalls.length ? m : { ...m, toolCalls: balanced };
+        for (const tc of cleaned.toolCalls!) knownCallIds.add(tc.id);
+        result.push(cleaned);
+        continue;
       }
       if (m.role === 'tool') {
         if (!m.toolCallId || !knownCallIds.has(m.toolCallId)) continue;
