@@ -238,14 +238,39 @@ export const TOOL_HANDLERS: Record<string, ToolHandler> = {
     }),
 
   session_message_search: async (args, ctx) => {
+    // Verify the optional session_id belongs to the current project before
+    // exposing its messages. Without this check an LLM-supplied session_id
+    // from another project the user owns would leak via SessionManager
+    // (which only enforces ownership, not project scope).
     if (args.session_id) {
+      const owned = await ctx.sessionManager.readSession(args.session_id, ctx.agentTokenId).catch(() => null);
+      if (!owned || owned.session.projectId !== ctx.projectId) {
+        return { error: 'session_not_in_current_project', sessionId: args.session_id };
+      }
       return ctx.sessionManager.searchMessagesInSession(args.session_id, ctx.agentTokenId, args.query, args.limit ?? 20);
     }
-    return ctx.sessionManager.searchMessages(ctx.agentTokenId, args.query, { limit: args.limit });
+    // No session_id — fan out across the user's sessions, then post-filter
+    // to the current project. Cross-project hits are dropped so the agent
+    // can't surface other projects' chat content via prompt injection.
+    const hits = await ctx.sessionManager.searchMessages(ctx.agentTokenId, args.query, { limit: (args.limit ?? 10) * 3 });
+    if (hits.length === 0) return [];
+    const sessionIds = Array.from(new Set(hits.map((h: any) => h.sessionId)));
+    const projectScoped = new Set<string>();
+    await Promise.all(sessionIds.map(async (sid: string) => {
+      const r = await ctx.sessionManager.readSession(sid, ctx.agentTokenId).catch(() => null);
+      if (r && r.session.projectId === ctx.projectId) projectScoped.add(sid);
+    }));
+    return hits.filter((h: any) => projectScoped.has(h.sessionId)).slice(0, args.limit ?? 10);
   },
 
-  session_read: async (args, ctx) =>
-    ctx.sessionManager.readSession(args.session_id, ctx.agentTokenId, args.message_from, args.message_to),
+  session_read: async (args, ctx) => {
+    const r = await ctx.sessionManager.readSession(args.session_id, ctx.agentTokenId, args.message_from, args.message_to).catch(() => null);
+    if (!r) return { error: 'session_not_found', sessionId: args.session_id };
+    if (r.session.projectId !== ctx.projectId) {
+      return { error: 'session_not_in_current_project', sessionId: args.session_id };
+    }
+    return r;
+  },
 };
 
 export function getDeclaration(name: string): ToolDeclaration | undefined {

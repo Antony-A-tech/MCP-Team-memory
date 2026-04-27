@@ -110,63 +110,69 @@ export class GeminiChatProvider implements ChatLlmProvider {
     let emittedDone = false;
 
     try {
-      while (true) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        buf += decoder.decode(value, { stream: true });
-        // Gemini SSE uses CRLF line endings (\r\n\r\n between events).
-        // Normalize to LF so the \n\n split below works uniformly.
-        buf = buf.replace(/\r\n/g, '\n');
+      try {
+        while (true) {
+          const { value, done } = await reader.read();
+          if (done) break;
+          buf += decoder.decode(value, { stream: true });
+          // Gemini SSE uses CRLF line endings (\r\n\r\n between events).
+          // Normalize to LF so the \n\n split below works uniformly.
+          buf = buf.replace(/\r\n/g, '\n');
 
-        let idx: number;
-        while ((idx = buf.indexOf('\n\n')) >= 0) {
-          const event = buf.slice(0, idx);
-          buf = buf.slice(idx + 2);
-          const line = event.split('\n').find(l => l.startsWith('data: '));
-          if (!line) continue;
-          const payload = line.slice(6).trim();
-          if (!payload || payload === '[DONE]') continue;
+          let idx: number;
+          while ((idx = buf.indexOf('\n\n')) >= 0) {
+            const event = buf.slice(0, idx);
+            buf = buf.slice(idx + 2);
+            const line = event.split('\n').find(l => l.startsWith('data: '));
+            if (!line) continue;
+            const payload = line.slice(6).trim();
+            if (!payload || payload === '[DONE]') continue;
 
-          let parsed: any;
-          try { parsed = JSON.parse(payload); } catch { continue; }
+            let parsed: any;
+            try { parsed = JSON.parse(payload); } catch { continue; }
 
-          const candidate = parsed.candidates?.[0];
-          if (!candidate) continue;
+            const candidate = parsed.candidates?.[0];
+            if (!candidate) continue;
 
-          const finishReason = candidate.finishReason;
-          if (finishReason === 'SAFETY') {
-            yield { type: 'error', code: 'safety_block', message: 'Response blocked by safety filters' };
-            emittedDone = true;
-            break;
-          }
-
-          for (const part of candidate.content?.parts ?? []) {
-            if (typeof part.text === 'string' && part.text.length > 0) {
-              yield { type: 'text', delta: part.text };
+            const finishReason = candidate.finishReason;
+            if (finishReason === 'SAFETY') {
+              yield { type: 'error', code: 'safety_block', message: 'Response blocked by safety filters' };
+              emittedDone = true;
+              break;
             }
-            if (part.functionCall) {
-              yield {
-                type: 'tool_call',
-                call: {
-                  id: this.makeCallId(),
-                  name: part.functionCall.name,
-                  args: part.functionCall.args ?? {},
-                },
+
+            for (const part of candidate.content?.parts ?? []) {
+              if (typeof part.text === 'string' && part.text.length > 0) {
+                yield { type: 'text', delta: part.text };
+              }
+              if (part.functionCall) {
+                yield {
+                  type: 'tool_call',
+                  call: {
+                    id: this.makeCallId(),
+                    name: part.functionCall.name,
+                    args: part.functionCall.args ?? {},
+                  },
+                };
+              }
+            }
+
+            if (parsed.usageMetadata) {
+              usage = {
+                promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
+                completionTokens: parsed.usageMetadata.candidatesTokenCount ?? 0,
               };
             }
           }
-
-          if (parsed.usageMetadata) {
-            usage = {
-              promptTokens: parsed.usageMetadata.promptTokenCount ?? 0,
-              completionTokens: parsed.usageMetadata.candidatesTokenCount ?? 0,
-            };
-          }
         }
+      } catch (err: any) {
+        yield { type: 'error', code: 'upstream_error', message: err?.message ?? 'Stream error' };
+        return;
       }
-    } catch (err: any) {
-      yield { type: 'error', code: 'upstream_error', message: err?.message ?? 'Stream error' };
-      return;
+    } finally {
+      // Always release the underlying ReadableStream — without this an aborted
+      // request leaves the body locked and the TCP socket open until GC.
+      try { await reader.cancel(); } catch { /* already closed */ }
     }
 
     if (!emittedDone) yield { type: 'done', usage };
