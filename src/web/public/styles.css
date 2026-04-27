@@ -3036,6 +3036,76 @@ body.readonly-mode .chat-session-list {
   gap: 8px;
 }
 .chat-readonly-btn i { width: 16px; height: 16px; }
+
+/* Welcome screen — shown inside the messages container when no chat is open
+   or a freshly created chat has no messages yet. */
+.chat-welcome {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  padding: 60px 24px 24px;
+  min-height: 100%;
+  box-sizing: border-box;
+}
+.chat-welcome-mark {
+  width: 64px;
+  height: 64px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--accent-primary);
+  margin-bottom: 20px;
+}
+.chat-welcome-mark i { width: 32px; height: 32px; }
+.chat-welcome-title {
+  font-size: 28px;
+  font-weight: 600;
+  margin: 0 0 12px;
+  letter-spacing: -0.01em;
+}
+.chat-welcome-subtitle {
+  font-size: 15px;
+  line-height: 1.55;
+  color: var(--text-dim, var(--text-secondary));
+  margin: 0 0 28px;
+  max-width: 540px;
+}
+.chat-welcome-tips {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 10px;
+  width: 100%;
+  max-width: 720px;
+}
+.chat-welcome-tip {
+  text-align: left;
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  border: 1px solid var(--border-color);
+  border-radius: 12px;
+  padding: 14px 16px;
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.45;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+}
+.chat-welcome-tip:hover {
+  border-color: var(--accent-primary);
+  background: var(--bg-tertiary);
+}
+.chat-welcome-tip-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  margin-right: 8px;
+  vertical-align: -2px;
+  color: var(--text-dim, #888);
+}
 .chat-sidebar-toggle {
   background: none;
   border: none;
