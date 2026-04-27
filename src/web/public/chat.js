@@ -72,6 +72,20 @@
     }
     state.projects = projects;
     renderProjectOptions();
+    autoPickGlobalProject();
+  }
+
+  /** If the chat sidebar selector is empty, inherit the project that's
+   * currently active in the main app sidebar (app.js writes it to
+   * localStorage as 'selected-project'). Saves the user a click. */
+  function autoPickGlobalProject() {
+    if (state.currentProjectId) return;  // user already picked something
+    if (!state.projects.length) return;
+    let globalId = null;
+    try { globalId = localStorage.getItem('selected-project'); } catch {}
+    if (!globalId) return;
+    const proj = state.projects.find(p => p.id === globalId);
+    if (proj) setProjectValue(proj.id, proj.name);
   }
 
   function renderProjectOptions() {
@@ -93,8 +107,9 @@
     if (newBtn) newBtn.disabled = !state.currentProjectId;
     renderProjectOptions();
     state.currentSessionId = null;
-    const msgs = $('#chat-messages');
-    if (msgs) msgs.innerHTML = '';
+    // Re-render the messages container — when no chat is open this redraws
+    // the welcome screen instead of leaving an empty black canvas.
+    renderChatMessages();
     loadSessions();
   }
 
@@ -240,11 +255,44 @@
     }
   }
 
+  const WELCOME_TIPS = [
+    'Какие последние проблемы в проекте?',
+    'Покажи ключевые архитектурные решения',
+    'Что мы делали в последних сессиях?',
+  ];
+
+  function renderWelcome() {
+    const wrap = document.createElement('div');
+    wrap.className = 'chat-welcome';
+    const tips = WELCOME_TIPS.map(t =>
+      `<button class="chat-welcome-tip" data-prompt="${escapeHtml(t)}" type="button">
+        <span class="chat-welcome-tip-icon"><i data-lucide="sparkles"></i></span>${escapeHtml(t)}
+      </button>`
+    ).join('');
+    wrap.innerHTML = `
+      <div class="chat-welcome-mark"><i data-lucide="message-circle"></i></div>
+      <h1 class="chat-welcome-title">Чем помочь?</h1>
+      <p class="chat-welcome-subtitle">RAG-ассистент с доступом к памяти проекта: решения, задачи, проблемы, архитектура, заметки и сессии. Спроси о чём угодно из того, что команда уже фиксировала.</p>
+      <div class="chat-welcome-tips">${tips}</div>
+    `;
+    if (typeof lucide !== 'undefined') {
+      requestAnimationFrame(() => lucide.createIcons({ nodes: wrap.querySelectorAll('[data-lucide]') }));
+    }
+    return wrap;
+  }
+
   function renderChatMessages() {
     const container = $('#chat-messages');
     if (!container) return;
     container.innerHTML = '';
     const messages = state.messagesBySession[state.currentSessionId] || [];
+    const visible = messages.filter(m => m.role === 'user' || m.role === 'assistant');
+
+    // Empty state — no chat selected, or chat with no exchange yet — show welcome.
+    if (visible.length === 0) {
+      container.appendChild(renderWelcome());
+      return;
+    }
 
     // Build lookup of tool_call_id → tool message
     const toolResults = {};
@@ -507,6 +555,10 @@
     if (typeof lucide !== 'undefined' && typeof lucide.createIcons === 'function') {
       lucide.createIcons({ nodes: panel?.querySelectorAll('[data-lucide]') });
     }
+
+    // Show the welcome screen on entry — covers the empty state when no
+    // chat is selected yet (most common case after a fresh page load).
+    if (!isReadonly()) renderChatMessages();
   }
 
   function init() {
@@ -629,6 +681,19 @@
         }
       });
     }
+
+    // Welcome-screen tip clicks: drop the prompt into the input and submit.
+    document.getElementById('chat-messages')?.addEventListener('click', (e) => {
+      const tip = e.target.closest?.('.chat-welcome-tip');
+      if (!tip) return;
+      const prompt = tip.dataset.prompt || tip.textContent.trim();
+      const inp = $('#chat-input');
+      if (!inp || !prompt) return;
+      inp.value = prompt;
+      inp.style.height = 'auto';
+      inp.style.height = Math.min(inp.scrollHeight, 240) + 'px';
+      form.requestSubmit();
+    });
 
     form.addEventListener('submit', async (e) => {
       e.preventDefault();
