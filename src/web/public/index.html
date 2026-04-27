@@ -6,11 +6,15 @@
   <title>Team Memory - Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <script src="theme-init.js"></script>
-  <link rel="stylesheet" href="styles.css?v=4">
+  <link rel="stylesheet" href="styles.css?v=15">
   <link rel="stylesheet" href="themes.css?v=2">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <!-- Graph visualization: force-graph (2D canvas, d3-force) -->
   <script src="https://unpkg.com/force-graph@1.43.5/dist/force-graph.min.js"></script>
+  <script src="https://unpkg.com/marked@12.0.2/marked.min.js"></script>
+  <script src="https://unpkg.com/dompurify@3.0.11/dist/purify.min.js"></script>
+  <link rel="stylesheet" href="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/styles/atom-one-dark.min.css">
+  <script src="https://unpkg.com/@highlightjs/cdn-assets@11.9.0/highlight.min.js"></script>
 </head>
 <body>
   <div class="app">
@@ -103,7 +107,7 @@
         <button class="nav-item nav-item-chat" id="btn-ai-chat">
           <i data-lucide="message-circle" class="nav-icon"></i>
           <span class="intellectika-brand">Intellectika</span>
-          <span class="intellectika-ai">AI</span>
+          <span class="intellectika-chat">AIChat</span>
         </button>
       </nav>
 
@@ -301,6 +305,7 @@
                 <th>Роль</th>
                 <th>Создан</th>
                 <th>Последняя активность</th>
+                <th title="Расход на Gemini API по этому агенту">Расходы</th>
                 <th>Действия</th>
               </tr>
             </thead>
@@ -308,6 +313,56 @@
           </table>
         </div>
       </div>
+
+      <!-- AI Chat Panel (RAG v4.0) — lives inside main so the app header stays visible above -->
+      <div id="chat-panel" class="chat-panel" style="display:none">
+        <aside class="chat-sidebar">
+          <div class="chat-sidebar-header">
+            <div class="custom-select" id="chat-project-select">
+              <button class="custom-select-trigger" type="button">
+                <span class="custom-select-value">— Выбери проект —</span>
+                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+              </button>
+              <div class="custom-select-options" id="chat-project-options"></div>
+            </div>
+            <button id="chat-new-btn" class="chat-new-btn" disabled>+ Новый чат</button>
+          </div>
+          <ul id="chat-session-list" class="chat-session-list"></ul>
+        </aside>
+        <main class="chat-main">
+          <div class="chat-main-topbar">
+            <button id="chat-sidebar-toggle" class="chat-sidebar-toggle" aria-label="Переключить панель чатов">
+              <i data-lucide="panel-left" class="icon-toggle"></i>
+            </button>
+          </div>
+
+          <!-- Readonly banner: shown instead of the chat UI for viewers without token -->
+          <div id="chat-readonly-banner" class="chat-readonly-banner">
+            <div class="chat-readonly-card">
+              <div class="chat-readonly-icon">
+                <i data-lucide="key-round"></i>
+              </div>
+              <h2 class="chat-readonly-title">Нужен токен для доступа</h2>
+              <p class="chat-readonly-text">
+                AI-ассистент работает только для авторизованных агентов. Запроси персональный токен у владельца проекта и войди, чтобы начать чат.
+              </p>
+              <button id="chat-readonly-login-btn" class="btn btn-primary chat-readonly-btn">
+                <i data-lucide="log-in"></i>
+                <span>Войти по токену</span>
+              </button>
+            </div>
+          </div>
+
+          <div class="chat-messages-scroll">
+            <div id="chat-messages" class="chat-messages"></div>
+          </div>
+          <form id="chat-form" class="chat-form">
+            <textarea id="chat-input" placeholder="Спроси что-нибудь о проекте..." rows="1"></textarea>
+            <button type="submit" id="chat-send" title="Отправить">→</button>
+          </form>
+        </main>
+      </div>
+
     </main>
 
     <!-- Agent create modal (outside main for proper fixed positioning) -->
@@ -631,6 +686,25 @@
     <!-- Toast Notifications -->
     <div class="toast-container" id="toast-container"></div>
 
+    <!-- Chat delete confirmation modal -->
+    <div class="modal" id="chat-delete-modal">
+      <div class="modal-content" style="max-width: 420px;">
+        <div class="modal-header">
+          <h2>Удалить чат?</h2>
+          <button class="modal-close" id="chat-delete-modal-close" aria-label="Закрыть">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p>Чат <strong id="chat-delete-title-text"></strong> будет удалён вместе со всей историей. Действие необратимо.</p>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="chat-delete-cancel">Отменить</button>
+          <button class="btn btn-danger" id="chat-delete-confirm">Удалить</button>
+        </div>
+      </div>
+    </div>
+
     <!-- Theme Modal -->
     <div class="modal" id="theme-modal">
       <div class="modal-content" style="max-width: 480px;">
@@ -651,51 +725,8 @@
     </div>
   </div>
 
-  <!-- AI Chat Panel -->
-  <div class="chat-overlay" id="chat-overlay" style="display:none">
-    <div class="chat-panel">
-      <div class="chat-header">
-        <div class="chat-header-left">
-          <span class="intellectika-brand" style="font-size:16px">Intellectika</span>
-          <span class="intellectika-ai" style="font-size:16px">AI Chat</span>
-          <span class="chat-model-badge" id="chat-model-badge"></span>
-        </div>
-        <div class="chat-header-actions">
-          <button class="btn-icon" id="chat-clear" data-tooltip="Очистить историю">
-            <i data-lucide="trash-2"></i>
-          </button>
-          <button class="btn-icon" id="chat-close" data-tooltip="Закрыть">
-            <i data-lucide="x"></i>
-          </button>
-        </div>
-      </div>
-      <div class="chat-body-wrap">
-        <div class="chat-messages" id="chat-messages">
-          <div class="chat-welcome">
-            <i data-lucide="sparkles" class="chat-welcome-icon"></i>
-            <p>Привет! Я AI-ассистент Intellectika. Задавайте любые вопросы.</p>
-          </div>
-        </div>
-        <div class="chat-input-wrap">
-          <textarea class="chat-input" id="chat-input" placeholder="Введите сообщение..." rows="1" disabled></textarea>
-          <button class="chat-send-btn" id="chat-send" title="Отправить" disabled>
-            <i data-lucide="send"></i>
-          </button>
-        </div>
-        <!-- Development overlay -->
-        <div class="chat-dev-overlay">
-          <div class="chat-dev-badge">
-            <i data-lucide="construction" style="width:32px;height:32px;margin-bottom:12px;opacity:0.8"></i>
-            <span class="chat-dev-title">В разработке</span>
-            <span class="chat-dev-text">AI Chat v4.0 находится в стадии разработки.<br>Сейчас модель работает на CPU, что делает ответы слишком медленными для комфортного использования.</span>
-          </div>
-        </div>
-      </div>
-    </div>
-  </div>
-
-  <script src="app.js?v=4"></script>
+  <script src="app.js?v=6"></script>
   <script src="graph.js?v=6"></script>
-  <script src="chat.js?v=1"></script>
+  <script src="chat.js?v=16"></script>
 </body>
 </html>

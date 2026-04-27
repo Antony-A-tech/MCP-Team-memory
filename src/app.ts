@@ -23,6 +23,12 @@ import { createRateLimiter } from './middleware/rate-limit.js';
 import { AuditLogger } from './storage/audit.js';
 import { VersionManager } from './storage/versioning.js';
 import { AgentTokenStore } from './auth/agent-tokens.js';
+import { ChatStorage } from './chat/storage.js';
+import { ChatManager } from './chat/manager.js';
+import { GeminiChatProvider } from './llm/gemini.js';
+import { McpToolAdapter } from './rag/tool-adapter.js';
+import { RagAgent } from './rag/agent.js';
+import { TitleGenerator } from './rag/title-generator.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -61,7 +67,7 @@ async function main(): Promise<void> {
     res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
     res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, mcp-session-id, X-Project-Id');
     // CSP: restrict script/style sources to prevent XSS
-    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com; connect-src 'self' ws: wss: https://unpkg.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com");
+    res.setHeader('Content-Security-Policy', "default-src 'self'; script-src 'self' https://unpkg.com; style-src 'self' 'unsafe-inline' https://fonts.googleapis.com https://unpkg.com; connect-src 'self' ws: wss: https://unpkg.com; img-src 'self' data:; font-src 'self' https://fonts.gstatic.com");
     if (_req.method === 'OPTIONS') {
       res.status(204).end();
       return;
@@ -188,79 +194,76 @@ async function main(): Promise<void> {
     logger.info('Session manager initialized with background worker');
   }
 
-  // AI Chat endpoint
-  const MAX_CHAT_SESSIONS = 100;
-  const CHAT_SESSION_TTL_MS = 30 * 60 * 1000; // 30 minutes
-  type ChatMessage = { role: 'user' | 'assistant' | 'system'; content: string };
-  const chatSessions = new Map<string, { messages: ChatMessage[]; lastActive: number }>();
+  // Chat persistence (always enabled)
+  const chatStorage = new ChatStorage(storage.getPool());
+  const chatManager = new ChatManager(chatStorage);
 
-  function evictStaleSessions() {
-    const now = Date.now();
-    for (const [id, session] of chatSessions) {
-      if (now - session.lastActive > CHAT_SESSION_TTL_MS) chatSessions.delete(id);
-    }
-    // Hard cap: evict oldest if still over limit
-    if (chatSessions.size > MAX_CHAT_SESSIONS) {
-      const sorted = [...chatSessions.entries()].sort((a, b) => a[1].lastActive - b[1].lastActive);
-      for (let i = 0; i < sorted.length - MAX_CHAT_SESSIONS; i++) chatSessions.delete(sorted[i][0]);
-    }
+  // RAG (optional — requires GEMINI_API_KEY)
+  let chatProvider: GeminiChatProvider | null = null;
+  let ragAgentFactory: ((projectId: string, agentTokenId: string) => RagAgent) | null = null;
+  let titleGenerator: TitleGenerator | null = null;
+  if (config.geminiApiKey) {
+    chatProvider = new GeminiChatProvider({
+      apiKey: config.geminiApiKey,
+      model: config.geminiModel,
+    });
+    ragAgentFactory = (projectId, agentTokenId) => {
+      const adapter = new McpToolAdapter(
+        { memoryManager, notesManager: notesManager!, sessionManager: sessionManager! },
+        { agentTokenId, projectId, toolResponseMaxChars: config.ragToolResponseMaxChars },
+      );
+      return new RagAgent({
+        provider: chatProvider!,
+        adapter,
+        chatManager,
+        maxIterations: config.ragMaxIterations,
+      });
+    };
+    titleGenerator = new TitleGenerator(chatProvider, chatManager);
   }
 
-  app.post('/api/chat', async (req, res) => {
-    if (!llmClient?.isReady()) {
-      res.status(503).json({ error: 'LLM not available' });
-      return;
-    }
-    const { message, session_id } = req.body;
-    if (!message || typeof message !== 'string') {
-      res.status(400).json({ error: 'message is required' });
-      return;
-    }
-    if (message.length > 10_000) {
-      res.status(400).json({ error: 'Message too long (max 10,000 characters)' });
-      return;
-    }
-
-    evictStaleSessions();
-
-    const chatId = session_id || 'default';
-    if (!chatSessions.has(chatId)) {
-      chatSessions.set(chatId, {
-        messages: [{ role: 'system', content: 'You are a helpful AI assistant. Respond in the same language as the user. Be concise — keep answers under 300 words.' }],
-        lastActive: Date.now(),
-      });
-    }
-    const session = chatSessions.get(chatId)!;
-    session.lastActive = Date.now();
-    session.messages.push({ role: 'user', content: message });
-
-    // Rolling window: keep system prompt + last 30 messages
-    if (session.messages.length > 31) {
-      const system = session.messages[0];
-      session.messages = [system, ...session.messages.slice(-30)];
-    }
-
+  // Lazy-resolved default agent_token_id used when master-token auth is in play.
+  // We cache the first active agent_token.id after the first successful lookup so
+  // subsequent master-token chat requests hit an in-memory value.
+  let cachedMasterAgentId: string | null = null;
+  async function fetchDefaultAgentId(): Promise<string | null> {
+    if (cachedMasterAgentId) return cachedMasterAgentId;
     try {
-      const reply = await llmClient.chat(session.messages);
-      session.messages.push({ role: 'assistant', content: reply });
-      res.json({ reply, model: llmClient.modelName });
-    } catch (err) {
-      logger.error({ err }, 'Chat generation failed');
-      res.status(500).json({ error: 'Generation failed' });
+      const { rows } = await storage.getPool().query(
+        `SELECT id FROM agent_tokens WHERE is_active = TRUE ORDER BY created_at ASC LIMIT 1`,
+      );
+      cachedMasterAgentId = rows[0]?.id ?? null;
+      return cachedMasterAgentId;
+    } catch {
+      return null;
     }
-  });
+  }
+  // Warm the cache in the background so first master request is fast.
+  fetchDefaultAgentId().catch(() => { /* logged via pg error elsewhere */ });
 
-  app.get('/api/chat/status', (_req, res) => {
-    res.json({
-      available: !!llmClient?.isReady(),
-      model: llmClient?.modelName ?? null,
-    });
-  });
-
-  app.delete('/api/chat', (req, res) => {
-    const chatId = req.body?.session_id || (req.query.session_id as string) || 'default';
-    chatSessions.delete(chatId);
-    res.json({ ok: true });
+  registerChatRoutes(app, {
+    chatManager,
+    ragAgentFactory,
+    titleGenerator,
+    providerModel: chatProvider?.name ?? null,
+    resolveAgentTokenId: (req) => {
+      const auth = (req as any).auth;
+      if (auth?.agentTokenId) return auth.agentTokenId as string;
+      // Master-token auth: fall back to the cached default agent id (if any).
+      if (auth?.scopes?.includes?.('admin')) return cachedMasterAgentId;
+      return null;
+    },
+    recordUsage: (tokenId, promptTokens, completionTokens) => {
+      const costUsd =
+        (promptTokens / 1_000_000) * config.geminiInputUsdPerMtok +
+        (completionTokens / 1_000_000) * config.geminiOutputUsdPerMtok;
+      agentTokenStore.addUsage(tokenId, promptTokens, completionTokens, costUsd);
+    },
+    invalidateAgentCache: () => {
+      cachedMasterAgentId = null;
+      // Re-warm in background; failures are tolerated (next call retries).
+      fetchDefaultAgentId().catch(() => {});
+    },
   });
 
   // === Sessions REST API ===
@@ -521,3 +524,199 @@ main().catch(err => {
   logger.fatal({ err }, 'Fatal error');
   process.exit(1);
 });
+
+export interface ChatRouteDeps {
+  chatManager: import('./chat/manager.js').ChatManager;
+  ragAgentFactory: ((projectId: string, agentTokenId: string) => import('./rag/agent.js').RagAgent) | null;
+  titleGenerator: import('./rag/title-generator.js').TitleGenerator | null;
+  providerModel?: string | null;
+  /** Resolves effective agent_token_id for a request. Returns per-agent id when
+   * agent-token auth was used; falls back to a default agent when master-token
+   * auth was used; returns null when no agent can be resolved. */
+  resolveAgentTokenId?: (req: import('express').Request) => string | null;
+  /** Accounting hook called after each chat stream completes successfully. */
+  recordUsage?: (tokenId: string, promptTokens: number, completionTokens: number) => void;
+  /** Drops the cached master-agent id so it gets re-resolved next call.
+   * Invoked when an FK violation suggests the cached agent was revoked. */
+  invalidateAgentCache?: () => void;
+}
+
+export function registerChatRoutes(app: import('express').Express, deps: ChatRouteDeps): void {
+  const { chatManager } = deps;
+
+  // Per-session in-process mutex for /api/chat/stream. Two concurrent POSTs
+  // to the same session would each load+append messages independently and
+  // interleave INSERTs, leaving the conversation with mismatched tool_call
+  // / tool reply sequences that Gemini rejects on the next turn.
+  const streamLocks = new Map<string, Promise<void>>();
+  function acquireStreamLock(sessionId: string): { release: () => void; waitFor: Promise<void> } {
+    const previous = streamLocks.get(sessionId) ?? Promise.resolve();
+    let release!: () => void;
+    const current = new Promise<void>(resolve => { release = resolve; });
+    const chained = previous.then(() => current);
+    streamLocks.set(sessionId, chained);
+    // Auto-cleanup the map entry after release so it doesn't grow unbounded.
+    chained.finally(() => {
+      if (streamLocks.get(sessionId) === chained) streamLocks.delete(sessionId);
+    });
+    return { release, waitFor: previous };
+  }
+  const resolve = deps.resolveAgentTokenId
+    ?? ((req: import('express').Request) => ((req as any).auth?.agentTokenId as string | undefined) ?? null);
+
+  app.post('/api/chat/sessions', async (req, res) => {
+    const agentTokenId = resolve(req);
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    try {
+      const session = await chatManager.create({
+        agentTokenId,
+        projectId: req.body?.project_id ?? null,
+        title: req.body?.title,
+      });
+      res.status(201).json(session);
+    } catch {
+      res.status(500).json({ error: 'Failed to create chat session' });
+    }
+  });
+
+  app.get('/api/chat/sessions', async (req, res) => {
+    const agentTokenId = resolve(req);
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    try {
+      const sessions = await chatManager.list(agentTokenId, {
+        projectId: req.query.project_id as string | undefined,
+        limit: req.query.limit ? Number(req.query.limit) : 50,
+        offset: req.query.offset ? Number(req.query.offset) : 0,
+      });
+      res.json(sessions);
+    } catch {
+      res.status(500).json({ error: 'Failed to list chat sessions' });
+    }
+  });
+
+  app.get('/api/chat/sessions/:id', async (req, res) => {
+    const agentTokenId = resolve(req);
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const session = await chatManager.loadSessionWithMessages(req.params.id, agentTokenId);
+    if (!session) { res.status(404).json({ error: 'Not found' }); return; }
+    res.json(session);
+  });
+
+  app.patch('/api/chat/sessions/:id', async (req, res) => {
+    const agentTokenId = resolve(req);
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    const title = req.body?.title;
+    if (typeof title !== 'string' || title.trim().length === 0) {
+      res.status(400).json({ error: 'title is required' });
+      return;
+    }
+    await chatManager.rename(req.params.id, agentTokenId, title.trim().slice(0, 200));
+    res.status(204).end();
+  });
+
+  app.delete('/api/chat/sessions/:id', async (req, res) => {
+    const agentTokenId = resolve(req);
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+    await chatManager.delete(req.params.id, agentTokenId);
+    res.status(204).end();
+  });
+
+  app.post('/api/chat/stream', async (req, res) => {
+    const agentTokenId = resolve(req);
+    if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
+
+    const { session_id, message } = req.body ?? {};
+    if (typeof session_id !== 'string' || typeof message !== 'string' || message.trim().length === 0) {
+      res.status(400).json({ error: 'session_id and message required' });
+      return;
+    }
+    if (message.length > 10_000) {
+      res.status(400).json({ error: 'Message too long (max 10,000 chars)' });
+      return;
+    }
+
+    if (!deps.ragAgentFactory) {
+      res.status(503).json({ error: 'RAG agent not configured (check GEMINI_API_KEY)' });
+      return;
+    }
+
+    // Serialize concurrent POSTs to the same session — see streamLocks above.
+    const lock = acquireStreamLock(session_id);
+    await lock.waitFor;
+
+    try {
+      const session = await chatManager.loadSessionWithMessages(session_id, agentTokenId);
+      if (!session) { res.status(404).json({ error: 'Session not found' }); return; }
+      if (!session.projectId) {
+        res.status(400).json({ error: 'Session has no project_id; RAG requires project scope' });
+        return;
+      }
+
+      const ragAgent = deps.ragAgentFactory(session.projectId, agentTokenId);
+
+      res.status(200);
+      res.setHeader('Content-Type', 'text/event-stream');
+      res.setHeader('Cache-Control', 'no-cache');
+      res.setHeader('Connection', 'keep-alive');
+      res.setHeader('X-Accel-Buffering', 'no');
+      res.flushHeaders();
+
+      const controller = new AbortController();
+      const keepAlive = setInterval(() => res.write(':\n\n'), 15_000);
+      // Stop the keep-alive timer the moment the client drops, not just when
+      // the agent loop exits. Avoids ERR_STREAM_WRITE_AFTER_END warnings.
+      req.on('close', () => {
+        controller.abort();
+        clearInterval(keepAlive);
+      });
+
+      const emit = (type: string, data: unknown) => {
+        res.write(`event: ${type}\ndata: ${JSON.stringify(data)}\n\n`);
+      };
+
+      const isFirstUserMessage = session.messages.filter((m: any) => m.role === 'user').length === 0;
+      let firstAssistantReply = '';
+
+      let finalUsage: { promptTokens: number; completionTokens: number } | undefined;
+      try {
+        for await (const ev of ragAgent.run(session as any, message, controller.signal)) {
+          if (ev.type === 'text') firstAssistantReply += (ev as any).delta;
+          if (ev.type === 'done' && (ev as any).usage) finalUsage = (ev as any).usage;
+          const { type, ...data } = ev as any;
+          emit(type, data);
+        }
+      } catch (err: any) {
+        // FK violation here usually means the cached master-agent id points
+        // at a token that's been revoked since startup. Invalidate so the
+        // next request re-resolves a live agent.
+        if (err?.code === '23503' && deps.invalidateAgentCache) {
+          deps.invalidateAgentCache();
+        }
+        emit('error', { code: 'internal_error', message: err?.message ?? 'Internal error' });
+      } finally {
+        clearInterval(keepAlive);
+        res.end();
+      }
+
+      // Record usage for billing/accounting on agent_token_id (fire-and-forget).
+      if (finalUsage && deps.recordUsage) {
+        deps.recordUsage(agentTokenId, finalUsage.promptTokens, finalUsage.completionTokens);
+      }
+
+      if (isFirstUserMessage && firstAssistantReply.length > 0 && deps.titleGenerator) {
+        deps.titleGenerator.generate(session_id, message, firstAssistantReply).catch(() => { /* logged inside */ });
+      }
+    } finally {
+      lock.release();
+    }
+  });
+
+  app.get('/api/chat/status', (_req, res) => {
+    res.json({
+      available: !!deps.ragAgentFactory,
+      provider: deps.ragAgentFactory ? 'gemini' : null,
+      model: deps.providerModel ?? null,
+    });
+  });
+}
+
