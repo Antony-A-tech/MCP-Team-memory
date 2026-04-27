@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
-import { mkdtempSync, rmSync } from 'fs';
+import { mkdtempSync, rmSync, readdirSync } from 'fs';
 import { tmpdir } from 'os';
 import { join } from 'path';
+import path from 'path';
 import { Migrator } from '../storage/migrator.js';
 
 function createMockPool() {
@@ -136,5 +137,13 @@ describe('Migrator', () => {
     await migrator.run();
 
     expect(pool.connect).not.toHaveBeenCalled();
+  });
+
+  it('includes migration 016 chat-history in migration list', () => {
+    const migrationsDir = path.resolve(__dirname, '../storage/migrations');
+    const files = readdirSync(migrationsDir);
+    const chatMigration = files.find(f => f.startsWith('016-') && f.endsWith('.sql'));
+    expect(chatMigration).toBeDefined();
+    expect(chatMigration).toMatch(/chat-history/);
   });
 });
