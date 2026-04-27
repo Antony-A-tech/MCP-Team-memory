@@ -76,14 +76,25 @@
   }
 
   /** If the chat sidebar selector is empty, inherit the project that's
-   * currently active in the main app sidebar (app.js writes it to
-   * localStorage as 'selected-project'). Saves the user a click. */
+   * currently active in the main app sidebar. Three-way fallback because
+   * app.js doesn't always write to localStorage when it auto-picks a default:
+   *   1) localStorage['selected-project']
+   *   2) the DOM-level selected option in #project-options (always reflects
+   *      the actual main-sidebar choice)
+   *   3) first project in our list. */
   function autoPickGlobalProject() {
-    if (state.currentProjectId) return;  // user already picked something
+    if (state.currentProjectId) return;
     if (!state.projects.length) return;
+
     let globalId = null;
-    try { globalId = localStorage.getItem('selected-project'); } catch {}
+    try { globalId = localStorage.getItem('selected-project') || null; } catch {}
+    if (!globalId) {
+      const domSelected = document.querySelector('#project-options .custom-select-option.selected');
+      globalId = domSelected?.dataset?.value || null;
+    }
+    if (!globalId) globalId = state.projects[0]?.id ?? null;
     if (!globalId) return;
+
     const proj = state.projects.find(p => p.id === globalId);
     if (proj) setProjectValue(proj.id, proj.name);
   }
@@ -382,6 +393,8 @@
     messages.push({ role: 'user', content: text });
     const userNode = bubble('user', text);
     const msgContainer = $('#chat-messages');
+    // Clear the welcome screen on the first send (it occupies the container).
+    msgContainer.querySelector('.chat-welcome')?.remove();
     msgContainer.appendChild(userNode);
 
     const assistantEl = document.createElement('div');
