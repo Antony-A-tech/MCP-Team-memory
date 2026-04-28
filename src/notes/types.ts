@@ -10,6 +10,8 @@ export interface PersonalNote {
   status: 'active' | 'archived';
   createdAt: string;
   updatedAt: string;
+  /** Set when the owner has shared the note as a team-memory entry. */
+  sharedToEntryId?: string | null;
 }
 
 export interface CompactPersonalNote {
