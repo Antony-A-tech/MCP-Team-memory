@@ -274,8 +274,12 @@ export class SessionStorage {
   }
 
   async getNextQueued(): Promise<Session | null> {
+    // `extracting_notes` is included so a session stuck mid-extraction (e.g.
+    // worker crashed after the embedding step) can be picked up by the next
+    // worker tick and retried by the runExtraction path.
     const { rows } = await this.pool.query(
-      `SELECT * FROM sessions WHERE embedding_status IN ('queued', 'queued_embed')
+      `SELECT * FROM sessions
+       WHERE embedding_status IN ('queued', 'queued_embed', 'extracting_notes')
        ORDER BY imported_at ASC LIMIT 1
        FOR UPDATE SKIP LOCKED`,
     );
@@ -283,9 +287,20 @@ export class SessionStorage {
   }
 
   async recoverStuckSessions(): Promise<number> {
+    // Move stuck transient states back to a queueable state. Done via CASE so
+    // we don't redo summary work for sessions that were stuck in `embedding`.
+    // Only sessions whose updated_at is older than 10 minutes are recovered —
+    // anything fresher is presumed to be live work by another worker.
     const { rowCount } = await this.pool.query(
-      `UPDATE sessions SET embedding_status = 'queued'
-       WHERE embedding_status IN ('summarizing', 'embedding')`,
+      `UPDATE sessions
+       SET embedding_status = CASE embedding_status
+         WHEN 'summarizing'      THEN 'queued'
+         WHEN 'embedding'        THEN 'queued_embed'
+         WHEN 'extracting_notes' THEN 'extracting_notes'
+         ELSE embedding_status
+       END
+       WHERE embedding_status IN ('summarizing', 'embedding', 'extracting_notes')
+         AND updated_at < NOW() - INTERVAL '10 minutes'`,
     );
     if (rowCount && rowCount > 0) {
       logger.info({ count: rowCount }, 'Recovered stuck sessions back to queue');
