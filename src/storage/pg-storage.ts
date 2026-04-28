@@ -27,6 +27,9 @@ const ENTRY_COLUMNS = [
   'external_refs', 'importance_score',
 ].join(', ');
 
+/** Same as ENTRY_COLUMNS but with `e.` prefix for use in JOIN queries */
+const ENTRY_COLUMNS_E = ENTRY_COLUMNS.split(', ').map(c => `e.${c}`).join(', ');
+
 /** Map snake_case DB row → camelCase MemoryEntry */
 function rowToEntry(row: Record<string, unknown>): MemoryEntry {
   return {
@@ -1029,10 +1032,8 @@ export class PgStorage {
 
     const whereClause = conditions.length > 0 ? `WHERE ${conditions.join(' AND ')}` : '';
 
-    // Build prefixed column list for the aliased JOIN query
-    const entryCols = ENTRY_COLUMNS.split(', ').map(c => `e.${c.trim()}`).join(', ');
     const { rows } = await this.pool.query(
-      `SELECT ${entryCols}, p.name as project_name,
+      `SELECT ${ENTRY_COLUMNS_E}, p.name as project_name,
          ts_rank(e.search_vector, plainto_tsquery(COALESCE(current_setting('app.fts_language', true), 'simple')::regconfig, $${textParamIdx})) AS relevance
        FROM entries e
        JOIN projects p ON e.project_id = p.id
