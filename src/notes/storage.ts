@@ -253,15 +253,30 @@ export class PersonalNotesStorage {
   }
 
   /**
-   * Mark a note as shared into the team-memory `entries` table. The FK is
-   * `ON DELETE SET NULL`, so deleting the entry detaches without dropping
-   * the note. Set `entryId=null` to detach explicitly.
+   * Mark a note as shared into the team-memory `entries` table. Conditional
+   * on the note being currently unshared, so two concurrent shares race-
+   * safely: the loser sees rowCount=0 and the caller can clean up its
+   * just-created entry. The FK is `ON DELETE SET NULL`, so deleting the
+   * entry detaches without dropping the note.
+   *
+   * Returns true if the link was applied, false if the note was already
+   * linked to a (possibly different) entry. Pass `entryId=null` to detach.
    */
-  async setSharedToEntry(noteId: string, entryId: string | null): Promise<void> {
-    await this.pool.query(
-      `UPDATE personal_notes SET shared_to_entry_id = $1 WHERE id = $2`,
+  async setSharedToEntry(noteId: string, entryId: string | null): Promise<boolean> {
+    if (entryId === null) {
+      const { rowCount } = await this.pool.query(
+        `UPDATE personal_notes SET shared_to_entry_id = NULL WHERE id = $1`,
+        [noteId],
+      );
+      return (rowCount ?? 0) > 0;
+    }
+    const { rowCount } = await this.pool.query(
+      `UPDATE personal_notes
+       SET shared_to_entry_id = $1
+       WHERE id = $2 AND shared_to_entry_id IS NULL`,
       [entryId, noteId],
     );
+    return (rowCount ?? 0) > 0;
   }
 
   private rowToCompact(row: any): CompactPersonalNote {
