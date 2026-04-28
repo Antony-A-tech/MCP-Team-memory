@@ -2,6 +2,7 @@ import type { ChatLlmProvider, SseEvent } from '../llm/chat-provider.js';
 import type { McpToolAdapter } from './tool-adapter.js';
 import type { ChatManager } from '../chat/manager.js';
 import type { ChatSessionWithMessages, ChatMessage, ToolCall } from '../chat/types.js';
+import type { HierarchicalRetrieval } from '../retrieval/hierarchical.js';
 import { ToolError } from './tool-adapter.js';
 import logger from '../logger.js';
 
@@ -21,10 +22,23 @@ export interface RagAgentConfig {
   adapter: McpToolAdapter;
   chatManager: ChatManager;
   maxIterations: number;
+  /**
+   * Optional v4.5 unified retriever. The current iteration of the agent
+   * still drives retrieval through MCP tool calls (memory_read, note_search,
+   * session_search), so this is exposed as a future-facing helper for
+   * auto-context steps that want the layered notes/sessions/snippets shape
+   * in one call. Behaviour does not change when omitted.
+   */
+  retrieval?: HierarchicalRetrieval;
 }
 
 export class RagAgent {
   constructor(private cfg: RagAgentConfig) {}
+
+  /** Public accessor for the optional unified retriever (used in tests). */
+  get retrieval(): HierarchicalRetrieval | undefined {
+    return this.cfg.retrieval;
+  }
 
   async *run(
     session: ChatSessionWithMessages,

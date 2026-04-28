@@ -33,6 +33,22 @@ export interface AppConfig {
   geminiInputUsdPerMtok: number;
   geminiOutputUsdPerMtok: number;
   allowReadonly: boolean;
+  // === v4.5 Auto-notes extraction ===
+  extractNotesEnabled: boolean;
+  extractLlmProvider: 'gemini' | 'ollama';
+  extractMinConfidence: number;
+  extractMinMarkerStrength: number;
+  extractMinFactLen: number;
+  extractMaxFactLen: number;
+  extractMaxNotesPerSession: number;
+  extractMaxMergesPerSession: number;
+  // Dedup thresholds (cosine similarity)
+  dedupConfirmThreshold: number;
+  dedupMergeThreshold: number;
+  // Singleton-auto-record decay
+  autoDecayDays: number;
+  // Importance score recompute job
+  importanceRecomputeIntervalHours: number;
 }
 
 /** Parse float with fallback to default on NaN */
@@ -81,5 +97,34 @@ export function loadConfig(): AppConfig {
     geminiInputUsdPerMtok: parseFloatSafe(process.env.GEMINI_INPUT_USD_PER_MTOK || '0.30', 0.30),
     geminiOutputUsdPerMtok: parseFloatSafe(process.env.GEMINI_OUTPUT_USD_PER_MTOK || '2.50', 2.50),
     allowReadonly: process.env.MEMORY_ALLOW_READONLY === 'true',
+    // v4.5 Auto-notes extraction (defaults match the spec).
+    extractNotesEnabled: process.env.EXTRACT_NOTES_ENABLED !== 'false',
+    extractLlmProvider:
+      (process.env.EXTRACT_LLM_PROVIDER as 'gemini' | 'ollama') ?? 'gemini',
+    extractMinConfidence: parseFloatSafe(process.env.EXTRACT_MIN_CONFIDENCE || '0.6', 0.6),
+    extractMinMarkerStrength: parseFloatSafe(
+      process.env.EXTRACT_MIN_MARKER_STRENGTH || '0.3',
+      0.3,
+    ),
+    extractMinFactLen: parseIntSafe(process.env.EXTRACT_MIN_FACT_LEN || '30', 30),
+    extractMaxFactLen: parseIntSafe(process.env.EXTRACT_MAX_FACT_LEN || '500', 500),
+    extractMaxNotesPerSession: parseIntSafe(
+      process.env.EXTRACT_MAX_NOTES_PER_SESSION || '5',
+      5,
+    ),
+    extractMaxMergesPerSession: parseIntSafe(
+      process.env.EXTRACT_MAX_MERGES_PER_SESSION || '3',
+      3,
+    ),
+    dedupConfirmThreshold: parseFloatSafe(
+      process.env.DEDUP_CONFIRM_THRESHOLD || '0.85',
+      0.85,
+    ),
+    dedupMergeThreshold: parseFloatSafe(process.env.DEDUP_MERGE_THRESHOLD || '0.7', 0.7),
+    autoDecayDays: parseIntSafe(process.env.AUTO_DECAY_DAYS || '30', 30),
+    importanceRecomputeIntervalHours: parseIntSafe(
+      process.env.IMPORTANCE_RECOMPUTE_INTERVAL_HOURS || '24',
+      24,
+    ),
   };
 }
