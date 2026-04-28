@@ -12,6 +12,7 @@ import type {
   RetrievalFilters,
   SourceType,
 } from './types.js';
+import logger from '../logger.js';
 
 export interface RetrievalConfig {
   entriesLimit: number;
@@ -59,18 +60,38 @@ export class HierarchicalRetrieval {
     this.sources.push(source);
   }
 
+  /**
+   * Run all sources in parallel and merge results into the layered output.
+   *
+   * Score contract: each source MUST return chunks whose `score` is a
+   * normalised similarity in [0, 1] where higher = more relevant. Layered
+   * filtering uses `score >= threshold`, so a source that emits raw distance
+   * (lower-is-better) would invert the filter.
+   *
+   * Failure model: one source throwing does NOT collapse the whole call.
+   * Each source is awaited via Promise.allSettled; rejections are logged
+   * and treated as an empty layer, matching the spec's "degrade gracefully
+   * across layers" guarantee.
+   */
   async retrieve(
     query: string,
     filters: RetrievalFilters,
   ): Promise<RetrievalOutput> {
-    // Run all sources in parallel — the slowest source determines latency.
-    const results = await Promise.all(
+    const results = await Promise.allSettled(
       this.sources.map(s => this.callSource(s, query, filters)),
     );
 
     const out: RetrievalOutput = { notes: [], sessions: [], snippets: [] };
-    for (const chunks of results) {
-      for (const c of chunks) {
+    for (let i = 0; i < results.length; i++) {
+      const r = results[i];
+      if (r.status === 'rejected') {
+        logger.warn(
+          { err: r.reason, sourceType: this.sources[i]?.type },
+          'HierarchicalRetrieval: source failed, treating as empty',
+        );
+        continue;
+      }
+      for (const c of r.value) {
         switch (c.source_type) {
           case 'entries':
             out.notes.push(c);
@@ -90,8 +111,13 @@ export class HierarchicalRetrieval {
           case 'wiki':
             (out.wikis ??= []).push(c);
             break;
-          // 'work_item' / 'review' fall through — caller can extend the
-          // RetrievalOutput shape when adding sources for them.
+          default:
+            // 'work_item' / 'review' / unknown — log so a misrouted v5
+            // source doesn't silently disappear during dev.
+            logger.warn(
+              { sourceType: c.source_type, sourceId: c.source_id },
+              'HierarchicalRetrieval: unrouted source_type',
+            );
         }
       }
     }
@@ -105,7 +131,10 @@ export class HierarchicalRetrieval {
   ): Promise<KnowledgeChunk[]> {
     const limit = this.limitFor(s.type);
     const threshold = this.thresholdFor(s.type);
-    const chunks = await s.search(q, f, limit);
+    // Defensive: cap to `limit` even if the source ignored its argument and
+    // returned a flood. Each KnowledgeSource SHOULD respect the limit, but
+    // a buggy one shouldn't be able to balloon the orchestrator's memory.
+    const chunks = (await s.search(q, f, limit)).slice(0, limit);
     return chunks.filter(c => c.score >= threshold);
   }
 

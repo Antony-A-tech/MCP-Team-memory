@@ -120,6 +120,31 @@ describe('HierarchicalRetrieval', () => {
     expect(out.wikis).toEqual([chunk('wiki', 'w1', 0.9)]);
   });
 
+  it('one source throwing does not collapse other layers (Promise.allSettled)', async () => {
+    const failing = fakeSource('entries', []);
+    failing.search = vi.fn(async () => {
+      throw new Error('Qdrant unavailable');
+    });
+    const ok = fakeSource('sessions', [chunk('sessions', 's-ok', 0.9)]);
+    const r = new HierarchicalRetrieval([failing, ok]);
+    const out = await r.retrieve('q', { project_id: projectId });
+    expect(out.notes).toEqual([]);
+    expect(out.sessions).toHaveLength(1);
+    expect(out.sessions[0].source_id).toBe('s-ok');
+  });
+
+  it('caps per-source results to limitFor(type) even if source returns extra', async () => {
+    const flood = Array.from({ length: 50 }, (_, i) =>
+      chunk('entries', `e${i}`, 0.9),
+    );
+    const r = new HierarchicalRetrieval(
+      [fakeSource('entries', flood)],
+      { entriesLimit: 3 },
+    );
+    const out = await r.retrieve('q', { project_id: projectId });
+    expect(out.notes).toHaveLength(3);
+  });
+
   it('queries all sources in parallel (one slow source does not block others)', async () => {
     const slow = fakeSource('entries', [chunk('entries', 'slow', 0.9)]);
     slow.search = vi.fn(
