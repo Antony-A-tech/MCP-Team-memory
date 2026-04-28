@@ -2656,6 +2656,13 @@ function renderNotes() {
           ${(note.tags || []).map(tag => `<span class="tag">${escapeHtml(tag)}</span>`).join('')}
         </div>
         ${isReadOnly ? '' : `<div class="note-actions">
+          ${note.sharedToEntryId
+            ? `<button data-action="viewSharedEntry" data-entry-id="${escapeHtml(note.sharedToEntryId)}" title="Уже расшарена — открыть запись">
+                 <i data-lucide="link"></i>
+               </button>`
+            : `<button data-action="shareNote" data-note-id="${escapeHtml(note.id)}" title="Расшарить как запись командной памяти">
+                 <i data-lucide="share-2"></i>
+               </button>`}
           <button data-action="editNote" data-note-id="${escapeHtml(note.id)}" title="Редактировать">
             <i data-lucide="pencil"></i>
           </button>
@@ -2696,6 +2703,11 @@ document.getElementById('notes-container').addEventListener('click', (e) => {
     const action = actionBtn.dataset.action;
     if (action === 'editNote') openNoteModal(noteId);
     else if (action === 'deleteNote') deleteNote(noteId);
+    else if (action === 'shareNote') openShareNoteModal(noteId);
+    else if (action === 'viewSharedEntry') {
+      const entryId = actionBtn.dataset.entryId;
+      if (entryId) location.hash = '#memory/' + encodeURIComponent(entryId);
+    }
     return;
   }
   const card = e.target.closest('.note-card');
@@ -2703,6 +2715,163 @@ document.getElementById('notes-container').addEventListener('click', (e) => {
     openNoteReadModal(card.dataset.noteId);
   }
 });
+
+/* ========== v4.5 Share Note → team-memory entry ========== */
+
+async function openShareNoteModal(noteId) {
+  const note = notesData.find(n => n.id === noteId);
+  if (!note) return;
+  if (note.sharedToEntryId) {
+    alert('Эта заметка уже расшарена. Открой связанную запись через иконку ссылки.');
+    return;
+  }
+
+  // Build the modal lazily — keeps the index.html footprint small.
+  let modal = document.getElementById('share-note-modal');
+  if (!modal) {
+    modal = document.createElement('div');
+    modal.id = 'share-note-modal';
+    modal.className = 'modal';
+    modal.innerHTML = `
+      <div class="modal-content" style="max-width: 560px;">
+        <div class="modal-header">
+          <h2>Расшарить заметку как запись</h2>
+          <button class="modal-close" data-action="closeShareModal" aria-label="Закрыть">×</button>
+        </div>
+        <div class="modal-body">
+          <p style="margin-top: 0; color: var(--text-secondary);">
+            Заметка станет видимой записью командной памяти. Запись будет
+            закреплена (pinned) и не подвергнется автоматическому удалению.
+          </p>
+          <div class="form-group">
+            <label for="share-note-title">Заголовок</label>
+            <input id="share-note-title" type="text" maxlength="500" />
+          </div>
+          <div class="form-group">
+            <label for="share-note-category">Категория</label>
+            <select id="share-note-category">
+              <option value="decisions">decisions — почему мы выбрали X</option>
+              <option value="architecture">architecture — структура / контракты</option>
+              <option value="conventions">conventions — правила и стандарты</option>
+            </select>
+          </div>
+          <div class="form-group">
+            <label for="share-note-content">Содержимое</label>
+            <textarea id="share-note-content" rows="6"></textarea>
+          </div>
+          <div class="form-group">
+            <label for="share-note-on-match">При найденном дубликате</label>
+            <select id="share-note-on-match">
+              <option value="prompt">Спросить (показать совпадение)</option>
+              <option value="confirm_existing">Подтвердить существующую</option>
+              <option value="merge">Объединить</option>
+              <option value="create_new">Создать новую (игнорировать)</option>
+            </select>
+          </div>
+          <div id="share-note-status" style="margin-top: 12px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn-secondary" data-action="closeShareModal">Отмена</button>
+          <button class="btn-primary" id="share-note-submit">Расшарить</button>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    modal.addEventListener('click', e => {
+      if (e.target === modal) closeShareNoteModal();
+      if (e.target.dataset?.action === 'closeShareModal') closeShareNoteModal();
+    });
+    modal.querySelector('#share-note-submit').addEventListener('click', submitShareNote);
+  }
+
+  modal.dataset.noteId = note.id;
+  modal.querySelector('#share-note-title').value = note.title;
+  modal.querySelector('#share-note-content').value = note.content;
+  modal.querySelector('#share-note-category').value = 'decisions';
+  modal.querySelector('#share-note-on-match').value = 'prompt';
+  modal.querySelector('#share-note-status').innerHTML = '';
+  modal.querySelector('#share-note-submit').disabled = false;
+  modal.style.display = 'flex';
+}
+
+function closeShareNoteModal() {
+  const modal = document.getElementById('share-note-modal');
+  if (modal) modal.style.display = 'none';
+}
+
+async function submitShareNote() {
+  const modal = document.getElementById('share-note-modal');
+  const noteId = modal.dataset.noteId;
+  const submit = modal.querySelector('#share-note-submit');
+  const status = modal.querySelector('#share-note-status');
+  const title = modal.querySelector('#share-note-title').value.trim();
+  const content = modal.querySelector('#share-note-content').value.trim();
+  const category = modal.querySelector('#share-note-category').value;
+  const onMatch = modal.querySelector('#share-note-on-match').value;
+
+  if (!title || !content) {
+    status.textContent = '❌ Заполни заголовок и содержимое.';
+    status.style.color = 'var(--error, #c0392b)';
+    return;
+  }
+
+  submit.disabled = true;
+  status.textContent = '⏳ Отправляем…';
+  status.style.color = 'var(--text-secondary)';
+
+  try {
+    const response = await fetch(`/api/notes/${encodeURIComponent(noteId)}/share`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      credentials: 'include',
+      body: JSON.stringify({
+        category,
+        on_match: onMatch,
+        override: { title, content },
+      }),
+    });
+    const data = await response.json().catch(() => ({}));
+
+    if (!response.ok || !data.success) {
+      status.textContent = '❌ ' + (data.error ?? `HTTP ${response.status}`);
+      status.style.color = 'var(--error, #c0392b)';
+      submit.disabled = false;
+      return;
+    }
+
+    if (data.action === 'match_found_pending_user_decision' && data.existingEntry) {
+      const score = (data.matchScore ?? 0).toFixed(2);
+      const proceed = confirm(
+        `Найдена похожая запись (cosine ${score}):\n\n` +
+        `${data.existingEntry.title}\n\n` +
+        `Подтвердить связь с существующей записью?`,
+      );
+      if (proceed) {
+        modal.querySelector('#share-note-on-match').value = 'confirm_existing';
+        await submitShareNote();
+        return;
+      }
+      submit.disabled = false;
+      status.textContent = 'ℹ️ Отменено. Можешь выбрать "Создать новую" если совпадение ложное.';
+      status.style.color = 'var(--text-secondary)';
+      return;
+    }
+
+    status.innerHTML =
+      `✅ ${data.action} — entry <code>${data.entryId ?? ''}</code>`;
+    status.style.color = 'var(--success, #2ecc71)';
+
+    // Refresh notes list so the share-icon flips to a link-icon.
+    if (typeof loadNotes === 'function') await loadNotes();
+
+    setTimeout(closeShareNoteModal, 1200);
+  } catch (err) {
+    status.textContent = '❌ Сеть: ' + (err?.message ?? String(err));
+    status.style.color = 'var(--error, #c0392b)';
+    submit.disabled = false;
+  }
+}
 
 function openNoteReadModal(noteId) {
   const note = notesData.find(n => n.id === noteId);
