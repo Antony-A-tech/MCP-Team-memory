@@ -82,4 +82,33 @@ describe('migration 018-auto-notes', () => {
     await pool.query(`DELETE FROM sessions WHERE id=$1`, [sid]);
     await pool.query(`DELETE FROM agent_tokens WHERE id=$1`, [sid]);
   });
+
+  it('column defaults apply on INSERT (confirmation_count, auto_generated, evidence_sources, external_refs, importance_score)', async () => {
+    const projectId = '00000000-0000-0000-0000-000000000018';
+    // Ensure default project exists (matches DEFAULT_PROJECT_ID convention used elsewhere)
+    await pool.query(
+      `INSERT INTO projects (id, name) VALUES ($1, 'migration-018-test') ON CONFLICT (id) DO NOTHING`,
+      [projectId],
+    );
+    const inserted = await pool.query(
+      `INSERT INTO entries (project_id, category, title, content)
+       VALUES ($1, 'decisions', 'defaults probe', 'body')
+       RETURNING id, auto_generated, confirmation_count, evidence_sources,
+                 external_refs, importance_score, last_confirmed_at,
+                 extraction_confidence, explicit_marker_strength`,
+      [projectId],
+    );
+    const row = inserted.rows[0];
+    expect(row.auto_generated).toBe(false);
+    expect(row.confirmation_count).toBe(1);
+    expect(row.evidence_sources).toEqual([]);
+    expect(row.external_refs).toEqual({});
+    expect(row.importance_score).toBeCloseTo(0.5, 5);
+    expect(row.last_confirmed_at).toBeNull();
+    expect(row.extraction_confidence).toBeNull();
+    expect(row.explicit_marker_strength).toBeNull();
+    // Cleanup
+    await pool.query(`DELETE FROM entries WHERE id = $1`, [row.id]);
+    await pool.query(`DELETE FROM projects WHERE id = $1`, [projectId]);
+  });
 });
