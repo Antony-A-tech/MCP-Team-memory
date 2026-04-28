@@ -194,6 +194,14 @@ export class SessionStorage {
     return rows.map(r => this.rowToMessage(r));
   }
 
+  async getMessageById(messageId: string): Promise<SessionMessage | null> {
+    const { rows } = await this.pool.query(
+      `SELECT * FROM session_messages WHERE id = $1`,
+      [messageId],
+    );
+    return rows.length > 0 ? this.rowToMessage(rows[0]) : null;
+  }
+
   async searchMessagesByText(sessionId: string, query: string, limit: number = 20): Promise<SessionMessage[]> {
     const escaped = query.replace(/[%_\\]/g, '\\$&');
     const { rows } = await this.pool.query(
