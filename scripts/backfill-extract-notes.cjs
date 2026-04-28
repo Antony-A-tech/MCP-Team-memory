@@ -74,6 +74,29 @@ async function main() {
   }
   conditions.push(`project_id IS NOT NULL`); // extraction needs a project
 
+  // Surface how many sessions are silently ineligible because they were
+  // imported without a project_id (master-token mass-imports, legacy data).
+  // Operators usually want to know — they'd otherwise see "0 eligible" and
+  // wonder if the script is broken.
+  const skipFilters = [];
+  const skipParams = [];
+  let sIdx = 1;
+  if (PROJECT) { skipFilters.push(`project_id = $${sIdx++}`); skipParams.push(PROJECT); }
+  if (SINCE)   { skipFilters.push(`imported_at >= $${sIdx++}`); skipParams.push(SINCE); }
+  skipFilters.push(`project_id IS NULL`);
+  const { rows: skipRows } = await pool.query(
+    `SELECT COUNT(*) AS n FROM sessions WHERE ${skipFilters.join(' AND ')}`,
+    skipParams,
+  );
+  const skipped = Number(skipRows[0].n);
+  if (skipped > 0) {
+    console.log(
+      `Note: ${skipped} session(s) skipped because they have no project_id ` +
+      `(extraction is project-scoped). Re-import with a project_id if you want ` +
+      `auto-notes for them.`,
+    );
+  }
+
   const whereClause = conditions.join(' AND ');
   params.push(LIMIT);
   const limitParam = idx;

@@ -586,6 +586,20 @@ async function main(): Promise<void> {
         });
         return;
       }
+      // Mirror the MCP contract: on_match values that depend on dedup
+      // (confirm_existing, merge) cannot be honoured without a resolver
+      // wired in. Fail loud instead of silently falling through to
+      // create_new — the user explicitly asked for dedup behaviour.
+      if (
+        (onMatch === 'confirm_existing' || onMatch === 'merge') &&
+        !dedupResolver
+      ) {
+        res.status(400).json({
+          success: false,
+          error: `on_match=${onMatch} requires a dedup resolver, which is not wired in this deployment`,
+        });
+        return;
+      }
     }
     if (override !== undefined) {
       if (typeof override !== 'object' || override === null || Array.isArray(override)) {
@@ -658,7 +672,7 @@ async function main(): Promise<void> {
     }),
   );
 
-  // Auto-archive
+  // Auto-archive (legacy time-based / score-based archival)
   if (config.autoArchiveEnabled) {
     const decayConfig = config.decayThreshold !== undefined
       ? { threshold: config.decayThreshold, decayDays: config.decayDays, weights: config.decayWeights }
@@ -666,9 +680,15 @@ async function main(): Promise<void> {
     memoryManager.startAutoArchive(config.autoArchiveDays, undefined, decayConfig);
   }
 
+  // v4.5 singleton-auto-decay — runs independently of legacy auto-archive
+  // so operators who disable the time-based archival still benefit from
+  // the auto-notes decay rule for low-evidence singletons.
+  if (config.extractNotesEnabled) {
+    memoryManager.startSingletonAutoDecay();
+  }
+
   // Importance score batch recompute job (runs once at boot, then every N hours)
-  const importanceHours = parseInt(process.env.IMPORTANCE_RECOMPUTE_INTERVAL_HOURS ?? '24', 10);
-  memoryManager.startImportanceRecomputeJob(importanceHours);
+  memoryManager.startImportanceRecomputeJob(config.importanceRecomputeIntervalHours);
 
   // Start listening
   server.listen(config.port, '0.0.0.0', () => {
