@@ -179,6 +179,10 @@ async function main(): Promise<void> {
   // Session manager (optional — requires agent tokens)
   let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
   let llmClient: import('./llm/ollama.js').OllamaLlmClient | undefined;
+  // Auto-notes extraction (v4.5) — populated in Task 24 wiring; routes that
+  // use them (e.g. POST /api/notes/:id/share) treat them as optional.
+  let dedupResolver: import('./extraction/dedup.js').DedupResolver | undefined;
+  let merger: import('./extraction/merger.js').NoteMerger | undefined;
   if (agentTokenStore) {
     // LLM client for summarization (optional — requires Ollama with LLM model)
     const { OllamaLlmClient } = await import('./llm/ollama.js');
@@ -458,6 +462,67 @@ async function main(): Promise<void> {
     } catch (err) {
       logger.error({ err }, 'DELETE /api/notes/:id failed');
       res.status(500).json({ success: false, error: 'Failed to delete note' });
+    }
+  });
+
+  // POST /api/notes/:id/share — publish a personal note as a team-memory entry.
+  // Optional `dedup_resolver` + `merger` plumbing is wired in Task 24; the
+  // route works without them too (creates a new pinned auto-entry directly).
+  app.post('/api/notes/:id/share', async (req, res) => {
+    if (!notesManager) {
+      res.status(404).json({ success: false, error: 'Notes not configured' });
+      return;
+    }
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) {
+      res.status(401).json({ success: false, error: 'Agent token required' });
+      return;
+    }
+    const { category, override, on_match: onMatch } = req.body ?? {};
+    if (!['architecture', 'decisions', 'conventions'].includes(category)) {
+      res.status(400).json({
+        success: false,
+        error: 'category must be one of: architecture, decisions, conventions',
+      });
+      return;
+    }
+    if (
+      onMatch !== undefined &&
+      !['prompt', 'confirm_existing', 'create_new', 'merge'].includes(onMatch)
+    ) {
+      res.status(400).json({
+        success: false,
+        error: 'on_match must be one of: prompt, confirm_existing, create_new, merge',
+      });
+      return;
+    }
+    try {
+      const result = await notesManager.share({
+        noteId: req.params.id,
+        agentTokenId,
+        category,
+        override: override
+          ? {
+              title: override.title,
+              content: override.content,
+              tags: override.tags,
+              externalRefs: override.external_refs ?? override.externalRefs,
+            }
+          : undefined,
+        onMatch,
+        memoryManager,
+        dedupResolver,
+        merger,
+      });
+      res.json({ success: true, ...result });
+    } catch (err) {
+      const message = (err as Error).message ?? 'Share failed';
+      if (message.includes('not found') || message.includes('not yours')) {
+        res.status(404).json({ success: false, error: message });
+        return;
+      }
+      logger.error({ err }, 'POST /api/notes/:id/share failed');
+      res.status(500).json({ success: false, error: 'Share failed' });
     }
   });
 
