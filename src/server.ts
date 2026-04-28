@@ -54,6 +54,16 @@ export interface ExtractionDeps {
   merger?: NoteMerger;
 }
 
+/**
+ * Returned to MCP clients that still call the deprecated `memory_write`.
+ * Points them at the v4.5 replacements: note_write/note_share for the
+ * intentional path, and session_import for the auto-extracted path.
+ */
+export const MEMORY_WRITE_DEPRECATED_MESSAGE =
+  '❌ memory_write deprecated since v4.5. ' +
+  'Use note_write to create a personal draft, then note_share to publish to team memory ' +
+  '(with dedup vs existing entries). Sessions imported via session_import auto-extract atomic facts.';
+
 export function buildMcpServer(
   memoryManager: MemoryManager,
   agentTokenStore?: AgentTokenStore,
@@ -121,31 +131,12 @@ function setupHandlers(
       },
       {
         name: 'memory_write',
-        description: '► КОГДА ВЫЗЫВАТЬ — ОБЯЗАТЕЛЬНО записывай после каждого значимого действия:\n• Принял архитектурное или техническое решение → category="decisions"\n• Обнаружил баг или проблему → category="issues"\n• Завершил задачу или этап работы → category="progress"\n• Создал/изменил архитектуру (новый модуль, API, схема БД) → category="architecture"\n• Начал работу над новой задачей → category="tasks"\nНЕ ЗАВЕРШАЙ сессию, не записав итоги своей работы!\n\nДобавляет новую запись в командную память. Обязательные поля: category, title, content. Пример: memory_write(category="progress", title="Реализован API авторизации", content="Добавлены эндпоинты /login, /logout. JWT с refresh-токенами.", tags=["auth", "api"])',
+        description:
+          'DEPRECATED since v4.5. Use note_write to draft a personal note, then note_share to publish it as a team-memory entry. Sessions imported via session_import auto-extract atomic facts in the background.',
         inputSchema: {
           type: 'object',
-          properties: {
-            project_id: { type: 'string', description: 'ID проекта. Если не указан — берётся из заголовка X-Project-Id.' },
-            category: {
-              type: 'string',
-              enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions'],
-              description: 'Категория записи'
-            },
-            domain: { type: 'string', description: 'Домен проекта. Получите актуальный список через memory_onboard. Стандартные: backend, frontend, infrastructure, devops, database, testing. Проект может содержать дополнительные кастомные домены.' },
-            title: { type: 'string', description: 'Заголовок записи' },
-            content: { type: 'string', description: 'Содержимое записи' },
-            tags: { type: 'array', items: { type: 'string' }, description: 'Теги для категоризации' },
-            priority: {
-              type: 'string',
-              enum: ['low', 'medium', 'high', 'critical'],
-              description: 'Приоритет записи'
-            },
-            author: { type: 'string', description: 'Автор записи' },
-            pinned: { type: 'boolean', default: false, description: 'Закрепить запись' },
-            relatedIds: { type: 'array', items: { type: 'string' }, description: 'UUID связанных записей для построения графа знаний' }
-          },
-          required: ['category', 'title', 'content']
-        }
+          properties: {},
+        },
       },
       {
         name: 'memory_update',
@@ -605,22 +596,21 @@ function setupHandlers(
         }
 
         case 'memory_write': {
-          const parsed = WriteParamsSchema.safeParse(args);
-          if (!parsed.success) {
-            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
-          }
-          const { project_id, ...writeData } = parsed.data;
-          const writeProjectId = requireProjectId(project_id, 'memory_write');
-          if (typeof writeProjectId !== 'string') return writeProjectId.response;
-          // Override author if agent token was used (HTTP transport — identity from token, not params)
-          if (isAgentToken) writeData.author = callerAgent;
-          const params: WriteParams = { ...writeData, projectId: writeProjectId };
-          const entry = await memoryManager.write(params);
-          const domTxt = entry.domain ? `\n**Домен**: ${entry.domain}` : '';
-          const pinTxt = entry.pinned ? '\n📌 Закреплена' : '';
-          const relTxt = entry.relatedIds && entry.relatedIds.length > 0 ? `\n**Связи**: ${entry.relatedIds.length} записей` : '';
+          // Deprecated since v4.5 — direct memory_write is replaced by:
+          //   1) note_write to create a personal draft, then
+          //   2) note_share to publish the draft as a team-memory entry
+          //      (with optional dedup against existing entries), or
+          //   3) session_import → background auto-extraction.
+          // Returns a 410-Gone-style error so existing automations fail
+          // loudly instead of silently writing through a parallel API.
           return {
-            content: [{ type: 'text', text: `✅ Запись добавлена!\n\n**ID**: ${entry.id}\n**Заголовок**: ${entry.title}\n**Категория**: ${entry.category}${domTxt}\n**Приоритет**: ${entry.priority}${pinTxt}${relTxt}` }]
+            content: [
+              {
+                type: 'text',
+                text: MEMORY_WRITE_DEPRECATED_MESSAGE,
+              },
+            ],
+            isError: true,
           };
         }
 
