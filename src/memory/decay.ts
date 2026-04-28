@@ -1,3 +1,4 @@
+import type { Pool } from 'pg';
 import type { Priority } from './types.js';
 
 export interface ScoreInput {
@@ -64,4 +65,35 @@ export function buildArchiveByScoreQuery(
   `;
 
   return { sql, params: [w1, w2, w3, w4, decayDays, threshold] };
+}
+
+/**
+ * Archive auto-generated singleton entries that have aged past `days` and were
+ * never re-confirmed. This is the v4.5 decay rule for low-evidence auto-records:
+ *
+ *   active AND auto_generated AND NOT pinned
+ *   AND confirmation_count = 1
+ *   AND created_at < NOW() - days
+ *   AND last_confirmed_at IS NULL
+ *
+ * Returns the IDs that were archived in this run.
+ */
+export async function archiveSingletonAutoEntries(
+  pool: Pool,
+  days: number
+): Promise<string[]> {
+  const { rows } = await pool.query(
+    `
+    UPDATE entries SET status = 'archived'
+    WHERE status = 'active'
+      AND auto_generated = true
+      AND pinned = false
+      AND confirmation_count = 1
+      AND created_at < NOW() - ($1 || ' days')::interval
+      AND last_confirmed_at IS NULL
+    RETURNING id
+    `,
+    [days]
+  );
+  return rows.map((r: { id: string }) => r.id);
 }
