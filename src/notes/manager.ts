@@ -188,6 +188,14 @@ export class NotesManager {
       throw new Error('Note not found or not yours');
     }
 
+    // Idempotency / race guard: if this note is already linked to an entry,
+    // a concurrent or repeat share would otherwise create a duplicate pinned
+    // auto-entry (since the dedup vector index may not yet contain the
+    // freshly-created row). Reject with a stable, route-mappable error.
+    if (note.sharedToEntryId) {
+      throw new Error('Note already shared');
+    }
+
     const title = p.override?.title ?? note.title;
     const content = p.override?.content ?? note.content;
     const tags = p.override?.tags ?? note.tags;
@@ -251,7 +259,13 @@ export class NotesManager {
 
           if (onMatch === 'confirm_existing') {
             await p.memoryManager.confirmExisting(decision.entry_id, evidence);
-            await this.storage.setSharedToEntry(note.id, decision.entry_id);
+            const linked = await this.storage.setSharedToEntry(note.id, decision.entry_id);
+            if (!linked) {
+              // Lost the race against another share for the same note.
+              // The confirmExisting call is already idempotent on evidence,
+              // so nothing to undo — just signal the conflict.
+              throw new Error('Note already shared');
+            }
             return { action: 'confirmed_existing', entryId: decision.entry_id };
           }
 
@@ -261,7 +275,10 @@ export class NotesManager {
               candidate,
             );
             await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
-            await this.storage.setSharedToEntry(note.id, decision.entry_id);
+            const linked = await this.storage.setSharedToEntry(note.id, decision.entry_id);
+            if (!linked) {
+              throw new Error('Note already shared');
+            }
             return { action: 'merged', entryId: decision.entry_id };
           }
           // onMatch='create_new' (or 'merge' without merger) → fall through to create.
@@ -279,7 +296,18 @@ export class NotesManager {
       undefined,
       { pinned: true },
     );
-    await this.storage.setSharedToEntry(note.id, entryId);
+    const linked = await this.storage.setSharedToEntry(note.id, entryId);
+    if (!linked) {
+      // Concurrent share won the race. Roll back our duplicate entry so the
+      // user sees only one auto-entry per note. archive=true keeps the row
+      // for forensics; flip to false if hard-delete is preferred.
+      await p.memoryManager.delete({ id: entryId, archive: true });
+      logger.warn(
+        { noteId: note.id, orphanEntryId: entryId },
+        'share lost race — archived duplicate entry',
+      );
+      throw new Error('Note already shared');
+    }
     return { action: 'created', entryId };
   }
 }

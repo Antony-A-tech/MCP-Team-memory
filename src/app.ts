@@ -469,33 +469,65 @@ async function main(): Promise<void> {
   // Optional `dedup_resolver` + `merger` plumbing is wired in Task 24; the
   // route works without them too (creates a new pinned auto-entry directly).
   app.post('/api/notes/:id/share', async (req, res) => {
-    if (!notesManager) {
-      res.status(404).json({ success: false, error: 'Notes not configured' });
-      return;
-    }
+    // Auth check FIRST so unauthenticated probes can't distinguish
+    // "notes feature disabled" (the 404 below) from "notes on, missing token".
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     if (!agentTokenId) {
       res.status(401).json({ success: false, error: 'Agent token required' });
       return;
     }
+    if (!notesManager) {
+      res.status(404).json({ success: false, error: 'Notes not configured' });
+      return;
+    }
+
     const { category, override, on_match: onMatch } = req.body ?? {};
-    if (!['architecture', 'decisions', 'conventions'].includes(category)) {
+    if (
+      typeof category !== 'string' ||
+      !['architecture', 'decisions', 'conventions'].includes(category)
+    ) {
       res.status(400).json({
         success: false,
         error: 'category must be one of: architecture, decisions, conventions',
       });
       return;
     }
-    if (
-      onMatch !== undefined &&
-      !['prompt', 'confirm_existing', 'create_new', 'merge'].includes(onMatch)
-    ) {
-      res.status(400).json({
-        success: false,
-        error: 'on_match must be one of: prompt, confirm_existing, create_new, merge',
-      });
-      return;
+    if (onMatch !== undefined) {
+      if (
+        typeof onMatch !== 'string' ||
+        !['prompt', 'confirm_existing', 'create_new', 'merge'].includes(onMatch)
+      ) {
+        res.status(400).json({
+          success: false,
+          error: 'on_match must be one of: prompt, confirm_existing, create_new, merge',
+        });
+        return;
+      }
     }
+    if (override !== undefined) {
+      if (typeof override !== 'object' || override === null || Array.isArray(override)) {
+        res.status(400).json({ success: false, error: 'override must be an object' });
+        return;
+      }
+      if (override.title !== undefined && typeof override.title !== 'string') {
+        res.status(400).json({ success: false, error: 'override.title must be a string' });
+        return;
+      }
+      if (override.content !== undefined && typeof override.content !== 'string') {
+        res.status(400).json({ success: false, error: 'override.content must be a string' });
+        return;
+      }
+      if (
+        override.tags !== undefined &&
+        (!Array.isArray(override.tags) || override.tags.some((t: unknown) => typeof t !== 'string'))
+      ) {
+        res
+          .status(400)
+          .json({ success: false, error: 'override.tags must be an array of strings' });
+        return;
+      }
+    }
+
     try {
       const result = await notesManager.share({
         noteId: req.params.id,
@@ -517,11 +549,20 @@ async function main(): Promise<void> {
       res.json({ success: true, ...result });
     } catch (err) {
       const message = (err as Error).message ?? 'Share failed';
-      if (message.includes('not found') || message.includes('not yours')) {
+      // Whitelist the two known business errors from NotesManager.share. Don't
+      // forward arbitrary error text to the client — it could leak internals.
+      if (message === 'Note not found or not yours') {
         res.status(404).json({ success: false, error: message });
         return;
       }
-      logger.error({ err }, 'POST /api/notes/:id/share failed');
+      if (message === 'Note already shared') {
+        res.status(409).json({ success: false, error: message });
+        return;
+      }
+      logger.error(
+        { err, agentTokenId, noteId: req.params.id },
+        'POST /api/notes/:id/share failed',
+      );
       res.status(500).json({ success: false, error: 'Share failed' });
     }
   });
