@@ -179,10 +179,13 @@ async function main(): Promise<void> {
   // Session manager (optional — requires agent tokens)
   let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
   let llmClient: import('./llm/ollama.js').OllamaLlmClient | undefined;
-  // Auto-notes extraction (v4.5) — populated in Task 24 wiring; routes that
-  // use them (e.g. POST /api/notes/:id/share) treat them as optional.
+  // Auto-notes extraction (v4.5)
   let dedupResolver: import('./extraction/dedup.js').DedupResolver | undefined;
   let merger: import('./extraction/merger.js').NoteMerger | undefined;
+  let noteExtractor: import('./extraction/extractor.js').NoteExtractor | undefined;
+  let hierarchicalRetrieval:
+    | import('./retrieval/hierarchical.js').HierarchicalRetrieval
+    | undefined;
   if (agentTokenStore) {
     // LLM client for summarization (optional — requires Ollama with LLM model)
     const { OllamaLlmClient } = await import('./llm/ollama.js');
@@ -193,9 +196,88 @@ async function main(): Promise<void> {
     const { SessionStorage } = await import('./sessions/storage.js');
     const { SessionManager } = await import('./sessions/manager.js');
     const sessionStorage = new SessionStorage(storage.getPool());
-    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined, llmClient);
+
+    // === v4.5 Auto-notes extraction wiring ===
+    // The extractor needs an LLM provider; preference order (gemini → ollama)
+    // matches the provider config. Dedup needs both an embedding provider and
+    // a vector store. If any prerequisite is missing, the extraction step
+    // gracefully degrades — sessions still flow through the pipeline, just
+    // without auto-extraction.
+    const embeddingProvider = memoryManager.getEmbeddingProvider() ?? undefined;
+    const vectorStore = memoryManager.getVectorStore() ?? undefined;
+
+    if (config.extractNotesEnabled) {
+      const { pickExtractionProvider } = await import('./extraction/llm-provider.js');
+      const { GeminiChatProvider } = await import('./llm/gemini.js');
+      const extractionGemini = config.geminiApiKey
+        ? new GeminiChatProvider({
+            apiKey: config.geminiApiKey,
+            model: config.geminiModel,
+          })
+        : null;
+      const extractionLlm = pickExtractionProvider(
+        extractionGemini,
+        ollamaLlm,
+        config.extractLlmProvider,
+      );
+      if (extractionLlm) {
+        const { NoteExtractor } = await import('./extraction/extractor.js');
+        noteExtractor = new NoteExtractor(extractionLlm, {
+          minConfidence: config.extractMinConfidence,
+          minMarkerStrength: config.extractMinMarkerStrength,
+          minFactLen: config.extractMinFactLen,
+          maxFactLen: config.extractMaxFactLen,
+          maxNotesPerSession: config.extractMaxNotesPerSession,
+        });
+        logger.info({ provider: extractionLlm.name }, 'NoteExtractor initialized');
+      }
+
+      if (embeddingProvider && vectorStore) {
+        const { DedupResolver } = await import('./extraction/dedup.js');
+        dedupResolver = new DedupResolver(embeddingProvider, vectorStore, {
+          confirmThreshold: config.dedupConfirmThreshold,
+          mergeThreshold: config.dedupMergeThreshold,
+        });
+        if (extractionLlm) {
+          const { NoteMerger } = await import('./extraction/merger.js');
+          merger = new NoteMerger(extractionLlm);
+        }
+        logger.info('DedupResolver + NoteMerger initialized');
+      } else {
+        logger.warn('Auto-notes dedup skipped — embedding/vector store unavailable');
+      }
+    } else {
+      logger.info('EXTRACT_NOTES_ENABLED=false — auto-notes extraction disabled');
+    }
+
+    sessionManager = new SessionManager(
+      sessionStorage,
+      vectorStore,
+      embeddingProvider,
+      llmClient,
+      noteExtractor,
+      dedupResolver,
+      merger,
+      memoryManager,
+      config.extractNotesEnabled,
+      config.extractMaxMergesPerSession,
+    );
     sessionManager.startWorker(30); // Process queued sessions every 30 sec
     logger.info('Session manager initialized with background worker');
+
+    // === v4.5 Hierarchical retrieval wiring ===
+    if (embeddingProvider && vectorStore) {
+      const { EntriesSource } = await import('./retrieval/sources/entries-source.js');
+      const { SessionsSource } = await import('./retrieval/sources/sessions-source.js');
+      const { MessagesSource } = await import('./retrieval/sources/messages-source.js');
+      const { HierarchicalRetrieval } = await import('./retrieval/hierarchical.js');
+      hierarchicalRetrieval = new HierarchicalRetrieval([
+        new EntriesSource(embeddingProvider, vectorStore, storage),
+        new SessionsSource(embeddingProvider, vectorStore, sessionStorage),
+        new MessagesSource(embeddingProvider, vectorStore, sessionStorage),
+      ]);
+      logger.info('HierarchicalRetrieval initialized with 3 sources');
+    }
   }
 
   // Chat persistence (always enabled)
@@ -221,6 +303,7 @@ async function main(): Promise<void> {
         adapter,
         chatManager,
         maxIterations: config.ragMaxIterations,
+        retrieval: hierarchicalRetrieval,
       });
     };
     titleGenerator = new TitleGenerator(chatProvider, chatManager);
