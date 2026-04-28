@@ -532,7 +532,7 @@ async function main(): Promise<void> {
       const result = await notesManager.share({
         noteId: req.params.id,
         agentTokenId,
-        category,
+        category: category as 'architecture' | 'decisions' | 'conventions',
         override: override
           ? {
               title: override.title,
@@ -568,7 +568,12 @@ async function main(): Promise<void> {
   });
 
   // Mount MCP transport (after all optional managers are created)
-  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager));
+  mountMcpTransport(app, () =>
+    buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager, {
+      dedupResolver,
+      merger,
+    }),
+  );
 
   // Auto-archive
   if (config.autoArchiveEnabled) {

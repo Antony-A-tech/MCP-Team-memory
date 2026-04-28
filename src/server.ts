@@ -44,25 +44,40 @@ import { exportEntries, type ExportFormat } from './export/exporter.js';
 import type { AgentTokenStore } from './auth/agent-tokens.js';
 import type { NotesManager } from './notes/manager.js';
 import type { SessionManager } from './sessions/manager.js';
-import { NoteWriteSchema, NoteReadSchema, NoteUpdateSchema, NoteDeleteSchema, NoteSearchSchema } from './notes/validation.js';
+import { NoteWriteSchema, NoteReadSchema, NoteUpdateSchema, NoteDeleteSchema, NoteSearchSchema, NoteShareSchema } from './notes/validation.js';
 import { SessionImportSchema, SessionListSchema, SessionSearchSchema, SessionReadSchema, SessionMessageSearchSchema, SessionDeleteSchema } from './sessions/validation.js';
+import type { DedupResolver } from './extraction/dedup.js';
+import type { NoteMerger } from './extraction/merger.js';
+
+export interface ExtractionDeps {
+  dedupResolver?: DedupResolver;
+  merger?: NoteMerger;
+}
 
 export function buildMcpServer(
   memoryManager: MemoryManager,
   agentTokenStore?: AgentTokenStore,
   notesManager?: NotesManager,
   sessionManager?: SessionManager,
+  extraction: ExtractionDeps = {},
 ): Server {
   const server = new Server(
     { name: 'team-memory', version: '3.0.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
-  setupHandlers(server, memoryManager, agentTokenStore, notesManager, sessionManager);
+  setupHandlers(server, memoryManager, agentTokenStore, notesManager, sessionManager, extraction);
   return server;
 }
 
-function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager, sessionManager?: SessionManager): void {
+function setupHandlers(
+  server: Server,
+  memoryManager: MemoryManager,
+  agentTokenStore?: AgentTokenStore,
+  notesManager?: NotesManager,
+  sessionManager?: SessionManager,
+  extraction: ExtractionDeps = {},
+): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Tool[] = [
       {
@@ -373,6 +388,39 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
             limit: { type: 'number', default: 10 },
           },
           required: ['query'],
+        },
+      },
+      {
+        name: 'note_share',
+        description:
+          'Опубликовать личную заметку как запись командной памяти (architecture/decisions/conventions). Выполняет dedup; если найдена похожая запись, возвращает её или подтверждает/мёрджит согласно on_match. Заметка помечается как pinned (не подвержена auto-decay).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            note_id: { type: 'string', description: 'UUID заметки' },
+            category: {
+              type: 'string',
+              enum: ['architecture', 'decisions', 'conventions'],
+              description: 'Категория командной записи',
+            },
+            override: {
+              type: 'object',
+              description: 'Опциональные переопределения title/content/tags/external_refs',
+              properties: {
+                title: { type: 'string' },
+                content: { type: 'string' },
+                tags: { type: 'array', items: { type: 'string' } },
+                external_refs: { type: 'object' },
+              },
+            },
+            on_match: {
+              type: 'string',
+              enum: ['prompt', 'confirm_existing', 'create_new', 'merge'],
+              description:
+                'Что делать при найденном совпадении: prompt (по умолчанию — вернуть найденную запись без записи), confirm_existing (++count), merge (объединить), create_new (игнорировать совпадение).',
+            },
+          },
+          required: ['note_id', 'category'],
         },
       },
       // === Session Import tools ===
@@ -939,6 +987,53 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           return { content: [{ type: 'text', text: `🔍 Найдено ${results.length} заметок:\n${lines.join('\n')}` }] };
         }
 
+        case 'note_share': {
+          if (!notesManager) {
+            return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          }
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) {
+            return { content: [{ type: 'text', text: '❌ Agent token required for share' }], isError: true };
+          }
+          const parsed = NoteShareSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          try {
+            const result = await notesManager.share({
+              noteId: parsed.data.note_id,
+              agentTokenId,
+              category: parsed.data.category,
+              override: parsed.data.override
+                ? {
+                    title: parsed.data.override.title,
+                    content: parsed.data.override.content,
+                    tags: parsed.data.override.tags,
+                    externalRefs: parsed.data.override.external_refs,
+                  }
+                : undefined,
+              onMatch: parsed.data.on_match,
+              memoryManager,
+              dedupResolver: extraction.dedupResolver,
+              merger: extraction.merger,
+            });
+            const lines: string[] = [`Action: ${result.action}`];
+            if (result.entryId) lines.push(`Entry ID: ${result.entryId}`);
+            if (result.existingEntry) {
+              lines.push(
+                `Existing: ${result.existingEntry.title} (id: ${result.existingEntry.id}, score: ${result.existingEntry.score.toFixed(2)})`,
+              );
+            }
+            if (result.matchScore !== undefined && !result.existingEntry) {
+              lines.push(`Match score: ${result.matchScore.toFixed(2)}`);
+            }
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          } catch (err) {
+            const message = (err as Error).message ?? 'Share failed';
+            return { content: [{ type: 'text', text: `❌ ${message}` }], isError: true };
+          }
+        }
+
         // === Session Import handlers ===
 
         case 'session_import': {
@@ -1144,9 +1239,15 @@ export class TeamMemoryMCPServer {
   private server: Server;
   private memoryManager: MemoryManager;
 
-  constructor(memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager, sessionManager?: SessionManager) {
+  constructor(
+    memoryManager: MemoryManager,
+    agentTokenStore?: AgentTokenStore,
+    notesManager?: NotesManager,
+    sessionManager?: SessionManager,
+    extraction: ExtractionDeps = {},
+  ) {
     this.memoryManager = memoryManager;
-    this.server = buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager);
+    this.server = buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager, extraction);
   }
 
   async start(): Promise<void> {
