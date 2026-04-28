@@ -219,7 +219,7 @@ export class MemoryManager {
         true, $7, $8,
         1, NOW(), $9::jsonb, '{}'::jsonb
       )
-      RETURNING id
+      RETURNING id, status
       `,
       [
         projectId,
@@ -234,6 +234,7 @@ export class MemoryManager {
       ],
     );
     const id = rows[0].id as string;
+    const status = rows[0].status as string;
 
     try {
       await this.recomputeImportanceScore(id);
@@ -241,19 +242,47 @@ export class MemoryManager {
       logger.warn({ err, id }, 'Importance score recompute failed for new auto-entry');
     }
 
-    if (this.embeddingProvider?.isReady() && this.vectorStore) {
+    // Audit + realtime parity with write() — auto-extracted entries should be
+    // observable in the audit log and on WebSocket subscribers.
+    const evidenceIds = evidence.map(e => `${e.type}:${e.id}`);
+    this.auditLogger
+      ?.log({
+        entryId: id,
+        projectId,
+        action: 'create',
+        actor: 'auto-extractor',
+        changes: { title: c.title, category: c.category, evidence: evidenceIds },
+      })
+      .catch(err => logger.error({ err }, 'Audit log failed for auto-create'));
+
+    // Look up the freshly inserted row so emit() carries the same shape as
+    // write()'s emission, with importance_score and timestamps populated.
+    if (this.listeners.size > 0) {
+      this.storage
+        .getById(id)
+        .then(created => {
+          if (created) this.emit('memory:created', created);
+        })
+        .catch(err => logger.warn({ err, id }, 'memory:created emit lookup failed'));
+    }
+
+    if (this.embeddingProvider?.isReady()) {
       this.embeddingProvider
-        .embed(`${c.title}\n${c.fact}\n${c.why}`, 'document')
-        .then(vec =>
-          this.vectorStore!.upsert('entries', id, vec, {
-            project_id: projectId,
-            category: c.category,
-            title: c.title,
-            tags: c.tags,
-            pinned: false,
-            status: 'active',
-          }),
-        )
+        .embed(`${c.title} ${content}`, 'document')
+        .then(async vec => {
+          if (this.vectorStore) {
+            await this.vectorStore.upsert('entries', id, vec, {
+              entry_id: id,
+              project_id: projectId,
+              category: c.category,
+              domain: domain ?? '',
+              status,
+              tags: c.tags,
+              author: 'auto-extractor',
+            });
+          }
+          await this.storage.saveEmbedding(id, vec);
+        })
         .catch(err => logger.warn({ err, id }, 'failed to embed new auto-entry'));
     }
     return id;
@@ -264,7 +293,7 @@ export class MemoryManager {
    * the session pipeline when DedupResolver returns CONFIRM (cosine > 0.85).
    */
   async confirmExisting(entryId: string, evidence: EvidenceSource): Promise<void> {
-    await this.storage.getPool().query(
+    const { rowCount } = await this.storage.getPool().query(
       `
       UPDATE entries
       SET confirmation_count = confirmation_count + 1,
@@ -275,10 +304,34 @@ export class MemoryManager {
       `,
       [JSON.stringify([evidence]), entryId],
     );
+    if (rowCount === 0) {
+      // Dedup pointed at a row that was deleted/archived between search and write.
+      // Surface to caller so the session pipeline can decide (typically: skip).
+      throw new Error(`confirmExisting: entry ${entryId} not found`);
+    }
     try {
       await this.recomputeImportanceScore(entryId);
     } catch (err) {
       logger.warn({ err, entryId }, 'Importance score recompute failed on confirm');
+    }
+
+    this.auditLogger
+      ?.log({
+        entryId,
+        projectId: '',
+        action: 'update',
+        actor: 'auto-extractor',
+        changes: { confirmation: `+1 from ${evidence.type}:${evidence.id}` },
+      })
+      .catch(err => logger.error({ err }, 'Audit log failed for auto-confirm'));
+
+    if (this.listeners.size > 0) {
+      this.storage
+        .getById(entryId)
+        .then(updated => {
+          if (updated) this.emit('memory:updated', updated);
+        })
+        .catch(err => logger.warn({ err, entryId }, 'memory:updated emit lookup failed'));
     }
   }
 
@@ -294,7 +347,7 @@ export class MemoryManager {
     evidence: EvidenceSource,
   ): Promise<void> {
     const content = `${merged.fact}\n\nWhy: ${merged.why}`;
-    await this.storage.getPool().query(
+    const { rows, rowCount } = await this.storage.getPool().query(
       `
       UPDATE entries
       SET title = $1, content = $2, tags = $3,
@@ -303,24 +356,69 @@ export class MemoryManager {
           evidence_sources = evidence_sources || $4::jsonb,
           updated_at = NOW()
       WHERE id = $5
+      RETURNING project_id, category, domain, status, author
       `,
       [merged.title, content, merged.tags, JSON.stringify([evidence]), entryId],
     );
+    if (rowCount === 0) {
+      throw new Error(`mergeIntoExisting: entry ${entryId} not found`);
+    }
+    const meta = rows[0] as {
+      project_id: string;
+      category: string;
+      domain: string | null;
+      status: string;
+      author: string;
+    };
+
     try {
       await this.recomputeImportanceScore(entryId);
     } catch (err) {
       logger.warn({ err, entryId }, 'Importance score recompute failed on merge');
     }
 
-    if (this.embeddingProvider?.isReady() && this.vectorStore) {
+    this.auditLogger
+      ?.log({
+        entryId,
+        projectId: meta.project_id,
+        action: 'update',
+        actor: 'auto-extractor',
+        changes: {
+          merge_from: `${evidence.type}:${evidence.id}`,
+          title: merged.title,
+        },
+      })
+      .catch(err => logger.error({ err }, 'Audit log failed for auto-merge'));
+
+    if (this.listeners.size > 0) {
+      this.storage
+        .getById(entryId)
+        .then(updated => {
+          if (updated) this.emit('memory:updated', updated);
+        })
+        .catch(err => logger.warn({ err, entryId }, 'memory:updated emit lookup failed'));
+    }
+
+    if (this.embeddingProvider?.isReady()) {
       this.embeddingProvider
-        .embed(`${merged.title}\n${merged.fact}\n${merged.why}`, 'document')
-        .then(vec =>
-          this.vectorStore!.upsert('entries', entryId, vec, {
-            title: merged.title,
-            tags: merged.tags,
-          }),
-        )
+        .embed(`${merged.title} ${content}`, 'document')
+        .then(async vec => {
+          if (this.vectorStore) {
+            // Qdrant `upsert` REPLACES the payload, not merges it. Restore the
+            // full filter set (entry_id/project_id/category/domain/status/author)
+            // so subsequent qdrantHybridSearch can still resolve hits to entries.
+            await this.vectorStore.upsert('entries', entryId, vec, {
+              entry_id: entryId,
+              project_id: meta.project_id,
+              category: meta.category,
+              domain: meta.domain ?? '',
+              status: meta.status,
+              tags: merged.tags,
+              author: meta.author,
+            });
+          }
+          await this.storage.saveEmbedding(entryId, vec);
+        })
         .catch(err => logger.warn({ err, entryId }, 'failed to re-embed merged entry'));
     }
   }
