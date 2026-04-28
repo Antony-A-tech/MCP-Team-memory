@@ -166,6 +166,17 @@ async function main(): Promise<void> {
     memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
   }
 
+  // Shared Gemini chat client — used by both the RAG chat surface and the
+  // v4.5 auto-notes extraction pipeline. Constructing it once avoids
+  // duplicate HTTP clients, duplicate rate-limit state, and split telemetry.
+  let sharedGeminiChat: GeminiChatProvider | null = null;
+  if (config.geminiApiKey) {
+    sharedGeminiChat = new GeminiChatProvider({
+      apiKey: config.geminiApiKey,
+      model: config.geminiModel,
+    });
+  }
+
   // Personal Notes manager (optional — requires agent tokens)
   let notesManager: import('./notes/manager.js').NotesManager | undefined;
   if (agentTokenStore) {
@@ -208,15 +219,8 @@ async function main(): Promise<void> {
 
     if (config.extractNotesEnabled) {
       const { pickExtractionProvider } = await import('./extraction/llm-provider.js');
-      const { GeminiChatProvider } = await import('./llm/gemini.js');
-      const extractionGemini = config.geminiApiKey
-        ? new GeminiChatProvider({
-            apiKey: config.geminiApiKey,
-            model: config.geminiModel,
-          })
-        : null;
       const extractionLlm = pickExtractionProvider(
-        extractionGemini,
+        sharedGeminiChat,
         ollamaLlm,
         config.extractLlmProvider,
       );
@@ -285,14 +289,10 @@ async function main(): Promise<void> {
   const chatManager = new ChatManager(chatStorage);
 
   // RAG (optional — requires GEMINI_API_KEY)
-  let chatProvider: GeminiChatProvider | null = null;
+  const chatProvider: GeminiChatProvider | null = sharedGeminiChat;
   let ragAgentFactory: ((projectId: string, agentTokenId: string) => RagAgent) | null = null;
   let titleGenerator: TitleGenerator | null = null;
-  if (config.geminiApiKey) {
-    chatProvider = new GeminiChatProvider({
-      apiKey: config.geminiApiKey,
-      model: config.geminiModel,
-    });
+  if (chatProvider) {
     ragAgentFactory = (projectId, agentTokenId) => {
       const adapter = new McpToolAdapter(
         { memoryManager, notesManager: notesManager!, sessionManager: sessionManager! },
