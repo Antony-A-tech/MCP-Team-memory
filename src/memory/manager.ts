@@ -5,6 +5,7 @@ import { VersionManager } from '../storage/versioning.js';
 import { DEFAULT_PROJECT_ID } from './types.js';
 import logger from '../logger.js';
 import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
+import { archiveSingletonAutoEntries } from './decay.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
 import type {
@@ -1018,9 +1019,22 @@ export class MemoryManager {
       clearInterval(this.autoArchiveInterval);
     }
 
-    const archiveTask = decayConfig
+    const baseTask = decayConfig
       ? () => this.autoArchiveByScore(decayConfig.threshold, decayConfig.decayDays, decayConfig.weights)
       : () => this.autoArchiveOldEntries(days);
+
+    const archiveTask = async (): Promise<void> => {
+      await baseTask();
+      const decayDays = parseInt(process.env.AUTO_DECAY_DAYS ?? '30', 10);
+      try {
+        const singletonIds = await archiveSingletonAutoEntries(this.storage.getPool(), decayDays);
+        if (singletonIds.length > 0) {
+          logger.info({ count: singletonIds.length, decayDays }, 'singleton auto-entries archived');
+        }
+      } catch (err) {
+        logger.error({ err }, 'singleton auto-decay failed');
+      }
+    };
 
     archiveTask().catch(err =>
       logger.error({ err }, 'Initial auto-archive failed')
