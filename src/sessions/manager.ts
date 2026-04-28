@@ -237,6 +237,15 @@ export class SessionManager {
    * decide CONFIRM/MERGE/CREATE_NEW vs existing entries, and the memory
    * manager to persist the resulting writes. Each session has a small merge
    * budget so a single noisy session can't trigger an unbounded LLM cost.
+   *
+   * Idempotency: if any entry in the project already references this session
+   * in its `evidence_sources`, treat the run as a retry of a previously-
+   * partially-applied extraction and skip the entire pipeline. CONFIRM/MERGE
+   * deduplicate evidence per (type,id), but CREATE_NEW would otherwise
+   * produce duplicate auto-entries on retry (the just-created row may not
+   * yet be in Qdrant, so dedup search would miss it). Skipping retries is
+   * the conservative choice: a partial extraction is preferred over duplicate
+   * records — operators can re-run via the backfill script if needed.
    */
   private async runExtraction(session: Session): Promise<void> {
     if (
@@ -245,6 +254,14 @@ export class SessionManager {
       !this.dedupResolver ||
       !this.memoryManager
     ) {
+      return;
+    }
+
+    if (await this.storage.hasExtractionEvidence(session.projectId, session.id)) {
+      logger.info(
+        { sessionId: session.id },
+        'extraction skipped — session already has applied evidence (retry guard)',
+      );
       return;
     }
 
@@ -269,7 +286,14 @@ export class SessionManager {
 
     const dedup = await this.dedupResolver.resolve(session.projectId, result.candidates);
     let mergesUsed = 0;
-    const summary = { create: 0, confirm: 0, merge: 0, fallback_confirm: 0, missing: 0 };
+    const summary = {
+      create: 0,
+      confirm: 0,
+      merge: 0,
+      fallback_confirm: 0,
+      missing: 0,
+      errors: 0,
+    };
 
     for (const decision of dedup.decisions) {
       const evidence: EvidenceSource = {
@@ -325,9 +349,10 @@ export class SessionManager {
         mergesUsed++;
         summary.merge++;
       } catch (err) {
-        // Per-decision errors don't kill the whole extraction — log and
-        // continue with the remaining decisions. The session ends in
-        // `complete` even if some writes failed; failures appear in audit.
+        // Per-decision errors are logged and the loop continues, but we
+        // count them so the caller can decide whether the session is
+        // actually healthy.
+        summary.errors++;
         logger.warn(
           { err, sessionId: session.id, decision: decision.type },
           'extraction write failed, continuing with remaining decisions',
@@ -339,6 +364,15 @@ export class SessionManager {
       { sessionId: session.id, ...summary, mergesUsed },
       'extraction applied',
     );
+
+    // If every single decision failed, the issue is systemic (DB down, schema
+    // mismatch, ...). Surface it so the session lands in `extraction_failed`
+    // and operators get a real signal instead of a silent "complete".
+    if (dedup.decisions.length > 0 && summary.errors === dedup.decisions.length) {
+      throw new Error(
+        `extraction: all ${summary.errors} decisions failed for session ${session.id}`,
+      );
+    }
   }
 
   /**

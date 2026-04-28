@@ -293,6 +293,12 @@ export class MemoryManager {
    * the session pipeline when DedupResolver returns CONFIRM (cosine > 0.85).
    */
   async confirmExisting(entryId: string, evidence: EvidenceSource): Promise<void> {
+    // Idempotency: if an evidence source with the same (type, id) already
+    // exists on the entry, do NOT increment confirmation_count or append.
+    // This protects against the session-pipeline retry path: a worker that
+    // crashes mid-extraction will re-run the whole list when picked up
+    // again, and the freshly-CREATEd entries would otherwise get falsely
+    // confirmed by the same session ID on the second pass.
     const { rowCount } = await this.storage.getPool().query(
       `
       UPDATE entries
@@ -301,13 +307,25 @@ export class MemoryManager {
           evidence_sources = evidence_sources || $1::jsonb,
           updated_at = NOW()
       WHERE id = $2
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(evidence_sources) es
+          WHERE es->>'type' = $3 AND es->>'id' = $4
+        )
       `,
-      [JSON.stringify([evidence]), entryId],
+      [JSON.stringify([evidence]), entryId, evidence.type, evidence.id],
     );
     if (rowCount === 0) {
-      // Dedup pointed at a row that was deleted/archived between search and write.
-      // Surface to caller so the session pipeline can decide (typically: skip).
-      throw new Error(`confirmExisting: entry ${entryId} not found`);
+      // Either the row is gone, or this evidence is already attached. Tell
+      // the row apart from the duplicate-evidence case.
+      const { rows } = await this.storage.getPool().query(
+        `SELECT 1 FROM entries WHERE id = $1`,
+        [entryId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`confirmExisting: entry ${entryId} not found`);
+      }
+      // Duplicate evidence — silent no-op is correct here.
+      return;
     }
     try {
       await this.recomputeImportanceScore(entryId);
@@ -347,6 +365,8 @@ export class MemoryManager {
     evidence: EvidenceSource,
   ): Promise<void> {
     const content = `${merged.fact}\n\nWhy: ${merged.why}`;
+    // Same idempotency rule as confirmExisting: don't double-apply the same
+    // evidence source on a retry of a partially-failed extraction.
     const { rows, rowCount } = await this.storage.getPool().query(
       `
       UPDATE entries
@@ -356,12 +376,32 @@ export class MemoryManager {
           evidence_sources = evidence_sources || $4::jsonb,
           updated_at = NOW()
       WHERE id = $5
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(evidence_sources) es
+          WHERE es->>'type' = $6 AND es->>'id' = $7
+        )
       RETURNING project_id, category, domain, status, author
       `,
-      [merged.title, content, merged.tags, JSON.stringify([evidence]), entryId],
+      [
+        merged.title,
+        content,
+        merged.tags,
+        JSON.stringify([evidence]),
+        entryId,
+        evidence.type,
+        evidence.id,
+      ],
     );
     if (rowCount === 0) {
-      throw new Error(`mergeIntoExisting: entry ${entryId} not found`);
+      const { rows: probe } = await this.storage.getPool().query(
+        `SELECT 1 FROM entries WHERE id = $1`,
+        [entryId],
+      );
+      if (probe.length === 0) {
+        throw new Error(`mergeIntoExisting: entry ${entryId} not found`);
+      }
+      // Duplicate evidence — already merged from the same source. No-op.
+      return;
     }
     const meta = rows[0] as {
       project_id: string;
