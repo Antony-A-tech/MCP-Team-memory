@@ -6,7 +6,7 @@ import { DEFAULT_PROJECT_ID } from './types.js';
 import logger from '../logger.js';
 import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
 import { archiveSingletonAutoEntries } from './decay.js';
-import type { EvidenceSource } from '../extraction/types.js';
+import type { EvidenceSource, CandidateNote } from '../extraction/types.js';
 
 /**
  * Strip identifying fields from EvidenceSource entries before sending them to
@@ -187,6 +187,152 @@ export class MemoryManager {
       [score, entryId],
     );
     return score;
+  }
+
+  // === Auto-extraction writes ===
+
+  /**
+   * Insert a new entry from an LLM-extracted candidate. Used by the session
+   * pipeline when DedupResolver returns CREATE_NEW. Sets `auto_generated=true`,
+   * `confirmation_count=1`, and seeds `evidence_sources` from the supplied list.
+   * Recomputes importance score and (best-effort) emits a Qdrant upsert.
+   *
+   * Returns the new entry ID.
+   */
+  async createFromCandidate(
+    projectId: string,
+    c: CandidateNote,
+    evidence: EvidenceSource[],
+    domain?: string,
+  ): Promise<string> {
+    const content = `${c.fact}\n\nWhy: ${c.why}`;
+    const { rows } = await this.storage.getPool().query(
+      `
+      INSERT INTO entries (
+        project_id, category, domain, title, content, author, tags,
+        priority, status, pinned,
+        auto_generated, extraction_confidence, explicit_marker_strength,
+        confirmation_count, last_confirmed_at, evidence_sources, external_refs
+      ) VALUES (
+        $1, $2, $3, $4, $5, 'auto-extractor', $6,
+        'medium', 'active', false,
+        true, $7, $8,
+        1, NOW(), $9::jsonb, '{}'::jsonb
+      )
+      RETURNING id
+      `,
+      [
+        projectId,
+        c.category,
+        domain ?? null,
+        c.title,
+        content,
+        c.tags,
+        c.confidence,
+        c.explicit_marker_strength,
+        JSON.stringify(evidence),
+      ],
+    );
+    const id = rows[0].id as string;
+
+    try {
+      await this.recomputeImportanceScore(id);
+    } catch (err) {
+      logger.warn({ err, id }, 'Importance score recompute failed for new auto-entry');
+    }
+
+    if (this.embeddingProvider?.isReady() && this.vectorStore) {
+      this.embeddingProvider
+        .embed(`${c.title}\n${c.fact}\n${c.why}`, 'document')
+        .then(vec =>
+          this.vectorStore!.upsert('entries', id, vec, {
+            project_id: projectId,
+            category: c.category,
+            title: c.title,
+            tags: c.tags,
+            pinned: false,
+            status: 'active',
+          }),
+        )
+        .catch(err => logger.warn({ err, id }, 'failed to embed new auto-entry'));
+    }
+    return id;
+  }
+
+  /**
+   * Increment confirmation_count and append the new evidence source. Used by
+   * the session pipeline when DedupResolver returns CONFIRM (cosine > 0.85).
+   */
+  async confirmExisting(entryId: string, evidence: EvidenceSource): Promise<void> {
+    await this.storage.getPool().query(
+      `
+      UPDATE entries
+      SET confirmation_count = confirmation_count + 1,
+          last_confirmed_at = NOW(),
+          evidence_sources = evidence_sources || $1::jsonb,
+          updated_at = NOW()
+      WHERE id = $2
+      `,
+      [JSON.stringify([evidence]), entryId],
+    );
+    try {
+      await this.recomputeImportanceScore(entryId);
+    } catch (err) {
+      logger.warn({ err, entryId }, 'Importance score recompute failed on confirm');
+    }
+  }
+
+  /**
+   * Replace title/content/tags with the merged result, increment count, and
+   * append evidence. Used by the session pipeline when DedupResolver returns
+   * MERGE (0.70 ≤ cosine ≤ 0.85) and NoteMerger has produced an atomic merge.
+   * Re-embeds the entry into Qdrant best-effort.
+   */
+  async mergeIntoExisting(
+    entryId: string,
+    merged: { title: string; fact: string; why: string; tags: string[] },
+    evidence: EvidenceSource,
+  ): Promise<void> {
+    const content = `${merged.fact}\n\nWhy: ${merged.why}`;
+    await this.storage.getPool().query(
+      `
+      UPDATE entries
+      SET title = $1, content = $2, tags = $3,
+          confirmation_count = confirmation_count + 1,
+          last_confirmed_at = NOW(),
+          evidence_sources = evidence_sources || $4::jsonb,
+          updated_at = NOW()
+      WHERE id = $5
+      `,
+      [merged.title, content, merged.tags, JSON.stringify([evidence]), entryId],
+    );
+    try {
+      await this.recomputeImportanceScore(entryId);
+    } catch (err) {
+      logger.warn({ err, entryId }, 'Importance score recompute failed on merge');
+    }
+
+    if (this.embeddingProvider?.isReady() && this.vectorStore) {
+      this.embeddingProvider
+        .embed(`${merged.title}\n${merged.fact}\n${merged.why}`, 'document')
+        .then(vec =>
+          this.vectorStore!.upsert('entries', entryId, vec, {
+            title: merged.title,
+            tags: merged.tags,
+          }),
+        )
+        .catch(err => logger.warn({ err, entryId }, 'failed to re-embed merged entry'));
+    }
+  }
+
+  /** Public lookup used by the sessions pipeline before invoking the merger. */
+  async getById(id: string): Promise<MemoryEntry | undefined> {
+    const entry = await this.storage.getById(id);
+    if (!entry) return undefined;
+    return {
+      ...entry,
+      evidenceSources: sanitizeEvidenceSourcesForPublic(entry.evidenceSources),
+    };
   }
 
   // === Entries ===
