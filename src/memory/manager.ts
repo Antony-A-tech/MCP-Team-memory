@@ -4,6 +4,7 @@ import { AuditLogger } from '../storage/audit.js';
 import { VersionManager } from '../storage/versioning.js';
 import { DEFAULT_PROJECT_ID } from './types.js';
 import logger from '../logger.js';
+import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
 import type {
@@ -137,6 +138,28 @@ export class MemoryManager {
   async countEntriesByDomain(projectId: string, slug: string): Promise<number> {
     const pid = projectId || DEFAULT_PROJECT_ID;
     return this.storage.countEntriesByDomain(pid, slug);
+  }
+
+  // === Importance Score ===
+
+  private async recomputeImportanceScore(entryId: string): Promise<number> {
+    const { rows } = await this.storage.getPool().query(`
+      SELECT confirmation_count, last_confirmed_at, explicit_marker_strength, evidence_sources
+      FROM entries WHERE id = $1
+    `, [entryId]);
+    if (rows.length === 0) return 0.5;
+    const r = rows[0];
+    const score = computeImportanceScore({
+      confirmationCount: r.confirmation_count,
+      lastConfirmedAt: r.last_confirmed_at?.toISOString?.() ?? r.last_confirmed_at ?? null,
+      explicitMarkerStrength: r.explicit_marker_strength,
+      uniqueAuthors: uniqueAuthorsFromEvidence(r.evidence_sources ?? []),
+    });
+    await this.storage.getPool().query(
+      `UPDATE entries SET importance_score = $1 WHERE id = $2`,
+      [score, entryId],
+    );
+    return score;
   }
 
   // === Entries ===
@@ -287,6 +310,14 @@ export class MemoryManager {
     };
 
     const created = await this.storage.add(entry);
+
+    // Recompute and persist importance score after insert
+    try {
+      created.importanceScore = await this.recomputeImportanceScore(created.id);
+    } catch (err) {
+      logger.warn({ err, entryId: created.id }, 'Importance score recompute failed on write');
+    }
+
     this.emit('memory:created', created);
     this.auditLogger?.log({
       entryId: created.id,
@@ -346,6 +377,13 @@ export class MemoryManager {
     const updated = result as MemoryEntry | undefined;
 
     if (updated) {
+      // Recompute and persist importance score after update
+      try {
+        updated.importanceScore = await this.recomputeImportanceScore(updated.id);
+      } catch (err) {
+        logger.warn({ err, entryId: updated.id }, 'Importance score recompute failed on update');
+      }
+
       // Save version snapshot only AFTER successful update
       if (this.versionManager && preUpdateEntry) {
         await this.versionManager.saveVersion(preUpdateEntry).catch(err =>
