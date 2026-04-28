@@ -999,6 +999,25 @@ function setupHandlers(
           if (!parsed.success) {
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
+          // on_match values that depend on dedup (confirm_existing, merge)
+          // can't be honoured if no resolver/merger is wired. Fail loud
+          // instead of silently falling through to create — this preserves
+          // intent across the MCP and REST surfaces.
+          const onMatch = parsed.data.on_match;
+          if (
+            (onMatch === 'confirm_existing' || onMatch === 'merge') &&
+            !extraction.dedupResolver
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: '❌ on_match=' + onMatch + ' requires a dedup resolver, which is not wired in this deployment.',
+                },
+              ],
+              isError: true,
+            };
+          }
           try {
             const result = await notesManager.share({
               noteId: parsed.data.note_id,
@@ -1012,7 +1031,7 @@ function setupHandlers(
                     externalRefs: parsed.data.override.external_refs,
                   }
                 : undefined,
-              onMatch: parsed.data.on_match,
+              onMatch,
               memoryManager,
               dedupResolver: extraction.dedupResolver,
               merger: extraction.merger,
@@ -1024,13 +1043,20 @@ function setupHandlers(
                 `Existing: ${result.existingEntry.title} (id: ${result.existingEntry.id}, score: ${result.existingEntry.score.toFixed(2)})`,
               );
             }
-            if (result.matchScore !== undefined && !result.existingEntry) {
-              lines.push(`Match score: ${result.matchScore.toFixed(2)}`);
-            }
             return { content: [{ type: 'text', text: lines.join('\n') }] };
           } catch (err) {
-            const message = (err as Error).message ?? 'Share failed';
-            return { content: [{ type: 'text', text: `❌ ${message}` }], isError: true };
+            const message = (err as Error).message ?? '';
+            // Whitelist known business errors; mask everything else so
+            // unexpected internals (DB messages, stack-derived strings)
+            // don't leak to MCP clients. Mirrors the REST endpoint contract.
+            if (message === 'Note not found or not yours') {
+              return { content: [{ type: 'text', text: '❌ Not found: note does not exist or you are not the owner' }], isError: true };
+            }
+            if (message === 'Note already shared') {
+              return { content: [{ type: 'text', text: '❌ Already shared: note is already linked to a memory entry' }], isError: true };
+            }
+            logger.error({ err, agentTokenId, noteId: parsed.data.note_id }, 'note_share failed');
+            return { content: [{ type: 'text', text: '❌ Share failed (see server logs)' }], isError: true };
           }
         }
 
