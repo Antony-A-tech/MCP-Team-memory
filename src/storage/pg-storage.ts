@@ -454,7 +454,8 @@ export class PgStorage {
     const columns = filters?.compact ? COMPACT_COLUMNS : ENTRY_COLUMNS;
     const { rows } = await this.pool.query(
       `SELECT ${columns} FROM entries WHERE ${conditions.join(' AND ')}
-       ORDER BY updated_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+       ORDER BY pinned DESC, importance_score DESC, updated_at DESC
+       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       values
     );
 
@@ -546,7 +547,8 @@ export class PgStorage {
     const columns = filters?.compact ? COMPACT_COLUMNS : ENTRY_COLUMNS;
     const { rows } = await this.pool.query(
       `SELECT ${columns} FROM entries WHERE ${conditions.join(' AND ')}
-       ORDER BY updated_at DESC LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
+       ORDER BY pinned DESC, importance_score DESC, updated_at DESC
+       LIMIT $${paramIdx} OFFSET $${paramIdx + 1}`,
       values
     );
 

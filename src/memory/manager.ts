@@ -6,6 +6,30 @@ import { DEFAULT_PROJECT_ID } from './types.js';
 import logger from '../logger.js';
 import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
 import { archiveSingletonAutoEntries } from './decay.js';
+import type { EvidenceSource } from '../extraction/types.js';
+
+/**
+ * Strip identifying fields from EvidenceSource entries before sending them to
+ * any caller that is not the owning agent. Currently this only removes the
+ * `id` of `personal_note` sources, since exposing it would let other agents
+ * resolve the underlying private note via personal_notes joins. Other source
+ * types (session, pr, wiki, ...) are public references — left as-is.
+ *
+ * Pure function, exported for unit testing and reuse from MCP/REST layers.
+ */
+export function sanitizeEvidenceSourcesForPublic(
+  sources?: EvidenceSource[]
+): EvidenceSource[] {
+  if (!sources || sources.length === 0) return [];
+  return sources.map(s => {
+    if (s.type === 'personal_note') {
+      // Drop the note id; keep type/shared_by/confirmed_at/agent_token_id.
+      const { id: _id, ...rest } = s;
+      return rest as EvidenceSource;
+    }
+    return s;
+  });
+}
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
 import type {
@@ -173,7 +197,7 @@ export class MemoryManager {
 
     // Branch 1: batch fetch by IDs → always full
     if (ids && ids.length > 0) {
-      return this.storage.getByIds(projectId, ids);
+      return this.sanitizeFullEntries(await this.storage.getByIds(projectId, ids));
     }
 
     const cat = category === 'all' ? undefined : category;
@@ -184,7 +208,10 @@ export class MemoryManager {
       // Try Qdrant vector search first (when available)
       if (this.embeddingProvider?.isReady() && this.vectorStore) {
         try {
-          return await this.qdrantHybridSearch(projectId, search, filters, isCompact);
+          const result = await this.qdrantHybridSearch(projectId, search, filters, isCompact);
+          return isCompact
+            ? (result as CompactMemoryEntry[])
+            : this.sanitizeFullEntries(result as MemoryEntry[]);
         } catch (err) {
           logger.warn({ err }, 'Qdrant hybrid search failed, falling back');
         }
@@ -196,7 +223,9 @@ export class MemoryManager {
           if (isCompact) {
             return this.storage.hybridSearch(projectId, search, queryEmbedding, { ...filters, compact: true as const });
           }
-          return this.storage.hybridSearch(projectId, search, queryEmbedding, filters);
+          return this.sanitizeFullEntries(
+            await this.storage.hybridSearch(projectId, search, queryEmbedding, filters)
+          );
         } catch (err) {
           logger.warn({ err }, 'pgvector hybrid search failed, falling back to FTS');
         }
@@ -205,13 +234,25 @@ export class MemoryManager {
       if (isCompact) {
         return this.storage.search(projectId, search, { ...filters, compact: true as const });
       }
-      return this.storage.search(projectId, search, filters);
+      return this.sanitizeFullEntries(await this.storage.search(projectId, search, filters));
     }
 
     if (isCompact) {
       return this.storage.getAll(projectId, { ...filters, compact: true as const });
     }
-    return this.storage.getAll(projectId, filters);
+    return this.sanitizeFullEntries(await this.storage.getAll(projectId, filters));
+  }
+
+  /**
+   * Apply the public-evidence sanitizer (`sanitizeEvidenceSourcesForPublic`) to
+   * each entry returned by storage. Used by `read()` and `getById()` so the
+   * MCP/REST surface never leaks personal_note IDs of other agents.
+   */
+  private sanitizeFullEntries(entries: MemoryEntry[]): MemoryEntry[] {
+    return entries.map(entry => ({
+      ...entry,
+      evidenceSources: sanitizeEvidenceSourcesForPublic(entry.evidenceSources),
+    }));
   }
 
   /** Qdrant-based hybrid search: FTS from PG + vector from Qdrant, merged */
