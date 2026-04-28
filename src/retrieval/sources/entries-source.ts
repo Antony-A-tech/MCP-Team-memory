@@ -34,8 +34,13 @@ export class EntriesSource implements KnowledgeSource {
     const f: VectorFilter = {
       must: [{ key: 'project_id', match: { value: filters.project_id } }],
     };
-    // Default to active entries only — unless caller explicitly broadens.
-    f.must!.push({ key: 'status', match: { value: 'active' } });
+    // Default to active entries only — caller broadens via filters.statuses.
+    const statuses = filters.statuses ?? ['active'];
+    if (statuses.length === 1) {
+      f.must!.push({ key: 'status', match: { value: statuses[0] } });
+    } else if (statuses.length > 1) {
+      f.must!.push({ key: 'status', match: { any: statuses } });
+    }
     if (filters.categories?.length) {
       f.should = filters.categories.map(c => ({
         key: 'category',

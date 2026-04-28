@@ -37,12 +37,16 @@ export class SessionsSource implements KnowledgeSource {
     }
 
     const results = await this.vector.search('sessions', vec, f, limit);
-    const out: KnowledgeChunk[] = [];
-    for (const r of results) {
-      const s = await this.storage.getSession(String(r.id));
-      if (!s) continue;
-      out.push({
-        source_type: 'sessions',
+    const hydrated = await Promise.all(
+      results.map(async r => {
+        const s = await this.storage.getSession(String(r.id));
+        return s ? { r, s } : null;
+      }),
+    );
+    return hydrated
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .map(({ r, s }) => ({
+        source_type: 'sessions' as const,
         source_id: s.id,
         text: s.summary,
         score: r.score,
@@ -52,8 +56,6 @@ export class SessionsSource implements KnowledgeSource {
           started_at: s.startedAt,
           tags: s.tags,
         },
-      });
-    }
-    return out;
+      }));
   }
 }

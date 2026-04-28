@@ -39,16 +39,40 @@ export class MessagesSource implements KnowledgeSource {
     };
 
     const results = await this.vector.search('session_messages', vec, f, limit);
-    const out: KnowledgeChunk[] = [];
-    for (const r of results) {
-      const messageId = r.payload.message_id as string;
-      const sessionId = r.payload.session_id as string;
-      if (!messageId || !sessionId) continue;
-      const message = await this.storage.getMessageById(messageId);
-      if (!message) continue;
-      out.push({
-        source_type: 'session_messages',
-        source_id: messageId,
+    if (results.length === 0) return [];
+
+    // Fetch each session once and verify it belongs to the requested project.
+    // session_messages payloads don't carry project_id, so without this check
+    // a query against project A would return messages from agent's sessions
+    // in project B (cross-project content leak).
+    const sessionIds = Array.from(
+      new Set(results.map(r => r.payload.session_id).filter((s): s is string => !!s)),
+    );
+    const sessionMap = new Map<string, string | null>();
+    await Promise.all(
+      sessionIds.map(async sid => {
+        const s = await this.storage.getSession(sid);
+        sessionMap.set(sid, s ? s.projectId : null);
+      }),
+    );
+
+    const messages = await Promise.all(
+      results.map(async r => {
+        const messageId = r.payload.message_id as string;
+        const sessionId = r.payload.session_id as string;
+        if (!messageId || !sessionId) return null;
+        if (sessionMap.get(sessionId) !== filters.project_id) return null;
+        const message = await this.storage.getMessageById(messageId);
+        if (!message) return null;
+        return { r, sessionId, message };
+      }),
+    );
+
+    return messages
+      .filter((x): x is NonNullable<typeof x> => x !== null)
+      .map(({ r, sessionId, message }) => ({
+        source_type: 'session_messages' as const,
+        source_id: message.id,
         text: message.content,
         score: r.score,
         metadata: {
@@ -57,8 +81,6 @@ export class MessagesSource implements KnowledgeSource {
           tool_names: message.toolNames,
           message_index: message.messageIndex,
         },
-      });
-    }
-    return out;
+      }));
   }
 }

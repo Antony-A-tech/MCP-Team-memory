@@ -15,6 +15,12 @@ export interface RetrievalFilters {
   project_id: string;
   agent_token_id?: string;
   categories?: string[];
+  /**
+   * Allow-list of `entries.status` values. Defaults to ['active'] if omitted.
+   * Set to broader values (e.g. ['active','completed','archived']) when the
+   * retrieval case wants historical / completed work.
+   */
+  statuses?: Array<'active' | 'completed' | 'archived'>;
   date_from?: string;
   date_to?: string;
 }

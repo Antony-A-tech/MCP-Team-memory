@@ -217,6 +217,22 @@ describe('MessagesSource', () => {
         toolNames: [],
         timestamp: null,
       })),
+      getSession: vi.fn(async () => ({
+        id: 'sess-1',
+        agentTokenId: 'agent-A',
+        projectId,
+        externalId: null,
+        name: null,
+        summary: '',
+        workingDirectory: null,
+        gitBranch: null,
+        messageCount: 1,
+        embeddingStatus: 'complete' as const,
+        startedAt: null,
+        endedAt: null,
+        importedAt: '2026-01-01T00:00:00Z',
+        tags: [],
+      })),
     };
     const src = new MessagesSource(
       mockEmbed() as never,
@@ -233,5 +249,87 @@ describe('MessagesSource', () => {
     expect(out[0].text).toBe('Hello world');
     expect(out[0].metadata.role).toBe('user');
     expect(out[0].metadata.session_id).toBe('sess-1');
+  });
+
+  it('drops messages whose session belongs to a different project (cross-project leak guard)', async () => {
+    const store = mockStore([
+      {
+        id: 'point-leak',
+        score: 0.95,
+        payload: { message_id: 'msg-leak', session_id: 'sess-foreign' },
+      },
+    ]);
+    const storage = {
+      getMessageById: vi.fn(),
+      getSession: vi.fn(async () => ({
+        id: 'sess-foreign',
+        agentTokenId: 'agent-A',
+        // Same agent, but the session was imported into a different project.
+        projectId: '99999999-9999-4999-8999-999999999999',
+        externalId: null,
+        name: null,
+        summary: '',
+        workingDirectory: null,
+        gitBranch: null,
+        messageCount: 1,
+        embeddingStatus: 'complete' as const,
+        startedAt: null,
+        endedAt: null,
+        importedAt: '2026-01-01T00:00:00Z',
+        tags: [],
+      })),
+    };
+    const src = new MessagesSource(
+      mockEmbed() as never,
+      store as never,
+      storage as never,
+    );
+    const out = await src.search(
+      'q',
+      { project_id: projectId, agent_token_id: 'agent-A' },
+      5,
+    );
+    expect(out).toEqual([]);
+    expect(storage.getMessageById).not.toHaveBeenCalled();
+  });
+});
+
+describe('EntriesSource — statuses filter', () => {
+  const projectId = '00000000-0000-0000-0000-000000000000';
+
+  it('hardcodes status=active when statuses filter is omitted', async () => {
+    const store = mockStore([]);
+    const storage = { getByIds: vi.fn(async () => []) };
+    const src = new EntriesSource(
+      mockEmbed() as never,
+      store as never,
+      storage as never,
+    );
+    await src.search('q', { project_id: projectId }, 10);
+    const filter = (store.search.mock.calls[0][2] ?? {}) as {
+      must: Array<{ key: string; match: { value: string } }>;
+    };
+    expect(filter.must.find(c => c.key === 'status')?.match).toEqual({ value: 'active' });
+  });
+
+  it('uses any-match when statuses contains multiple values', async () => {
+    const store = mockStore([]);
+    const storage = { getByIds: vi.fn(async () => []) };
+    const src = new EntriesSource(
+      mockEmbed() as never,
+      store as never,
+      storage as never,
+    );
+    await src.search(
+      'q',
+      { project_id: projectId, statuses: ['active', 'completed'] },
+      10,
+    );
+    const filter = (store.search.mock.calls[0][2] ?? {}) as {
+      must: Array<{ key: string; match: { any: string[] } }>;
+    };
+    expect(filter.must.find(c => c.key === 'status')?.match).toEqual({
+      any: ['active', 'completed'],
+    });
   });
 });
