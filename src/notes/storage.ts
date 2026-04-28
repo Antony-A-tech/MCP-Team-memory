@@ -248,7 +248,20 @@ export class PersonalNotesStorage {
       status: row.status,
       createdAt: row.created_at?.toISOString?.() ?? row.created_at,
       updatedAt: row.updated_at?.toISOString?.() ?? row.updated_at,
+      sharedToEntryId: row.shared_to_entry_id ?? null,
     };
+  }
+
+  /**
+   * Mark a note as shared into the team-memory `entries` table. The FK is
+   * `ON DELETE SET NULL`, so deleting the entry detaches without dropping
+   * the note. Set `entryId=null` to detach explicitly.
+   */
+  async setSharedToEntry(noteId: string, entryId: string | null): Promise<void> {
+    await this.pool.query(
+      `UPDATE personal_notes SET shared_to_entry_id = $1 WHERE id = $2`,
+      [entryId, noteId],
+    );
   }
 
   private rowToCompact(row: any): CompactPersonalNote {

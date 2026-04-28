@@ -2,7 +2,52 @@ import type { PersonalNotesStorage } from './storage.js';
 import type { PersonalNote, CompactPersonalNote, NoteFilters } from './types.js';
 import type { VectorStore, VectorFilter } from '../vector/vector-store.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
+import type { MemoryManager } from '../memory/manager.js';
+import type { DedupResolver } from '../extraction/dedup.js';
+import type { NoteMerger } from '../extraction/merger.js';
+import type {
+  CandidateNote,
+  AutoCategory,
+  EvidenceSource,
+} from '../extraction/types.js';
+import { DEFAULT_PROJECT_ID } from '../memory/types.js';
 import logger from '../logger.js';
+
+export type ShareAction =
+  | 'created'
+  | 'confirmed_existing'
+  | 'merged'
+  | 'match_found_pending_user_decision';
+
+export interface ShareResult {
+  action: ShareAction;
+  entryId: string | null;
+  existingEntry?: { id: string; title: string; content: string; score: number };
+  matchScore?: number;
+}
+
+export interface ShareParams {
+  noteId: string;
+  agentTokenId: string;
+  category: AutoCategory;
+  override?: {
+    title?: string;
+    content?: string;
+    tags?: string[];
+    externalRefs?: Record<string, unknown>;
+  };
+  /**
+   * What to do when dedup finds a match.
+   * 'prompt' (default) returns the match without writing — UI confirms with the user.
+   * 'create_new' ignores the match and inserts a new entry anyway.
+   * 'confirm_existing' increments confirmation_count on the match.
+   * 'merge' calls NoteMerger to atomically combine.
+   */
+  onMatch?: 'prompt' | 'confirm_existing' | 'create_new' | 'merge';
+  memoryManager: MemoryManager;
+  dedupResolver?: DedupResolver;
+  merger?: NoteMerger;
+}
 
 export class NotesManager {
   constructor(
@@ -124,5 +169,103 @@ export class NotesManager {
     );
 
     return notes.filter((n): n is PersonalNote & { score: number } => n !== null);
+  }
+
+  /**
+   * Share a personal note into the team-memory `entries` table. This is the
+   * v4.5 manual-share path: agents who explicitly want to publish a private
+   * note as durable team knowledge call this method (instead of the
+   * deprecated direct memory_write API). When a similar entry already exists
+   * the caller controls the behaviour via `onMatch`.
+   *
+   * Notes shared via this path are pinned (decay-immune): manual share is
+   * treated as guaranteed-important, so the singleton-auto-decay rule from
+   * Task 9 doesn't archive them after 30 days.
+   */
+  async share(p: ShareParams): Promise<ShareResult> {
+    const note = await this.storage.getById(p.noteId, p.agentTokenId);
+    if (!note) {
+      throw new Error('Note not found or not yours');
+    }
+
+    const title = p.override?.title ?? note.title;
+    const content = p.override?.content ?? note.content;
+    const tags = p.override?.tags ?? note.tags;
+
+    const candidate: CandidateNote = {
+      category: p.category,
+      title,
+      // The extraction pipeline expects "fact" + "why"; for a manual share
+      // we use the note's content as the fact and a flag value for why.
+      // Confidence/marker = 1 because the human deliberately published it.
+      fact: content,
+      why: 'Manual share',
+      tags,
+      confidence: 1.0,
+      explicit_marker_strength: 1.0,
+    };
+
+    const evidence: EvidenceSource = {
+      type: 'personal_note',
+      id: note.id,
+      shared_by: p.agentTokenId,
+      confirmed_at: new Date().toISOString(),
+    };
+
+    const projectId = note.projectId ?? DEFAULT_PROJECT_ID;
+    const onMatch = p.onMatch ?? 'prompt';
+
+    // Dedup against existing entries when a resolver is wired in.
+    if (p.dedupResolver) {
+      const dedup = await p.dedupResolver.resolve(projectId, [candidate]);
+      const decision = dedup.decisions[0];
+
+      if (decision && (decision.type === 'CONFIRM' || decision.type === 'MERGE')) {
+        const existing = await p.memoryManager.getById(decision.entry_id);
+
+        if (onMatch === 'prompt') {
+          return {
+            action: 'match_found_pending_user_decision',
+            entryId: null,
+            existingEntry: existing
+              ? {
+                  id: existing.id,
+                  title: existing.title,
+                  content: existing.content,
+                  score: decision.score,
+                }
+              : undefined,
+            matchScore: decision.score,
+          };
+        }
+
+        if (onMatch === 'confirm_existing') {
+          await p.memoryManager.confirmExisting(decision.entry_id, evidence);
+          await this.storage.setSharedToEntry(note.id, decision.entry_id);
+          return { action: 'confirmed_existing', entryId: decision.entry_id };
+        }
+
+        if (onMatch === 'merge' && p.merger && existing) {
+          const merged = await p.merger.merge(
+            { title: existing.title, content: existing.content, tags: existing.tags },
+            candidate,
+          );
+          await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
+          await this.storage.setSharedToEntry(note.id, decision.entry_id);
+          return { action: 'merged', entryId: decision.entry_id };
+        }
+        // onMatch='create_new' (or 'merge' without merger) → fall through to create.
+      }
+    }
+
+    const entryId = await p.memoryManager.createFromCandidate(
+      projectId,
+      candidate,
+      [evidence],
+    );
+    // Manual share = guaranteed important → pin to opt out of decay.
+    await p.memoryManager.update({ id: entryId, pinned: true });
+    await this.storage.setSharedToEntry(note.id, entryId);
+    return { action: 'created', entryId };
   }
 }
