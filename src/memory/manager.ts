@@ -204,8 +204,10 @@ export class MemoryManager {
     c: CandidateNote,
     evidence: EvidenceSource[],
     domain?: string,
+    options: { pinned?: boolean } = {},
   ): Promise<string> {
     const content = `${c.fact}\n\nWhy: ${c.why}`;
+    const pinned = options.pinned ?? false;
     const { rows } = await this.storage.getPool().query(
       `
       INSERT INTO entries (
@@ -215,7 +217,7 @@ export class MemoryManager {
         confirmation_count, last_confirmed_at, evidence_sources, external_refs
       ) VALUES (
         $1, $2, $3, $4, $5, 'auto-extractor', $6,
-        'medium', 'active', false,
+        'medium', 'active', $10,
         true, $7, $8,
         1, NOW(), $9::jsonb, '{}'::jsonb
       )
@@ -231,6 +233,7 @@ export class MemoryManager {
         c.confidence,
         c.explicit_marker_strength,
         JSON.stringify(evidence),
+        pinned,
       ],
     );
     const id = rows[0].id as string;
@@ -279,6 +282,7 @@ export class MemoryManager {
               status,
               tags: c.tags,
               author: 'auto-extractor',
+              pinned,
             });
           }
           await this.storage.saveEmbedding(id, vec);

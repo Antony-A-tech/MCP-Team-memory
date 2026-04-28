@@ -223,48 +223,62 @@ export class NotesManager {
       if (decision && (decision.type === 'CONFIRM' || decision.type === 'MERGE')) {
         const existing = await p.memoryManager.getById(decision.entry_id);
 
-        if (onMatch === 'prompt') {
-          return {
-            action: 'match_found_pending_user_decision',
-            entryId: null,
-            existingEntry: existing
-              ? {
-                  id: existing.id,
-                  title: existing.title,
-                  content: existing.content,
-                  score: decision.score,
-                }
-              : undefined,
-            matchScore: decision.score,
-          };
-        }
-
-        if (onMatch === 'confirm_existing') {
-          await p.memoryManager.confirmExisting(decision.entry_id, evidence);
-          await this.storage.setSharedToEntry(note.id, decision.entry_id);
-          return { action: 'confirmed_existing', entryId: decision.entry_id };
-        }
-
-        if (onMatch === 'merge' && p.merger && existing) {
-          const merged = await p.merger.merge(
-            { title: existing.title, content: existing.content, tags: existing.tags },
-            candidate,
+        // Defence in depth: dedup is project-scoped, but if a future caller
+        // supplies a foreign projectId or the resolver is misconfigured, the
+        // match could point at an entry the requester doesn't have access to.
+        // Drop the match if the project doesn't line up.
+        if (existing && existing.projectId !== projectId) {
+          logger.warn(
+            { noteId: note.id, entryId: existing.id, expected: projectId, actual: existing.projectId },
+            'share dedup match rejected — project mismatch',
           );
-          await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
-          await this.storage.setSharedToEntry(note.id, decision.entry_id);
-          return { action: 'merged', entryId: decision.entry_id };
+        } else {
+          if (onMatch === 'prompt') {
+            return {
+              action: 'match_found_pending_user_decision',
+              entryId: null,
+              existingEntry: existing
+                ? {
+                    id: existing.id,
+                    title: existing.title,
+                    content: existing.content,
+                    score: decision.score,
+                  }
+                : undefined,
+              matchScore: decision.score,
+            };
+          }
+
+          if (onMatch === 'confirm_existing') {
+            await p.memoryManager.confirmExisting(decision.entry_id, evidence);
+            await this.storage.setSharedToEntry(note.id, decision.entry_id);
+            return { action: 'confirmed_existing', entryId: decision.entry_id };
+          }
+
+          if (onMatch === 'merge' && p.merger && existing) {
+            const merged = await p.merger.merge(
+              { title: existing.title, content: existing.content, tags: existing.tags },
+              candidate,
+            );
+            await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
+            await this.storage.setSharedToEntry(note.id, decision.entry_id);
+            return { action: 'merged', entryId: decision.entry_id };
+          }
+          // onMatch='create_new' (or 'merge' without merger) → fall through to create.
         }
-        // onMatch='create_new' (or 'merge' without merger) → fall through to create.
       }
     }
 
+    // Manual share = guaranteed important → insert pinned in a single write.
+    // Avoids a race where a second update({pinned:true}) could fail and leave
+    // an unpinned auto-entry floating around with no shared_to_entry_id link.
     const entryId = await p.memoryManager.createFromCandidate(
       projectId,
       candidate,
       [evidence],
+      undefined,
+      { pinned: true },
     );
-    // Manual share = guaranteed important → pin to opt out of decay.
-    await p.memoryManager.update({ id: entryId, pinned: true });
     await this.storage.setSharedToEntry(note.id, entryId);
     return { action: 'created', entryId };
   }
