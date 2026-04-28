@@ -479,7 +479,10 @@ export class MemoryManager {
           .catch(err => logger.warn({ err, entryId: updated.id }, 'Failed to update Qdrant payload'));
       }
 
-      return updated;
+      return {
+        ...updated,
+        evidenceSources: sanitizeEvidenceSourcesForPublic(updated.evidenceSources),
+      };
     }
 
     return null;
@@ -1066,7 +1069,14 @@ export class MemoryManager {
 
     const archiveTask = async (): Promise<void> => {
       await baseTask();
-      const decayDays = parseInt(process.env.AUTO_DECAY_DAYS ?? '30', 10);
+      const raw = parseInt(process.env.AUTO_DECAY_DAYS ?? '30', 10);
+      const decayDays = Number.isFinite(raw) && raw > 0 ? raw : 30;
+      if (decayDays !== raw) {
+        logger.warn(
+          { provided: process.env.AUTO_DECAY_DAYS, fallback: 30 },
+          'AUTO_DECAY_DAYS is invalid, falling back to 30',
+        );
+      }
       try {
         const singletonIds = await archiveSingletonAutoEntries(this.storage.getPool(), decayDays);
         if (singletonIds.length > 0) {
