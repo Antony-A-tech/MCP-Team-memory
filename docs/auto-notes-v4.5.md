@@ -149,6 +149,62 @@ DEDUP_MERGE_THRESHOLD=0.7
 AUTO_DECAY_DAYS=30
 ```
 
+## Operational notes
+
+### `memory_conventions` carve-out
+
+The `memory_conventions add` MCP action still calls `MemoryManager.write()`
+directly. This is intentional: conventions are an opinionated, low-volume,
+high-importance subset that doesn't fit the dedup-then-share flow (you
+don't want a "prompt for match" UX every time the team agrees on a naming
+rule). Conventions written this way are still subject to importance
+scoring and search ordering — they're just not gated on dedup.
+
+### Re-embed best-effort caveat
+
+`mergeIntoExisting` calls `vectorStore.upsert` fire-and-forget. If Qdrant
+is briefly unavailable during a merge, the entry stays in PostgreSQL with
+a stale vector — it's still findable via FTS, just not via vector search
+until the next manual re-embed or the pgvector backfill catches up at
+boot. Future v4.5.x will add an `embedding_status` column on entries to
+make this gap observable.
+
+### WebSocket events to v4.4 clients
+
+`memory:created`/`memory:updated` events for v4.5 entries carry the new
+`auto_generated`, `confirmation_count`, `importance_score`,
+`evidence_sources` (sanitized), `external_refs` fields. Older v4.4 clients
+that destructure the payload should be unaffected (extra fields are
+forward-compatible JSON), but UI code that assumes the old field set
+should be reviewed.
+
+### Production rollout runbook
+
+1. **Apply migrations** — `npm run build && node dist/scripts/migrate.js`
+   (migrations 018, 019, 020 are forward-only; rollback SQL is in
+   `src/storage/migrations/rollbacks/`).
+2. **Deploy with `EXTRACT_NOTES_ENABLED=false` first** — observe one
+   import cycle, then flip to `true`. Lets you validate the new
+   migrations on real data without LLM cost.
+3. **Watch for the first 24 h:**
+   - `SELECT embedding_status, COUNT(*) FROM sessions GROUP BY 1` —
+     should show no permanent `extraction_failed` build-up;
+   - Tail logs for `'extraction applied'` and `'singleton auto-entries
+     archived'` to confirm both paths fire;
+   - Compare `SELECT COUNT(*) FROM entries WHERE auto_generated`
+     before/after each session import day to see extraction yield.
+4. **Cost monitoring** — Gemini extraction costs roughly the same as
+   summary generation (one prompt per session, ~1500 tokens output max).
+   Set `EXTRACT_LLM_PROVIDER=ollama` if costs spike.
+5. **Disable / rollback** — flip `EXTRACT_NOTES_ENABLED=false`. Existing
+   auto-extracted entries keep working; the pipeline just skips the
+   extracting-notes step. Hard rollback: run rollbacks/018, 019, 020 in
+   reverse order.
+6. **Backfill past sessions** — once stable, run
+   `node scripts/backfill-extract-notes.cjs --limit=50 --dry-run` to
+   preview, then drop `--dry-run`. The session-level idempotency guard
+   makes the script safe to re-run.
+
 ## Migration from v4.x
 
 Existing entries are unchanged. The new columns

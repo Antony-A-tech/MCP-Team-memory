@@ -60,6 +60,7 @@ export class MemoryManager {
   private vectorStore: VectorStore | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
+  private singletonDecayInterval: NodeJS.Timeout | null = null;
   private importanceJobInterval: NodeJS.Timeout | null = null;
 
   constructor(storage: PgStorage, auditLogger?: AuditLogger, versionManager?: VersionManager) {
@@ -246,15 +247,20 @@ export class MemoryManager {
     }
 
     // Audit + realtime parity with write() — auto-extracted entries should be
-    // observable in the audit log and on WebSocket subscribers.
-    const evidenceIds = evidence.map(e => `${e.type}:${e.id}`);
+    // observable in the audit log and on WebSocket subscribers. Strip
+    // personal_note IDs from the recorded evidence: the audit log is read
+    // back via the memory_audit MCP tool and exposed to anyone with read
+    // access, so it has the same disclosure boundary as memory_read.
+    const auditEvidence = evidence.map(e =>
+      e.type === 'personal_note' ? 'personal_note' : `${e.type}:${e.id}`,
+    );
     this.auditLogger
       ?.log({
         entryId: id,
         projectId,
         action: 'create',
         actor: 'auto-extractor',
-        changes: { title: c.title, category: c.category, evidence: evidenceIds },
+        changes: { title: c.title, category: c.category, evidence: auditEvidence },
       })
       .catch(err => logger.error({ err }, 'Audit log failed for auto-create'));
 
@@ -343,7 +349,12 @@ export class MemoryManager {
         projectId: '',
         action: 'update',
         actor: 'auto-extractor',
-        changes: { confirmation: `+1 from ${evidence.type}:${evidence.id}` },
+        changes: {
+          confirmation:
+            evidence.type === 'personal_note'
+              ? '+1 from personal_note'
+              : `+1 from ${evidence.type}:${evidence.id}`,
+        },
       })
       .catch(err => logger.error({ err }, 'Audit log failed for auto-confirm'));
 
@@ -428,7 +439,10 @@ export class MemoryManager {
         action: 'update',
         actor: 'auto-extractor',
         changes: {
-          merge_from: `${evidence.type}:${evidence.id}`,
+          merge_from:
+            evidence.type === 'personal_note'
+              ? 'personal_note'
+              : `${evidence.type}:${evidence.id}`,
           title: merged.title,
         },
       })
@@ -1080,7 +1094,7 @@ export class MemoryManager {
     const lastUpdated = await this.storage.getLastUpdated(projectId);
 
     return {
-      entries,
+      entries: this.sanitizeFullEntries(entries),
       lastUpdated,
       totalChanges: entries.length
     };
@@ -1169,10 +1183,15 @@ export class MemoryManager {
     excludeProjectId?: string;
     limit?: number;
   }): Promise<(MemoryEntry & { projectName: string })[]> {
-    return this.storage.searchAcrossProjects(query, {
+    const results = await this.storage.searchAcrossProjects(query, {
       ...filters,
       status: 'active',
     });
+    // Sanitize evidence_sources before returning to other agents.
+    return results.map(r => ({
+      ...r,
+      evidenceSources: sanitizeEvidenceSourcesForPublic(r.evidenceSources),
+    }));
   }
 
   // === Onboarding ===
@@ -1317,7 +1336,7 @@ export class MemoryManager {
   async getRecent(projectId?: string, hours = 24): Promise<MemoryEntry[]> {
     const pid = projectId || DEFAULT_PROJECT_ID;
     const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    return this.storage.getChangesSince(pid, since);
+    return this.sanitizeFullEntries(await this.storage.getChangesSince(pid, since));
   }
 
   // === Auto-archive ===
@@ -1351,29 +1370,9 @@ export class MemoryManager {
       clearInterval(this.autoArchiveInterval);
     }
 
-    const baseTask = decayConfig
+    const archiveTask = decayConfig
       ? () => this.autoArchiveByScore(decayConfig.threshold, decayConfig.decayDays, decayConfig.weights)
       : () => this.autoArchiveOldEntries(days);
-
-    const archiveTask = async (): Promise<void> => {
-      await baseTask();
-      const raw = parseInt(process.env.AUTO_DECAY_DAYS ?? '30', 10);
-      const decayDays = Number.isFinite(raw) && raw > 0 ? raw : 30;
-      if (decayDays !== raw) {
-        logger.warn(
-          { provided: process.env.AUTO_DECAY_DAYS, fallback: 30 },
-          'AUTO_DECAY_DAYS is invalid, falling back to 30',
-        );
-      }
-      try {
-        const singletonIds = await archiveSingletonAutoEntries(this.storage.getPool(), decayDays);
-        if (singletonIds.length > 0) {
-          logger.info({ count: singletonIds.length, decayDays }, 'singleton auto-entries archived');
-        }
-      } catch (err) {
-        logger.error({ err }, 'singleton auto-decay failed');
-      }
-    };
 
     archiveTask().catch(err =>
       logger.error({ err }, 'Initial auto-archive failed')
@@ -1394,6 +1393,47 @@ export class MemoryManager {
     if (this.autoArchiveInterval) {
       clearInterval(this.autoArchiveInterval);
       this.autoArchiveInterval = null;
+    }
+  }
+
+  /**
+   * Start the v4.5 singleton-auto-decay job. Independent from
+   * `startAutoArchive` so deployments that disable the legacy time-based
+   * archival still get the auto-notes decay rule applied. Validates
+   * AUTO_DECAY_DAYS once at start; re-reads on each tick is unnecessary.
+   */
+  startSingletonAutoDecay(checkIntervalMs: number = 24 * 60 * 60 * 1000): void {
+    if (this.singletonDecayInterval) clearInterval(this.singletonDecayInterval);
+
+    const raw = parseInt(process.env.AUTO_DECAY_DAYS ?? '30', 10);
+    const decayDays = Number.isFinite(raw) && raw > 0 ? raw : 30;
+    if (decayDays !== raw && process.env.AUTO_DECAY_DAYS !== undefined) {
+      logger.warn(
+        { provided: process.env.AUTO_DECAY_DAYS, fallback: 30 },
+        'AUTO_DECAY_DAYS is invalid, falling back to 30',
+      );
+    }
+
+    const tick = async (): Promise<void> => {
+      try {
+        const ids = await archiveSingletonAutoEntries(this.storage.getPool(), decayDays);
+        if (ids.length > 0) {
+          logger.info({ count: ids.length, decayDays }, 'singleton auto-entries archived');
+        }
+      } catch (err) {
+        logger.error({ err }, 'singleton auto-decay failed');
+      }
+    };
+
+    tick().catch(err => logger.error({ err }, 'Initial singleton decay failed'));
+    this.singletonDecayInterval = setInterval(tick, checkIntervalMs);
+    logger.info({ decayDays, intervalHours: checkIntervalMs / 3600_000 }, 'Singleton auto-decay enabled');
+  }
+
+  stopSingletonAutoDecay(): void {
+    if (this.singletonDecayInterval) {
+      clearInterval(this.singletonDecayInterval);
+      this.singletonDecayInterval = null;
     }
   }
 
