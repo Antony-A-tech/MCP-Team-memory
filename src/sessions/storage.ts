@@ -202,6 +202,26 @@ export class SessionStorage {
     return rows.length > 0 ? this.rowToMessage(rows[0]) : null;
   }
 
+  /** Batch lookup — single round-trip for N message IDs. Used by retrieval. */
+  async getMessagesByIds(messageIds: string[]): Promise<SessionMessage[]> {
+    if (messageIds.length === 0) return [];
+    const { rows } = await this.pool.query(
+      `SELECT * FROM session_messages WHERE id = ANY($1::uuid[])`,
+      [messageIds],
+    );
+    return rows.map(r => this.rowToMessage(r));
+  }
+
+  /** Batch lookup — single round-trip for N session IDs. Used by retrieval. */
+  async getSessionsByIds(sessionIds: string[]): Promise<Session[]> {
+    if (sessionIds.length === 0) return [];
+    const { rows } = await this.pool.query(
+      `SELECT * FROM sessions WHERE id = ANY($1::uuid[])`,
+      [sessionIds],
+    );
+    return rows.map(r => this.rowToSession(r));
+  }
+
   async searchMessagesByText(sessionId: string, query: string, limit: number = 20): Promise<SessionMessage[]> {
     const escaped = query.replace(/[%_\\]/g, '\\$&');
     const { rows } = await this.pool.query(
@@ -281,40 +301,78 @@ export class SessionStorage {
     );
   }
 
+  /**
+   * Atomic claim of the next queueable session. Selects + flips the chosen
+   * row to a transient `*_processing` state inside a single transaction with
+   * `FOR UPDATE SKIP LOCKED`, so two replicas calling concurrently always
+   * pick different rows (or one returns null). Without the in-transaction
+   * status flip, `pool.query` releases the row lock immediately and a second
+   * replica could re-pick the same row before the worker writes a follow-up.
+   *
+   * Reverse mapping for stuck-state recovery is in `recoverStuckSessions`.
+   */
   async getNextQueued(): Promise<Session | null> {
-    // `extracting_notes` is picked up only when its row hasn't been touched
-    // for 5+ minutes. Otherwise FOR UPDATE SKIP LOCKED isn't enough cross-
-    // process protection — pool.query releases the row lock at the end of
-    // the SELECT, so a second replica could re-pick a fresh in-flight row
-    // before this worker flips it to `complete`.
-    const { rows } = await this.pool.query(
-      `SELECT * FROM sessions
-       WHERE embedding_status IN ('queued', 'queued_embed')
-          OR (
-            embedding_status = 'extracting_notes'
-            AND updated_at < NOW() - INTERVAL '5 minutes'
-          )
-       ORDER BY imported_at ASC LIMIT 1
-       FOR UPDATE SKIP LOCKED`,
-    );
-    return rows.length > 0 ? this.rowToSession(rows[0]) : null;
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+      const { rows } = await client.query(
+        `SELECT * FROM sessions
+         WHERE embedding_status IN ('queued', 'queued_embed')
+            OR (
+              embedding_status = 'extracting_notes'
+              AND updated_at < NOW() - INTERVAL '5 minutes'
+            )
+         ORDER BY imported_at ASC LIMIT 1
+         FOR UPDATE SKIP LOCKED`,
+      );
+      if (rows.length === 0) {
+        await client.query('COMMIT');
+        return null;
+      }
+      const session = this.rowToSession(rows[0]);
+      // Flip to a processing-marked state inside the same tx so concurrent
+      // workers immediately see this row as busy.
+      const next =
+        session.embeddingStatus === 'queued'
+          ? 'summarizing'
+          : session.embeddingStatus === 'queued_embed'
+            ? 'embedding'
+            : 'extracting_notes'; // already in extracting_notes — leave as-is, runtime handles retry
+      await client.query(
+        `UPDATE sessions SET embedding_status = $1, updated_at = NOW() WHERE id = $2`,
+        [next, session.id],
+      );
+      await client.query('COMMIT');
+      // Return the session with its ORIGINAL status — the SessionManager
+      // pipeline branches on `embedding_status === 'queued'` etc. The row
+      // has already been flipped on disk so concurrent workers won't re-
+      // pick it; subsequent updateEmbeddingStatus calls from the manager
+      // are idempotent confirmations.
+      return session;
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      throw err;
+    } finally {
+      client.release();
+    }
   }
 
   async recoverStuckSessions(): Promise<number> {
     // Move stuck transient states back to a queueable state. Done via CASE so
     // we don't redo summary work for sessions that were stuck in `embedding`.
-    // `extracting_notes` is intentionally NOT touched here — the staleness
-    // guard inside getNextQueued is enough, and rewriting the same value is
-    // dead work.
+    // `extracting_notes` rows that have been stuck longer than the recovery
+    // window are flipped to `extraction_failed` so operators see them in the
+    // dashboard rather than having them silently linger.
     const { rowCount } = await this.pool.query(
       `UPDATE sessions
        SET embedding_status = CASE embedding_status
-         WHEN 'summarizing' THEN 'queued'
-         WHEN 'embedding'   THEN 'queued_embed'
+         WHEN 'summarizing'      THEN 'queued'
+         WHEN 'embedding'        THEN 'queued_embed'
+         WHEN 'extracting_notes' THEN 'extraction_failed'
          ELSE embedding_status
        END
-       WHERE embedding_status IN ('summarizing', 'embedding')
-         AND updated_at < NOW() - INTERVAL '10 minutes'`,
+       WHERE embedding_status IN ('summarizing', 'embedding', 'extracting_notes')
+         AND updated_at < NOW() - INTERVAL '30 minutes'`,
     );
     if (rowCount && rowCount > 0) {
       logger.info({ count: rowCount }, 'Recovered stuck sessions back to queue');

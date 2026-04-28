@@ -184,9 +184,32 @@ describe('SessionsSource', () => {
 describe('MessagesSource', () => {
   const projectId = '00000000-0000-0000-0000-000000000000';
 
+  // Helper: build a session shaped like rowToSession's output.
+  function fakeSession(id: string, projectId: string | null) {
+    return {
+      id,
+      agentTokenId: 'agent-A',
+      projectId,
+      externalId: null,
+      name: null,
+      summary: '',
+      workingDirectory: null,
+      gitBranch: null,
+      messageCount: 1,
+      embeddingStatus: 'complete' as const,
+      startedAt: null,
+      endedAt: null,
+      importedAt: '2026-01-01T00:00:00Z',
+      tags: [],
+    };
+  }
+
   it('refuses to search without agent_token_id (privacy)', async () => {
     const store = mockStore([{ id: 'M', score: 0.9 }]);
-    const storage = { getMessageById: vi.fn() };
+    const storage = {
+      getSessionsByIds: vi.fn(async () => []),
+      getMessagesByIds: vi.fn(async () => []),
+    };
     const src = new MessagesSource(
       mockEmbed() as never,
       store as never,
@@ -195,10 +218,11 @@ describe('MessagesSource', () => {
     const out = await src.search('q', { project_id: projectId }, 5);
     expect(out).toEqual([]);
     expect(store.search).not.toHaveBeenCalled();
-    expect(storage.getMessageById).not.toHaveBeenCalled();
+    expect(storage.getSessionsByIds).not.toHaveBeenCalled();
+    expect(storage.getMessagesByIds).not.toHaveBeenCalled();
   });
 
-  it('hydrates messages by ID with agent_token_id filter', async () => {
+  it('hydrates messages via batch lookups with agent_token_id filter', async () => {
     const store = mockStore([
       {
         id: 'point1',
@@ -207,32 +231,19 @@ describe('MessagesSource', () => {
       },
     ]);
     const storage = {
-      getMessageById: vi.fn(async () => ({
-        id: 'msg-1',
-        sessionId: 'sess-1',
-        role: 'user' as const,
-        content: 'Hello world',
-        messageIndex: 0,
-        hasToolUse: false,
-        toolNames: [],
-        timestamp: null,
-      })),
-      getSession: vi.fn(async () => ({
-        id: 'sess-1',
-        agentTokenId: 'agent-A',
-        projectId,
-        externalId: null,
-        name: null,
-        summary: '',
-        workingDirectory: null,
-        gitBranch: null,
-        messageCount: 1,
-        embeddingStatus: 'complete' as const,
-        startedAt: null,
-        endedAt: null,
-        importedAt: '2026-01-01T00:00:00Z',
-        tags: [],
-      })),
+      getSessionsByIds: vi.fn(async () => [fakeSession('sess-1', projectId)]),
+      getMessagesByIds: vi.fn(async () => [
+        {
+          id: 'msg-1',
+          sessionId: 'sess-1',
+          role: 'user' as const,
+          content: 'Hello world',
+          messageIndex: 0,
+          hasToolUse: false,
+          toolNames: [],
+          timestamp: null,
+        },
+      ]),
     };
     const src = new MessagesSource(
       mockEmbed() as never,
@@ -249,6 +260,9 @@ describe('MessagesSource', () => {
     expect(out[0].text).toBe('Hello world');
     expect(out[0].metadata.role).toBe('user');
     expect(out[0].metadata.session_id).toBe('sess-1');
+    // Single batch call instead of N+N round-trips.
+    expect(storage.getSessionsByIds).toHaveBeenCalledTimes(1);
+    expect(storage.getMessagesByIds).toHaveBeenCalledTimes(1);
   });
 
   it('drops messages whose session belongs to a different project (cross-project leak guard)', async () => {
@@ -260,24 +274,11 @@ describe('MessagesSource', () => {
       },
     ]);
     const storage = {
-      getMessageById: vi.fn(),
-      getSession: vi.fn(async () => ({
-        id: 'sess-foreign',
-        agentTokenId: 'agent-A',
-        // Same agent, but the session was imported into a different project.
-        projectId: '99999999-9999-4999-8999-999999999999',
-        externalId: null,
-        name: null,
-        summary: '',
-        workingDirectory: null,
-        gitBranch: null,
-        messageCount: 1,
-        embeddingStatus: 'complete' as const,
-        startedAt: null,
-        endedAt: null,
-        importedAt: '2026-01-01T00:00:00Z',
-        tags: [],
-      })),
+      // Same agent, but the session was imported into a different project.
+      getSessionsByIds: vi.fn(async () => [
+        fakeSession('sess-foreign', '99999999-9999-4999-8999-999999999999'),
+      ]),
+      getMessagesByIds: vi.fn(async () => []),
     };
     const src = new MessagesSource(
       mockEmbed() as never,
@@ -290,7 +291,9 @@ describe('MessagesSource', () => {
       5,
     );
     expect(out).toEqual([]);
-    expect(storage.getMessageById).not.toHaveBeenCalled();
+    // Batch shape changed: messages and sessions are fetched in parallel,
+    // so getMessagesByIds may run, but the project-mismatch filter still
+    // drops every result before they reach the output.
   });
 });
 

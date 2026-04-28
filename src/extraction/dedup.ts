@@ -41,40 +41,51 @@ export class DedupResolver {
   }
 
   async resolve(projectId: string, candidates: CandidateNote[]): Promise<DedupResult> {
-    const decisions: DedupAction[] = [];
-    for (const c of candidates) {
-      const text = `${c.title}\n${c.fact}\n${c.why}`;
-      const vec = await this.embedding.embed(text, 'document');
-      const matches = await this.vectorStore.search(
-        'entries',
-        vec,
-        {
-          must: [
-            { key: 'project_id', match: { value: projectId } },
-            { key: 'category', match: { value: c.category } },
-          ],
-        },
-        this.cfg.topK,
-      );
-      const top = matches[0];
+    if (candidates.length === 0) return { decisions: [] };
+
+    // Batch all candidate embeddings into a single LLM call when supported,
+    // then run all vector searches in parallel. With 5 candidates the cost
+    // drops from 5 sequential round-trips to 1 embedBatch + 5 parallel
+    // searches — meaningfully cheaper under bursty session imports.
+    const texts = candidates.map(c => `${c.title}\n${c.fact}\n${c.why}`);
+    const vectors = this.embedding.embedBatch
+      ? await this.embedding.embedBatch(texts, 'document')
+      : await Promise.all(texts.map(t => this.embedding.embed(t, 'document')));
+
+    const matchesPerCandidate = await Promise.all(
+      candidates.map((c, i) =>
+        this.vectorStore.search(
+          'entries',
+          vectors[i],
+          {
+            must: [
+              { key: 'project_id', match: { value: projectId } },
+              { key: 'category', match: { value: c.category } },
+            ],
+          },
+          this.cfg.topK,
+        ),
+      ),
+    );
+
+    const decisions: DedupAction[] = candidates.map((c, i) => {
+      const top = matchesPerCandidate[i][0];
       if (!top || top.score < this.cfg.mergeThreshold) {
-        decisions.push({ type: 'CREATE_NEW', candidate: c });
-      } else if (top.score > this.cfg.confirmThreshold) {
-        decisions.push({
-          type: 'CONFIRM',
-          entry_id: String(top.id),
-          candidate: c,
-          score: top.score,
-        });
-      } else {
-        decisions.push({
-          type: 'MERGE',
-          entry_id: String(top.id),
-          candidate: c,
-          score: top.score,
-        });
+        return { type: 'CREATE_NEW', candidate: c };
       }
-    }
+      // Prefer the canonical entry_id from the payload (Task 16 added it
+      // to all upserts). Falling back to the Qdrant point id covers the
+      // legacy collection where only the point id was stored — they
+      // historically coincided but a future refactor could split them.
+      const entryId = String(
+        (top.payload?.entry_id as string | undefined) ?? top.id,
+      );
+      if (top.score > this.cfg.confirmThreshold) {
+        return { type: 'CONFIRM', entry_id: entryId, candidate: c, score: top.score };
+      }
+      return { type: 'MERGE', entry_id: entryId, candidate: c, score: top.score };
+    });
+
     return { decisions };
   }
 }
