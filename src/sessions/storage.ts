@@ -274,12 +274,18 @@ export class SessionStorage {
   }
 
   async getNextQueued(): Promise<Session | null> {
-    // `extracting_notes` is included so a session stuck mid-extraction (e.g.
-    // worker crashed after the embedding step) can be picked up by the next
-    // worker tick and retried by the runExtraction path.
+    // `extracting_notes` is picked up only when its row hasn't been touched
+    // for 5+ minutes. Otherwise FOR UPDATE SKIP LOCKED isn't enough cross-
+    // process protection — pool.query releases the row lock at the end of
+    // the SELECT, so a second replica could re-pick a fresh in-flight row
+    // before this worker flips it to `complete`.
     const { rows } = await this.pool.query(
       `SELECT * FROM sessions
-       WHERE embedding_status IN ('queued', 'queued_embed', 'extracting_notes')
+       WHERE embedding_status IN ('queued', 'queued_embed')
+          OR (
+            embedding_status = 'extracting_notes'
+            AND updated_at < NOW() - INTERVAL '5 minutes'
+          )
        ORDER BY imported_at ASC LIMIT 1
        FOR UPDATE SKIP LOCKED`,
     );
@@ -289,23 +295,41 @@ export class SessionStorage {
   async recoverStuckSessions(): Promise<number> {
     // Move stuck transient states back to a queueable state. Done via CASE so
     // we don't redo summary work for sessions that were stuck in `embedding`.
-    // Only sessions whose updated_at is older than 10 minutes are recovered —
-    // anything fresher is presumed to be live work by another worker.
+    // `extracting_notes` is intentionally NOT touched here — the staleness
+    // guard inside getNextQueued is enough, and rewriting the same value is
+    // dead work.
     const { rowCount } = await this.pool.query(
       `UPDATE sessions
        SET embedding_status = CASE embedding_status
-         WHEN 'summarizing'      THEN 'queued'
-         WHEN 'embedding'        THEN 'queued_embed'
-         WHEN 'extracting_notes' THEN 'extracting_notes'
+         WHEN 'summarizing' THEN 'queued'
+         WHEN 'embedding'   THEN 'queued_embed'
          ELSE embedding_status
        END
-       WHERE embedding_status IN ('summarizing', 'embedding', 'extracting_notes')
+       WHERE embedding_status IN ('summarizing', 'embedding')
          AND updated_at < NOW() - INTERVAL '10 minutes'`,
     );
     if (rowCount && rowCount > 0) {
       logger.info({ count: rowCount }, 'Recovered stuck sessions back to queue');
     }
     return rowCount ?? 0;
+  }
+
+  /**
+   * Returns true if any entry in the project carries an evidence source that
+   * points to this session. Used by the extraction-pipeline retry guard:
+   * a worker that died mid-extraction would otherwise re-create entries that
+   * were already written but not yet visible to the dedup vector search
+   * (Qdrant upserts are fire-and-forget).
+   */
+  async hasExtractionEvidence(projectId: string, sessionId: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM entries
+       WHERE project_id = $1
+         AND evidence_sources @> $2::jsonb
+       LIMIT 1`,
+      [projectId, JSON.stringify([{ type: 'session', id: sessionId }])],
+    );
+    return rows.length > 0;
   }
 
   async deleteSession(sessionId: string, agentTokenId: string): Promise<boolean> {
