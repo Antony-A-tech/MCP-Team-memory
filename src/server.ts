@@ -18,7 +18,6 @@ import type {
   Priority,
   Status,
   ReadParams,
-  WriteParams,
   UpdateParams,
   DeleteParams,
   SyncParams,
@@ -28,7 +27,6 @@ import type {
 } from './memory/types.js';
 import {
   ReadParamsSchema,
-  WriteParamsSchema,
   UpdateParamsSchema,
   DeleteParamsSchema,
   SyncParamsSchema,
@@ -60,7 +58,10 @@ export interface ExtractionDeps {
  * intentional path, and session_import for the auto-extracted path.
  */
 export const MEMORY_WRITE_DEPRECATED_MESSAGE =
-  '❌ memory_write deprecated since v4.5. ' +
+  '❌ memory_write устарел с v4.5. ' +
+  'Используй note_write для создания личного черновика, затем note_share для публикации в командную память ' +
+  '(с дедупликацией против существующих записей). Сессии, импортированные через session_import, автоматически извлекают атомарные факты.\n\n' +
+  'memory_write deprecated since v4.5. ' +
   'Use note_write to create a personal draft, then note_share to publish to team memory ' +
   '(with dedup vs existing entries). Sessions imported via session_import auto-extract atomic facts.';
 
@@ -132,7 +133,7 @@ function setupHandlers(
       {
         name: 'memory_write',
         description:
-          'DEPRECATED since v4.5. Use note_write to draft a personal note, then note_share to publish it as a team-memory entry. Sessions imported via session_import auto-extract atomic facts in the background.',
+          'УСТАРЕЛО с v4.5 — используй note_write для создания личного черновика и note_share для публикации в командную память. Импорт сессий через session_import автоматически извлекает атомарные факты. / DEPRECATED since v4.5 — use note_write + note_share, or session_import for auto-extracted facts.',
         inputSchema: {
           type: 'object',
           properties: {},
