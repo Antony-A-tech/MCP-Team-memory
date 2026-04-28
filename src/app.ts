@@ -472,6 +472,10 @@ async function main(): Promise<void> {
     memoryManager.startAutoArchive(config.autoArchiveDays, undefined, decayConfig);
   }
 
+  // Importance score batch recompute job (runs once at boot, then every N hours)
+  const importanceHours = parseInt(process.env.IMPORTANCE_RECOMPUTE_INTERVAL_HOURS ?? '24', 10);
+  memoryManager.startImportanceRecomputeJob(importanceHours);
+
   // Start listening
   server.listen(config.port, '0.0.0.0', () => {
     logger.info({ port: config.port, urls: { webUI: `http://localhost:${config.port}`, mcp: `http://localhost:${config.port}/mcp`, api: `http://localhost:${config.port}/api/`, ws: `ws://localhost:${config.port}/ws` } }, 'Server ready for connections');

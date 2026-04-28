@@ -35,6 +35,7 @@ export class MemoryManager {
   private vectorStore: VectorStore | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
+  private importanceJobInterval: NodeJS.Timeout | null = null;
 
   constructor(storage: PgStorage, auditLogger?: AuditLogger, versionManager?: VersionManager) {
     this.storage = storage;
@@ -56,6 +57,7 @@ export class MemoryManager {
   }
 
   async close(): Promise<void> {
+    this.stopImportanceRecomputeJob();
     this.stopAutoArchive();
     await this.embeddingProvider?.close?.();
     await this.vectorStore?.close();
@@ -1040,5 +1042,33 @@ export class MemoryManager {
       clearInterval(this.autoArchiveInterval);
       this.autoArchiveInterval = null;
     }
+  }
+
+  // === Importance Score Batch Recompute Job ===
+
+  startImportanceRecomputeJob(intervalHours: number = 24): void {
+    if (this.importanceJobInterval) return;
+    const tick = async () => {
+      const start = Date.now();
+      const { rowCount } = await this.storage.getPool().query(`
+        UPDATE entries SET importance_score =
+          0.4 * LEAST(confirmation_count::float / 5.0, 1.0)
+        + 0.3 * EXP(-EXTRACT(EPOCH FROM NOW() - COALESCE(last_confirmed_at, NOW())) / (60.0 * 86400.0))
+        + 0.2 * COALESCE(explicit_marker_strength, 0.5)
+        + 0.1 * LEAST(
+            (SELECT COUNT(DISTINCT COALESCE(es->>'agent_token_id', es->>'shared_by'))::float / 3.0
+             FROM jsonb_array_elements(evidence_sources) es),
+            1.0
+          )
+        WHERE status = 'active'
+      `);
+      logger.info({ rowCount, ms: Date.now() - start }, 'importance score batch recomputed');
+    };
+    this.importanceJobInterval = setInterval(() => { tick().catch(err => logger.error({ err }, 'importance job error')); }, intervalHours * 3600_000);
+    tick().catch(err => logger.error({ err }, 'importance job initial run error'));
+  }
+
+  stopImportanceRecomputeJob(): void {
+    if (this.importanceJobInterval) { clearInterval(this.importanceJobInterval); this.importanceJobInterval = null; }
   }
 }
