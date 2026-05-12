@@ -1010,9 +1010,14 @@ function setupHandlers(
             };
           }
           try {
+            // authInfo.clientId is set to agentInfo.agentName by the auth
+            // middleware for agent-token requests, so it doubles as the
+            // human-readable author for shared entries.
+            const agentName = (extra as any)?.authInfo?.clientId as string | undefined;
             const result = await notesManager.share({
               noteId: parsed.data.note_id,
               agentTokenId,
+              agentName,
               category: parsed.data.category,
               override: parsed.data.override
                 ? {

@@ -111,6 +111,7 @@ describe('NotesManager.share', () => {
     const result = await notesManager.share({
       noteId: note.id,
       agentTokenId: AGENT,
+      agentName: 'share-test-agent',
       category: 'decisions',
       memoryManager: manager,
     });
@@ -127,9 +128,32 @@ describe('NotesManager.share', () => {
     );
     expect(rows[0].pinned).toBe(true);
     expect(rows[0].auto_generated).toBe(true);
-    expect(rows[0].author).toBe('auto-extractor');
+    // The publishing agent's name is the entry author — not 'auto-extractor'.
+    expect(rows[0].author).toBe('share-test-agent');
     expect(rows[0].evidence_sources).toHaveLength(1);
     expect(rows[0].evidence_sources[0].type).toBe('personal_note');
+  });
+
+  it('share falls back to "auto-extractor" when agentName is omitted (backwards compat)', async () => {
+    const note = await notesManager.write(AGENT, {
+      title: `${TITLE_PREFIX}-no-name`,
+      content: 'Some shared decision.',
+      tags: [],
+      priority: 'medium',
+      projectId: DEFAULT_PROJECT_ID,
+      sessionId: null,
+    });
+    const result = await notesManager.share({
+      noteId: note.id,
+      agentTokenId: AGENT,
+      category: 'decisions',
+      memoryManager: manager,
+    });
+    const { rows } = await pool.query(
+      `SELECT author FROM entries WHERE id=$1`,
+      [result.entryId],
+    );
+    expect(rows[0].author).toBe('auto-extractor');
   });
 
   it('share with high-cosine dedup + onMatch=prompt returns existing entry without writing', async () => {
