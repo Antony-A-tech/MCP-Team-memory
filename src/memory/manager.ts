@@ -205,10 +205,16 @@ export class MemoryManager {
     c: CandidateNote,
     evidence: EvidenceSource[],
     domain?: string,
-    options: { pinned?: boolean } = {},
+    options: { pinned?: boolean; author?: string } = {},
   ): Promise<string> {
     const content = `${c.fact}\n\nWhy: ${c.why}`;
     const pinned = options.pinned ?? false;
+    // Author defaults to 'auto-extractor' for the session-pipeline path, where
+    // the LLM extracted the fact from a session transcript and there's no
+    // single human to attribute it to. Manual-share via NotesManager.share
+    // passes the publishing agent's name so the audit trail shows who
+    // promoted the note to team memory.
+    const author = options.author ?? 'auto-extractor';
     const { rows } = await this.storage.getPool().query(
       `
       INSERT INTO entries (
@@ -217,7 +223,7 @@ export class MemoryManager {
         auto_generated, extraction_confidence, explicit_marker_strength,
         confirmation_count, last_confirmed_at, evidence_sources, external_refs
       ) VALUES (
-        $1, $2, $3, $4, $5, 'auto-extractor', $6,
+        $1, $2, $3, $4, $5, $11, $6,
         'medium', 'active', $10,
         true, $7, $8,
         1, NOW(), $9::jsonb, '{}'::jsonb
@@ -235,6 +241,7 @@ export class MemoryManager {
         c.explicit_marker_strength,
         JSON.stringify(evidence),
         pinned,
+        author,
       ],
     );
     const id = rows[0].id as string;
@@ -259,7 +266,7 @@ export class MemoryManager {
         entryId: id,
         projectId,
         action: 'create',
-        actor: 'auto-extractor',
+        actor: author,
         changes: { title: c.title, category: c.category, evidence: auditEvidence },
       })
       .catch(err => logger.error({ err }, 'Audit log failed for auto-create'));
@@ -287,7 +294,7 @@ export class MemoryManager {
               domain: domain ?? '',
               status,
               tags: c.tags,
-              author: 'auto-extractor',
+              author,
               pinned,
             });
           }
