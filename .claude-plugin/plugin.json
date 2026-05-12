@@ -1,6 +1,6 @@
 {
   "name": "team-memory",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "description": "Team Memory MCP — shared knowledge base for Claude Code agents with mandatory session lifecycle skills",
   "author": {
     "name": "Project Team",
