@@ -29,6 +29,16 @@ export interface ShareResult {
 export interface ShareParams {
   noteId: string;
   agentTokenId: string;
+  /**
+   * Human-readable name of the agent publishing the note. Becomes the
+   * `author` of the created entry so the audit log shows who promoted
+   * the note to team memory. Caller is responsible for resolving this
+   * from the agent token (typically via AgentTokenStore.resolveById or
+   * the request's auth context). If omitted, the entry author falls
+   * back to `'auto-extractor'` for backwards compatibility — but every
+   * production caller SHOULD provide it.
+   */
+  agentName?: string;
   category: AutoCategory;
   override?: {
     title?: string;
@@ -294,7 +304,7 @@ export class NotesManager {
       candidate,
       [evidence],
       undefined,
-      { pinned: true },
+      { pinned: true, author: p.agentName },
     );
     const linked = await this.storage.setSharedToEntry(note.id, entryId);
     if (!linked) {

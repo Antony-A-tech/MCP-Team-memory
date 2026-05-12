@@ -629,6 +629,10 @@ async function main(): Promise<void> {
       const result = await notesManager.share({
         noteId: req.params.id,
         agentTokenId,
+        // auth middleware sets req.agentName for agent-token requests; it
+        // becomes the `author` of the resulting entry so the audit trail
+        // shows who promoted the note to team memory.
+        agentName: req.agentName,
         category: category as 'architecture' | 'decisions' | 'conventions',
         override: override
           ? {
