@@ -4,6 +4,11 @@ import type { Session, SessionMessage, SessionFilters, SessionChunk } from './ty
 import type { VectorStore, VectorFilter } from '../vector/vector-store.js';
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { OllamaLlmClient } from '../llm/ollama.js';
+import type { NoteExtractor } from '../extraction/extractor.js';
+import type { DedupResolver } from '../extraction/dedup.js';
+import { NoteMerger } from '../extraction/merger.js';
+import type { MemoryManager } from '../memory/manager.js';
+import type { EvidenceSource } from '../extraction/types.js';
 import { chunkMessage } from './chunking.js';
 import logger from '../logger.js';
 
@@ -22,6 +27,12 @@ export class SessionManager {
     private vectorStore?: VectorStore,
     private embeddingProvider?: EmbeddingProvider,
     private llmClient?: OllamaLlmClient,
+    private noteExtractor?: NoteExtractor,
+    private dedupResolver?: DedupResolver,
+    private noteMerger?: NoteMerger,
+    private memoryManager?: MemoryManager,
+    private extractionEnabled: boolean = true,
+    private maxMergesPerSession: number = 3,
   ) {}
 
   /**
@@ -167,23 +178,200 @@ export class SessionManager {
         await this.storage.updateEmbeddingStatus(session.id, 'embedding');
       }
 
-      // Step 2: Embedding (summary + messages → Qdrant)
-      if (this.embeddingProvider?.isReady() && this.vectorStore) {
+      // Step 2: Embedding (summary + messages → Qdrant). Skip if the session
+      // was picked up directly in `extracting_notes` (recovery path).
+      let embeddingOk = true;
+      if (session.embeddingStatus !== 'extracting_notes') {
+        if (this.embeddingProvider?.isReady() && this.vectorStore) {
+          try {
+            await this.embedSession(session);
+            logger.info({ sessionId: session.id }, 'Session embedding complete');
+          } catch (err) {
+            embeddingOk = false;
+            await this.storage.updateEmbeddingStatus(session.id, 'failed');
+            logger.error({ err, sessionId: session.id }, 'Session embedding failed');
+          }
+        } else {
+          logger.info({ sessionId: session.id }, 'Session embedding skipped (no provider)');
+        }
+      }
+
+      if (!embeddingOk) {
+        // Already marked as 'failed' above — pipeline halts here.
+        return;
+      }
+
+      // Step 3: Extract auto-notes (v4.5). Optional — controlled by extractionEnabled
+      // and presence of all three deps (extractor, dedup, memory manager).
+      const extractionAvailable =
+        this.extractionEnabled &&
+        this.noteExtractor !== undefined &&
+        this.dedupResolver !== undefined &&
+        this.memoryManager !== undefined &&
+        session.projectId !== null;
+
+      if (extractionAvailable) {
+        await this.storage.updateEmbeddingStatus(session.id, 'extracting_notes');
         try {
-          await this.embedSession(session);
+          await this.runExtraction(session);
           await this.storage.updateEmbeddingStatus(session.id, 'complete');
-          logger.info({ sessionId: session.id }, 'Session embedding complete');
+          logger.info({ sessionId: session.id }, 'Session extraction complete');
         } catch (err) {
-          await this.storage.updateEmbeddingStatus(session.id, 'failed');
-          logger.error({ err, sessionId: session.id }, 'Session embedding failed');
+          await this.storage.updateEmbeddingStatus(session.id, 'extraction_failed');
+          logger.error({ err, sessionId: session.id }, 'Session note extraction failed');
         }
       } else {
-        // No embedding provider — mark as complete without vectors
         await this.storage.updateEmbeddingStatus(session.id, 'complete');
-        logger.info({ sessionId: session.id }, 'Session complete (no embedding provider)');
+        if (this.extractionEnabled && session.projectId === null) {
+          logger.info({ sessionId: session.id }, 'Session complete — extraction skipped (no projectId)');
+        }
       }
     } finally {
       this.processing = false;
+    }
+  }
+
+  /**
+   * Run the v4.5 auto-notes extraction step on a freshly-embedded session.
+   * Calls the extractor to produce candidate facts, the dedup resolver to
+   * decide CONFIRM/MERGE/CREATE_NEW vs existing entries, and the memory
+   * manager to persist the resulting writes. Each session has a small merge
+   * budget so a single noisy session can't trigger an unbounded LLM cost.
+   *
+   * Idempotency: if any entry in the project already references this session
+   * in its `evidence_sources`, treat the run as a retry of a previously-
+   * partially-applied extraction and skip the entire pipeline. CONFIRM/MERGE
+   * deduplicate evidence per (type,id), but CREATE_NEW would otherwise
+   * produce duplicate auto-entries on retry (the just-created row may not
+   * yet be in Qdrant, so dedup search would miss it). Skipping retries is
+   * the conservative choice: a partial extraction is preferred over duplicate
+   * records — operators can re-run via the backfill script if needed.
+   */
+  private async runExtraction(session: Session): Promise<void> {
+    if (
+      !session.projectId ||
+      !this.noteExtractor ||
+      !this.dedupResolver ||
+      !this.memoryManager
+    ) {
+      return;
+    }
+
+    if (await this.storage.hasExtractionEvidence(session.projectId, session.id)) {
+      logger.info(
+        { sessionId: session.id },
+        'extraction skipped — session already has applied evidence (retry guard)',
+      );
+      return;
+    }
+
+    const messages = await this.storage.getMessages(session.id, 0);
+    const result = await this.noteExtractor.extract({
+      summary: session.summary,
+      messages: messages.map(m => ({ role: m.role, content: m.content })),
+    });
+
+    if (result.candidates.length === 0) {
+      logger.info(
+        {
+          sessionId: session.id,
+          rejected: result.rejected.length,
+          inputChars: result.llm_input_chars,
+          outputChars: result.llm_output_chars,
+        },
+        'extraction yielded zero candidates',
+      );
+      return;
+    }
+
+    const dedup = await this.dedupResolver.resolve(session.projectId, result.candidates);
+    let mergesUsed = 0;
+    const summary = {
+      create: 0,
+      confirm: 0,
+      merge: 0,
+      fallback_confirm: 0,
+      missing: 0,
+      errors: 0,
+    };
+
+    for (const decision of dedup.decisions) {
+      const evidence: EvidenceSource = {
+        type: 'session',
+        id: session.id,
+        agent_token_id: session.agentTokenId,
+        confirmed_at: new Date().toISOString(),
+      };
+
+      try {
+        if (decision.type === 'CREATE_NEW') {
+          await this.memoryManager.createFromCandidate(
+            session.projectId,
+            decision.candidate,
+            [evidence],
+          );
+          summary.create++;
+          continue;
+        }
+
+        if (decision.type === 'CONFIRM') {
+          await this.memoryManager.confirmExisting(decision.entry_id, evidence);
+          summary.confirm++;
+          continue;
+        }
+
+        // MERGE — fall through to confirm if budget exhausted or merger missing,
+        // so we never lose the signal that the candidate matched something.
+        if (
+          !this.noteMerger ||
+          !NoteMerger.canMerge(mergesUsed, this.maxMergesPerSession)
+        ) {
+          await this.memoryManager.confirmExisting(decision.entry_id, evidence);
+          summary.fallback_confirm++;
+          continue;
+        }
+
+        const existing = await this.memoryManager.getById(decision.entry_id);
+        if (!existing) {
+          summary.missing++;
+          continue;
+        }
+
+        const merged = await this.noteMerger.merge(
+          {
+            title: existing.title,
+            content: existing.content,
+            tags: existing.tags,
+          },
+          decision.candidate,
+        );
+        await this.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
+        mergesUsed++;
+        summary.merge++;
+      } catch (err) {
+        // Per-decision errors are logged and the loop continues, but we
+        // count them so the caller can decide whether the session is
+        // actually healthy.
+        summary.errors++;
+        logger.warn(
+          { err, sessionId: session.id, decision: decision.type },
+          'extraction write failed, continuing with remaining decisions',
+        );
+      }
+    }
+
+    logger.info(
+      { sessionId: session.id, ...summary, mergesUsed },
+      'extraction applied',
+    );
+
+    // If every single decision failed, the issue is systemic (DB down, schema
+    // mismatch, ...). Surface it so the session lands in `extraction_failed`
+    // and operators get a real signal instead of a silent "complete".
+    if (dedup.decisions.length > 0 && summary.errors === dedup.decisions.length) {
+      throw new Error(
+        `extraction: all ${summary.errors} decisions failed for session ${session.id}`,
+      );
     }
   }
 

@@ -18,7 +18,6 @@ import type {
   Priority,
   Status,
   ReadParams,
-  WriteParams,
   UpdateParams,
   DeleteParams,
   SyncParams,
@@ -28,7 +27,6 @@ import type {
 } from './memory/types.js';
 import {
   ReadParamsSchema,
-  WriteParamsSchema,
   UpdateParamsSchema,
   DeleteParamsSchema,
   SyncParamsSchema,
@@ -44,25 +42,53 @@ import { exportEntries, type ExportFormat } from './export/exporter.js';
 import type { AgentTokenStore } from './auth/agent-tokens.js';
 import type { NotesManager } from './notes/manager.js';
 import type { SessionManager } from './sessions/manager.js';
-import { NoteWriteSchema, NoteReadSchema, NoteUpdateSchema, NoteDeleteSchema, NoteSearchSchema } from './notes/validation.js';
+import { NoteWriteSchema, NoteReadSchema, NoteUpdateSchema, NoteDeleteSchema, NoteSearchSchema, NoteShareSchema } from './notes/validation.js';
 import { SessionImportSchema, SessionListSchema, SessionSearchSchema, SessionReadSchema, SessionMessageSearchSchema, SessionDeleteSchema } from './sessions/validation.js';
+import type { DedupResolver } from './extraction/dedup.js';
+import type { NoteMerger } from './extraction/merger.js';
+
+export interface ExtractionDeps {
+  dedupResolver?: DedupResolver;
+  merger?: NoteMerger;
+}
+
+/**
+ * Returned to MCP clients that still call the deprecated `memory_write`.
+ * Points them at the v4.5 replacements: note_write/note_share for the
+ * intentional path, and session_import for the auto-extracted path.
+ */
+export const MEMORY_WRITE_DEPRECATED_MESSAGE =
+  '❌ memory_write устарел с v4.5. ' +
+  'Используй note_write для создания личного черновика, затем note_share для публикации в командную память ' +
+  '(с дедупликацией против существующих записей). Сессии, импортированные через session_import, автоматически извлекают атомарные факты.\n\n' +
+  'memory_write deprecated since v4.5. ' +
+  'Use note_write to create a personal draft, then note_share to publish to team memory ' +
+  '(with dedup vs existing entries). Sessions imported via session_import auto-extract atomic facts.';
 
 export function buildMcpServer(
   memoryManager: MemoryManager,
   agentTokenStore?: AgentTokenStore,
   notesManager?: NotesManager,
   sessionManager?: SessionManager,
+  extraction: ExtractionDeps = {},
 ): Server {
   const server = new Server(
     { name: 'team-memory', version: '3.0.0' },
     { capabilities: { tools: {}, resources: {}, prompts: {} } }
   );
 
-  setupHandlers(server, memoryManager, agentTokenStore, notesManager, sessionManager);
+  setupHandlers(server, memoryManager, agentTokenStore, notesManager, sessionManager, extraction);
   return server;
 }
 
-function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager, sessionManager?: SessionManager): void {
+function setupHandlers(
+  server: Server,
+  memoryManager: MemoryManager,
+  agentTokenStore?: AgentTokenStore,
+  notesManager?: NotesManager,
+  sessionManager?: SessionManager,
+  extraction: ExtractionDeps = {},
+): void {
   server.setRequestHandler(ListToolsRequestSchema, async () => {
     const tools: Tool[] = [
       {
@@ -106,31 +132,12 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
       },
       {
         name: 'memory_write',
-        description: '► КОГДА ВЫЗЫВАТЬ — ОБЯЗАТЕЛЬНО записывай после каждого значимого действия:\n• Принял архитектурное или техническое решение → category="decisions"\n• Обнаружил баг или проблему → category="issues"\n• Завершил задачу или этап работы → category="progress"\n• Создал/изменил архитектуру (новый модуль, API, схема БД) → category="architecture"\n• Начал работу над новой задачей → category="tasks"\nНЕ ЗАВЕРШАЙ сессию, не записав итоги своей работы!\n\nДобавляет новую запись в командную память. Обязательные поля: category, title, content. Пример: memory_write(category="progress", title="Реализован API авторизации", content="Добавлены эндпоинты /login, /logout. JWT с refresh-токенами.", tags=["auth", "api"])',
+        description:
+          'УСТАРЕЛО с v4.5 — используй note_write для создания личного черновика и note_share для публикации в командную память. Импорт сессий через session_import автоматически извлекает атомарные факты. / DEPRECATED since v4.5 — use note_write + note_share, or session_import for auto-extracted facts.',
         inputSchema: {
           type: 'object',
-          properties: {
-            project_id: { type: 'string', description: 'ID проекта. Если не указан — берётся из заголовка X-Project-Id.' },
-            category: {
-              type: 'string',
-              enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions'],
-              description: 'Категория записи'
-            },
-            domain: { type: 'string', description: 'Домен проекта. Получите актуальный список через memory_onboard. Стандартные: backend, frontend, infrastructure, devops, database, testing. Проект может содержать дополнительные кастомные домены.' },
-            title: { type: 'string', description: 'Заголовок записи' },
-            content: { type: 'string', description: 'Содержимое записи' },
-            tags: { type: 'array', items: { type: 'string' }, description: 'Теги для категоризации' },
-            priority: {
-              type: 'string',
-              enum: ['low', 'medium', 'high', 'critical'],
-              description: 'Приоритет записи'
-            },
-            author: { type: 'string', description: 'Автор записи' },
-            pinned: { type: 'boolean', default: false, description: 'Закрепить запись' },
-            relatedIds: { type: 'array', items: { type: 'string' }, description: 'UUID связанных записей для построения графа знаний' }
-          },
-          required: ['category', 'title', 'content']
-        }
+          properties: {},
+        },
       },
       {
         name: 'memory_update',
@@ -375,6 +382,39 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           required: ['query'],
         },
       },
+      {
+        name: 'note_share',
+        description:
+          'Опубликовать личную заметку как запись командной памяти (architecture/decisions/conventions). Выполняет dedup; если найдена похожая запись, возвращает её или подтверждает/мёрджит согласно on_match. Заметка помечается как pinned (не подвержена auto-decay).',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            note_id: { type: 'string', description: 'UUID заметки' },
+            category: {
+              type: 'string',
+              enum: ['architecture', 'decisions', 'conventions'],
+              description: 'Категория командной записи',
+            },
+            override: {
+              type: 'object',
+              description: 'Опциональные переопределения title/content/tags/external_refs',
+              properties: {
+                title: { type: 'string' },
+                content: { type: 'string' },
+                tags: { type: 'array', items: { type: 'string' } },
+                external_refs: { type: 'object' },
+              },
+            },
+            on_match: {
+              type: 'string',
+              enum: ['prompt', 'confirm_existing', 'create_new', 'merge'],
+              description:
+                'Что делать при найденном совпадении: prompt (по умолчанию — вернуть найденную запись без записи), confirm_existing (++count), merge (объединить), create_new (игнорировать совпадение).',
+            },
+          },
+          required: ['note_id', 'category'],
+        },
+      },
       // === Session Import tools ===
       {
         name: 'session_import',
@@ -557,22 +597,21 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
         }
 
         case 'memory_write': {
-          const parsed = WriteParamsSchema.safeParse(args);
-          if (!parsed.success) {
-            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
-          }
-          const { project_id, ...writeData } = parsed.data;
-          const writeProjectId = requireProjectId(project_id, 'memory_write');
-          if (typeof writeProjectId !== 'string') return writeProjectId.response;
-          // Override author if agent token was used (HTTP transport — identity from token, not params)
-          if (isAgentToken) writeData.author = callerAgent;
-          const params: WriteParams = { ...writeData, projectId: writeProjectId };
-          const entry = await memoryManager.write(params);
-          const domTxt = entry.domain ? `\n**Домен**: ${entry.domain}` : '';
-          const pinTxt = entry.pinned ? '\n📌 Закреплена' : '';
-          const relTxt = entry.relatedIds && entry.relatedIds.length > 0 ? `\n**Связи**: ${entry.relatedIds.length} записей` : '';
+          // Deprecated since v4.5 — direct memory_write is replaced by:
+          //   1) note_write to create a personal draft, then
+          //   2) note_share to publish the draft as a team-memory entry
+          //      (with optional dedup against existing entries), or
+          //   3) session_import → background auto-extraction.
+          // Returns a 410-Gone-style error so existing automations fail
+          // loudly instead of silently writing through a parallel API.
           return {
-            content: [{ type: 'text', text: `✅ Запись добавлена!\n\n**ID**: ${entry.id}\n**Заголовок**: ${entry.title}\n**Категория**: ${entry.category}${domTxt}\n**Приоритет**: ${entry.priority}${pinTxt}${relTxt}` }]
+            content: [
+              {
+                type: 'text',
+                text: MEMORY_WRITE_DEPRECATED_MESSAGE,
+              },
+            ],
+            isError: true,
           };
         }
 
@@ -939,6 +978,79 @@ function setupHandlers(server: Server, memoryManager: MemoryManager, agentTokenS
           return { content: [{ type: 'text', text: `🔍 Найдено ${results.length} заметок:\n${lines.join('\n')}` }] };
         }
 
+        case 'note_share': {
+          if (!notesManager) {
+            return { content: [{ type: 'text', text: '❌ Notes not configured' }], isError: true };
+          }
+          const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
+          if (!agentTokenId) {
+            return { content: [{ type: 'text', text: '❌ Agent token required for share' }], isError: true };
+          }
+          const parsed = NoteShareSchema.safeParse(args);
+          if (!parsed.success) {
+            return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
+          }
+          // on_match values that depend on dedup (confirm_existing, merge)
+          // can't be honoured if no resolver/merger is wired. Fail loud
+          // instead of silently falling through to create — this preserves
+          // intent across the MCP and REST surfaces.
+          const onMatch = parsed.data.on_match;
+          if (
+            (onMatch === 'confirm_existing' || onMatch === 'merge') &&
+            !extraction.dedupResolver
+          ) {
+            return {
+              content: [
+                {
+                  type: 'text',
+                  text: '❌ on_match=' + onMatch + ' requires a dedup resolver, which is not wired in this deployment.',
+                },
+              ],
+              isError: true,
+            };
+          }
+          try {
+            const result = await notesManager.share({
+              noteId: parsed.data.note_id,
+              agentTokenId,
+              category: parsed.data.category,
+              override: parsed.data.override
+                ? {
+                    title: parsed.data.override.title,
+                    content: parsed.data.override.content,
+                    tags: parsed.data.override.tags,
+                    externalRefs: parsed.data.override.external_refs,
+                  }
+                : undefined,
+              onMatch,
+              memoryManager,
+              dedupResolver: extraction.dedupResolver,
+              merger: extraction.merger,
+            });
+            const lines: string[] = [`Action: ${result.action}`];
+            if (result.entryId) lines.push(`Entry ID: ${result.entryId}`);
+            if (result.existingEntry) {
+              lines.push(
+                `Existing: ${result.existingEntry.title} (id: ${result.existingEntry.id}, score: ${result.existingEntry.score.toFixed(2)})`,
+              );
+            }
+            return { content: [{ type: 'text', text: lines.join('\n') }] };
+          } catch (err) {
+            const message = (err as Error).message ?? '';
+            // Whitelist known business errors; mask everything else so
+            // unexpected internals (DB messages, stack-derived strings)
+            // don't leak to MCP clients. Mirrors the REST endpoint contract.
+            if (message === 'Note not found or not yours') {
+              return { content: [{ type: 'text', text: '❌ Not found: note does not exist or you are not the owner' }], isError: true };
+            }
+            if (message === 'Note already shared') {
+              return { content: [{ type: 'text', text: '❌ Already shared: note is already linked to a memory entry' }], isError: true };
+            }
+            logger.error({ err, agentTokenId, noteId: parsed.data.note_id }, 'note_share failed');
+            return { content: [{ type: 'text', text: '❌ Share failed (see server logs)' }], isError: true };
+          }
+        }
+
         // === Session Import handlers ===
 
         case 'session_import': {
@@ -1144,9 +1256,15 @@ export class TeamMemoryMCPServer {
   private server: Server;
   private memoryManager: MemoryManager;
 
-  constructor(memoryManager: MemoryManager, agentTokenStore?: AgentTokenStore, notesManager?: NotesManager, sessionManager?: SessionManager) {
+  constructor(
+    memoryManager: MemoryManager,
+    agentTokenStore?: AgentTokenStore,
+    notesManager?: NotesManager,
+    sessionManager?: SessionManager,
+    extraction: ExtractionDeps = {},
+  ) {
     this.memoryManager = memoryManager;
-    this.server = buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager);
+    this.server = buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager, extraction);
   }
 
   async start(): Promise<void> {

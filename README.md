@@ -113,13 +113,45 @@ Each team member gets a personal token (`tm_...`). The author field is set autom
 | `MEMORY_AUTO_ARCHIVE` | `true` | Enable auto-archival |
 | `MEMORY_AUTO_ARCHIVE_DAYS` | `14` | Days before auto-archive |
 | `MEMORY_CORS_ORIGIN` | `*` | CORS origin for production |
+| `EXTRACT_NOTES_ENABLED` | `true` | v4.5: auto-extract entries from imported sessions |
+| `EXTRACT_LLM_PROVIDER` | `gemini` | `gemini` or `ollama` for the extraction LLM |
+| `EXTRACT_MIN_CONFIDENCE` | `0.6` | Drop candidates below this LLM confidence |
+| `EXTRACT_MIN_MARKER_STRENGTH` | `0.3` | Drop candidates without explicit "решили/decided" markers |
+| `EXTRACT_MAX_NOTES_PER_SESSION` | `5` | Cap extracted entries per session |
+| `EXTRACT_MAX_MERGES_PER_SESSION` | `3` | Cap LLM merges per session |
+| `DEDUP_CONFIRM_THRESHOLD` | `0.85` | Cosine ≥ → CONFIRM existing entry |
+| `DEDUP_MERGE_THRESHOLD` | `0.7` | Cosine in [0.7, 0.85] → MERGE |
+| `AUTO_DECAY_DAYS` | `30` | Singleton auto-record archive age |
+| `IMPORTANCE_RECOMPUTE_INTERVAL_HOURS` | `24` | Importance score batch recompute period |
+
+## Auto-notes (v4.5)
+
+Sessions imported via `session_import` are now scanned in the background for
+atomic, why-bearing facts. Each fact is dedup-checked against existing
+entries via cosine similarity:
+
+- **score > 0.85** — `CONFIRM` (increment confirmation_count, no edit)
+- **0.7 ≤ score ≤ 0.85** — `MERGE` (LLM combines into one ≤500-char fact)
+- **score < 0.7** — `CREATE_NEW` (auto_generated entry pinned to evidence)
+
+Direct `memory_write` is deprecated. Two replacement paths:
+
+1. **Manual share** — `note_write` to draft a personal note, then `note_share`
+   (or the "Расшарить" button in the Web UI) to publish it as a pinned team
+   entry. Dedup runs against existing entries; the user decides on match.
+2. **Auto-extraction** — happens automatically once `session_import` finishes
+   embedding. Use `scripts/backfill-extract-notes.cjs` to re-run extraction
+   over past sessions.
+
+See `docs/superpowers/specs/2026-04-28-auto-notes-from-sessions-design.md`
+for the full design.
 
 ## Development
 
 ```bash
 npm install
 npm run build
-npm test          # 140 tests
+npm test          # 369 tests
 ```
 
 ## Security

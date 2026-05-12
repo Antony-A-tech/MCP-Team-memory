@@ -46,3 +46,19 @@ export const NoteSearchSchema = z.object({
   session_id: UuidSchema.optional(),
   limit: z.number().int().min(1).default(10).transform(v => Math.min(v, 50)),
 });
+
+export const NoteShareSchema = z.object({
+  note_id: UuidSchema,
+  category: z.enum(['architecture', 'decisions', 'conventions']),
+  override: z
+    .object({
+      title: z.string().min(1).max(500).optional(),
+      content: z.string().min(1).max(50000).optional(),
+      tags: z.array(z.string().max(50)).max(20).optional(),
+      external_refs: z.record(z.string(), z.unknown()).optional(),
+    })
+    .optional(),
+  on_match: z
+    .enum(['prompt', 'confirm_existing', 'create_new', 'merge'])
+    .optional(),
+});

@@ -166,6 +166,17 @@ async function main(): Promise<void> {
     memoryManager.backfillEmbeddings().catch(err => logger.error({ err }, 'Embedding backfill failed'));
   }
 
+  // Shared Gemini chat client — used by both the RAG chat surface and the
+  // v4.5 auto-notes extraction pipeline. Constructing it once avoids
+  // duplicate HTTP clients, duplicate rate-limit state, and split telemetry.
+  let sharedGeminiChat: GeminiChatProvider | null = null;
+  if (config.geminiApiKey) {
+    sharedGeminiChat = new GeminiChatProvider({
+      apiKey: config.geminiApiKey,
+      model: config.geminiModel,
+    });
+  }
+
   // Personal Notes manager (optional — requires agent tokens)
   let notesManager: import('./notes/manager.js').NotesManager | undefined;
   if (agentTokenStore) {
@@ -179,6 +190,13 @@ async function main(): Promise<void> {
   // Session manager (optional — requires agent tokens)
   let sessionManager: import('./sessions/manager.js').SessionManager | undefined;
   let llmClient: import('./llm/ollama.js').OllamaLlmClient | undefined;
+  // Auto-notes extraction (v4.5)
+  let dedupResolver: import('./extraction/dedup.js').DedupResolver | undefined;
+  let merger: import('./extraction/merger.js').NoteMerger | undefined;
+  let noteExtractor: import('./extraction/extractor.js').NoteExtractor | undefined;
+  let hierarchicalRetrieval:
+    | import('./retrieval/hierarchical.js').HierarchicalRetrieval
+    | undefined;
   if (agentTokenStore) {
     // LLM client for summarization (optional — requires Ollama with LLM model)
     const { OllamaLlmClient } = await import('./llm/ollama.js');
@@ -189,9 +207,81 @@ async function main(): Promise<void> {
     const { SessionStorage } = await import('./sessions/storage.js');
     const { SessionManager } = await import('./sessions/manager.js');
     const sessionStorage = new SessionStorage(storage.getPool());
-    sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined, llmClient);
+
+    // === v4.5 Auto-notes extraction wiring ===
+    // The extractor needs an LLM provider; preference order (gemini → ollama)
+    // matches the provider config. Dedup needs both an embedding provider and
+    // a vector store. If any prerequisite is missing, the extraction step
+    // gracefully degrades — sessions still flow through the pipeline, just
+    // without auto-extraction.
+    const embeddingProvider = memoryManager.getEmbeddingProvider() ?? undefined;
+    const vectorStore = memoryManager.getVectorStore() ?? undefined;
+
+    if (config.extractNotesEnabled) {
+      const { pickExtractionProvider } = await import('./extraction/llm-provider.js');
+      const extractionLlm = pickExtractionProvider(
+        sharedGeminiChat,
+        ollamaLlm,
+        config.extractLlmProvider,
+      );
+      if (extractionLlm) {
+        const { NoteExtractor } = await import('./extraction/extractor.js');
+        noteExtractor = new NoteExtractor(extractionLlm, {
+          minConfidence: config.extractMinConfidence,
+          minMarkerStrength: config.extractMinMarkerStrength,
+          minFactLen: config.extractMinFactLen,
+          maxFactLen: config.extractMaxFactLen,
+          maxNotesPerSession: config.extractMaxNotesPerSession,
+        });
+        logger.info({ provider: extractionLlm.name }, 'NoteExtractor initialized');
+      }
+
+      if (embeddingProvider && vectorStore) {
+        const { DedupResolver } = await import('./extraction/dedup.js');
+        dedupResolver = new DedupResolver(embeddingProvider, vectorStore, {
+          confirmThreshold: config.dedupConfirmThreshold,
+          mergeThreshold: config.dedupMergeThreshold,
+        });
+        if (extractionLlm) {
+          const { NoteMerger } = await import('./extraction/merger.js');
+          merger = new NoteMerger(extractionLlm);
+        }
+        logger.info('DedupResolver + NoteMerger initialized');
+      } else {
+        logger.warn('Auto-notes dedup skipped — embedding/vector store unavailable');
+      }
+    } else {
+      logger.info('EXTRACT_NOTES_ENABLED=false — auto-notes extraction disabled');
+    }
+
+    sessionManager = new SessionManager(
+      sessionStorage,
+      vectorStore,
+      embeddingProvider,
+      llmClient,
+      noteExtractor,
+      dedupResolver,
+      merger,
+      memoryManager,
+      config.extractNotesEnabled,
+      config.extractMaxMergesPerSession,
+    );
     sessionManager.startWorker(30); // Process queued sessions every 30 sec
     logger.info('Session manager initialized with background worker');
+
+    // === v4.5 Hierarchical retrieval wiring ===
+    if (embeddingProvider && vectorStore) {
+      const { EntriesSource } = await import('./retrieval/sources/entries-source.js');
+      const { SessionsSource } = await import('./retrieval/sources/sessions-source.js');
+      const { MessagesSource } = await import('./retrieval/sources/messages-source.js');
+      const { HierarchicalRetrieval } = await import('./retrieval/hierarchical.js');
+      hierarchicalRetrieval = new HierarchicalRetrieval([
+        new EntriesSource(embeddingProvider, vectorStore, storage),
+        new SessionsSource(embeddingProvider, vectorStore, sessionStorage),
+        new MessagesSource(embeddingProvider, vectorStore, sessionStorage),
+      ]);
+      logger.info('HierarchicalRetrieval initialized with 3 sources');
+    }
   }
 
   // Chat persistence (always enabled)
@@ -199,14 +289,10 @@ async function main(): Promise<void> {
   const chatManager = new ChatManager(chatStorage);
 
   // RAG (optional — requires GEMINI_API_KEY)
-  let chatProvider: GeminiChatProvider | null = null;
+  const chatProvider: GeminiChatProvider | null = sharedGeminiChat;
   let ragAgentFactory: ((projectId: string, agentTokenId: string) => RagAgent) | null = null;
   let titleGenerator: TitleGenerator | null = null;
-  if (config.geminiApiKey) {
-    chatProvider = new GeminiChatProvider({
-      apiKey: config.geminiApiKey,
-      model: config.geminiModel,
-    });
+  if (chatProvider) {
     ragAgentFactory = (projectId, agentTokenId) => {
       const adapter = new McpToolAdapter(
         { memoryManager, notesManager: notesManager!, sessionManager: sessionManager! },
@@ -217,6 +303,7 @@ async function main(): Promise<void> {
         adapter,
         chatManager,
         maxIterations: config.ragMaxIterations,
+        retrieval: hierarchicalRetrieval,
       });
     };
     titleGenerator = new TitleGenerator(chatProvider, chatManager);
@@ -461,16 +548,147 @@ async function main(): Promise<void> {
     }
   });
 
-  // Mount MCP transport (after all optional managers are created)
-  mountMcpTransport(app, () => buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager));
+  // POST /api/notes/:id/share — publish a personal note as a team-memory entry.
+  // Optional `dedup_resolver` + `merger` plumbing is wired in Task 24; the
+  // route works without them too (creates a new pinned auto-entry directly).
+  app.post('/api/notes/:id/share', async (req, res) => {
+    // Auth check FIRST so unauthenticated probes can't distinguish
+    // "notes feature disabled" (the 404 below) from "notes on, missing token".
+    const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    if (!agentTokenId) {
+      res.status(401).json({ success: false, error: 'Agent token required' });
+      return;
+    }
+    if (!notesManager) {
+      res.status(404).json({ success: false, error: 'Notes not configured' });
+      return;
+    }
 
-  // Auto-archive
+    const { category, override, on_match: onMatch } = req.body ?? {};
+    if (
+      typeof category !== 'string' ||
+      !['architecture', 'decisions', 'conventions'].includes(category)
+    ) {
+      res.status(400).json({
+        success: false,
+        error: 'category must be one of: architecture, decisions, conventions',
+      });
+      return;
+    }
+    if (onMatch !== undefined) {
+      if (
+        typeof onMatch !== 'string' ||
+        !['prompt', 'confirm_existing', 'create_new', 'merge'].includes(onMatch)
+      ) {
+        res.status(400).json({
+          success: false,
+          error: 'on_match must be one of: prompt, confirm_existing, create_new, merge',
+        });
+        return;
+      }
+      // Mirror the MCP contract: on_match values that depend on dedup
+      // (confirm_existing, merge) cannot be honoured without a resolver
+      // wired in. Fail loud instead of silently falling through to
+      // create_new — the user explicitly asked for dedup behaviour.
+      if (
+        (onMatch === 'confirm_existing' || onMatch === 'merge') &&
+        !dedupResolver
+      ) {
+        res.status(400).json({
+          success: false,
+          error: `on_match=${onMatch} requires a dedup resolver, which is not wired in this deployment`,
+        });
+        return;
+      }
+    }
+    if (override !== undefined) {
+      if (typeof override !== 'object' || override === null || Array.isArray(override)) {
+        res.status(400).json({ success: false, error: 'override must be an object' });
+        return;
+      }
+      if (override.title !== undefined && typeof override.title !== 'string') {
+        res.status(400).json({ success: false, error: 'override.title must be a string' });
+        return;
+      }
+      if (override.content !== undefined && typeof override.content !== 'string') {
+        res.status(400).json({ success: false, error: 'override.content must be a string' });
+        return;
+      }
+      if (
+        override.tags !== undefined &&
+        (!Array.isArray(override.tags) || override.tags.some((t: unknown) => typeof t !== 'string'))
+      ) {
+        res
+          .status(400)
+          .json({ success: false, error: 'override.tags must be an array of strings' });
+        return;
+      }
+    }
+
+    try {
+      const result = await notesManager.share({
+        noteId: req.params.id,
+        agentTokenId,
+        category: category as 'architecture' | 'decisions' | 'conventions',
+        override: override
+          ? {
+              title: override.title,
+              content: override.content,
+              tags: override.tags,
+              externalRefs: override.external_refs ?? override.externalRefs,
+            }
+          : undefined,
+        onMatch,
+        memoryManager,
+        dedupResolver,
+        merger,
+      });
+      res.json({ success: true, ...result });
+    } catch (err) {
+      const message = (err as Error).message ?? 'Share failed';
+      // Whitelist the two known business errors from NotesManager.share. Don't
+      // forward arbitrary error text to the client — it could leak internals.
+      if (message === 'Note not found or not yours') {
+        res.status(404).json({ success: false, error: message });
+        return;
+      }
+      if (message === 'Note already shared') {
+        res.status(409).json({ success: false, error: message });
+        return;
+      }
+      logger.error(
+        { err, agentTokenId, noteId: req.params.id },
+        'POST /api/notes/:id/share failed',
+      );
+      res.status(500).json({ success: false, error: 'Share failed' });
+    }
+  });
+
+  // Mount MCP transport (after all optional managers are created)
+  mountMcpTransport(app, () =>
+    buildMcpServer(memoryManager, agentTokenStore, notesManager, sessionManager, {
+      dedupResolver,
+      merger,
+    }),
+  );
+
+  // Auto-archive (legacy time-based / score-based archival)
   if (config.autoArchiveEnabled) {
     const decayConfig = config.decayThreshold !== undefined
       ? { threshold: config.decayThreshold, decayDays: config.decayDays, weights: config.decayWeights }
       : undefined;
     memoryManager.startAutoArchive(config.autoArchiveDays, undefined, decayConfig);
   }
+
+  // v4.5 singleton-auto-decay — runs independently of legacy auto-archive
+  // so operators who disable the time-based archival still benefit from
+  // the auto-notes decay rule for low-evidence singletons.
+  if (config.extractNotesEnabled) {
+    memoryManager.startSingletonAutoDecay();
+  }
+
+  // Importance score batch recompute job (runs once at boot, then every N hours)
+  memoryManager.startImportanceRecomputeJob(config.importanceRecomputeIntervalHours);
 
   // Start listening
   server.listen(config.port, '0.0.0.0', () => {

@@ -4,6 +4,32 @@ import { AuditLogger } from '../storage/audit.js';
 import { VersionManager } from '../storage/versioning.js';
 import { DEFAULT_PROJECT_ID } from './types.js';
 import logger from '../logger.js';
+import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
+import { archiveSingletonAutoEntries } from './decay.js';
+import type { EvidenceSource, CandidateNote } from '../extraction/types.js';
+
+/**
+ * Strip identifying fields from EvidenceSource entries before sending them to
+ * any caller that is not the owning agent. Currently this only removes the
+ * `id` of `personal_note` sources, since exposing it would let other agents
+ * resolve the underlying private note via personal_notes joins. Other source
+ * types (session, pr, wiki, ...) are public references — left as-is.
+ *
+ * Pure function, exported for unit testing and reuse from MCP/REST layers.
+ */
+export function sanitizeEvidenceSourcesForPublic(
+  sources?: EvidenceSource[]
+): EvidenceSource[] {
+  if (!sources || sources.length === 0) return [];
+  return sources.map(s => {
+    if (s.type === 'personal_note') {
+      // Drop the note id; keep type/shared_by/confirmed_at/agent_token_id.
+      const { id: _id, ...rest } = s;
+      return rest as EvidenceSource;
+    }
+    return s;
+  });
+}
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
 import type {
@@ -34,6 +60,8 @@ export class MemoryManager {
   private vectorStore: VectorStore | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
+  private singletonDecayInterval: NodeJS.Timeout | null = null;
+  private importanceJobInterval: NodeJS.Timeout | null = null;
 
   constructor(storage: PgStorage, auditLogger?: AuditLogger, versionManager?: VersionManager) {
     this.storage = storage;
@@ -55,6 +83,7 @@ export class MemoryManager {
   }
 
   async close(): Promise<void> {
+    this.stopImportanceRecomputeJob();
     this.stopAutoArchive();
     await this.embeddingProvider?.close?.();
     await this.vectorStore?.close();
@@ -139,6 +168,329 @@ export class MemoryManager {
     return this.storage.countEntriesByDomain(pid, slug);
   }
 
+  // === Importance Score ===
+
+  private async recomputeImportanceScore(entryId: string): Promise<number> {
+    const { rows } = await this.storage.getPool().query(`
+      SELECT confirmation_count, last_confirmed_at, explicit_marker_strength, evidence_sources
+      FROM entries WHERE id = $1
+    `, [entryId]);
+    if (rows.length === 0) return 0.5;
+    const r = rows[0];
+    const score = computeImportanceScore({
+      confirmationCount: r.confirmation_count,
+      lastConfirmedAt: r.last_confirmed_at?.toISOString?.() ?? r.last_confirmed_at ?? null,
+      explicitMarkerStrength: r.explicit_marker_strength,
+      uniqueAuthors: uniqueAuthorsFromEvidence(r.evidence_sources ?? []),
+    });
+    await this.storage.getPool().query(
+      `UPDATE entries SET importance_score = $1 WHERE id = $2`,
+      [score, entryId],
+    );
+    return score;
+  }
+
+  // === Auto-extraction writes ===
+
+  /**
+   * Insert a new entry from an LLM-extracted candidate. Used by the session
+   * pipeline when DedupResolver returns CREATE_NEW. Sets `auto_generated=true`,
+   * `confirmation_count=1`, and seeds `evidence_sources` from the supplied list.
+   * Recomputes importance score and (best-effort) emits a Qdrant upsert.
+   *
+   * Returns the new entry ID.
+   */
+  async createFromCandidate(
+    projectId: string,
+    c: CandidateNote,
+    evidence: EvidenceSource[],
+    domain?: string,
+    options: { pinned?: boolean } = {},
+  ): Promise<string> {
+    const content = `${c.fact}\n\nWhy: ${c.why}`;
+    const pinned = options.pinned ?? false;
+    const { rows } = await this.storage.getPool().query(
+      `
+      INSERT INTO entries (
+        project_id, category, domain, title, content, author, tags,
+        priority, status, pinned,
+        auto_generated, extraction_confidence, explicit_marker_strength,
+        confirmation_count, last_confirmed_at, evidence_sources, external_refs
+      ) VALUES (
+        $1, $2, $3, $4, $5, 'auto-extractor', $6,
+        'medium', 'active', $10,
+        true, $7, $8,
+        1, NOW(), $9::jsonb, '{}'::jsonb
+      )
+      RETURNING id, status
+      `,
+      [
+        projectId,
+        c.category,
+        domain ?? null,
+        c.title,
+        content,
+        c.tags,
+        c.confidence,
+        c.explicit_marker_strength,
+        JSON.stringify(evidence),
+        pinned,
+      ],
+    );
+    const id = rows[0].id as string;
+    const status = rows[0].status as string;
+
+    try {
+      await this.recomputeImportanceScore(id);
+    } catch (err) {
+      logger.warn({ err, id }, 'Importance score recompute failed for new auto-entry');
+    }
+
+    // Audit + realtime parity with write() — auto-extracted entries should be
+    // observable in the audit log and on WebSocket subscribers. Strip
+    // personal_note IDs from the recorded evidence: the audit log is read
+    // back via the memory_audit MCP tool and exposed to anyone with read
+    // access, so it has the same disclosure boundary as memory_read.
+    const auditEvidence = evidence.map(e =>
+      e.type === 'personal_note' ? 'personal_note' : `${e.type}:${e.id}`,
+    );
+    this.auditLogger
+      ?.log({
+        entryId: id,
+        projectId,
+        action: 'create',
+        actor: 'auto-extractor',
+        changes: { title: c.title, category: c.category, evidence: auditEvidence },
+      })
+      .catch(err => logger.error({ err }, 'Audit log failed for auto-create'));
+
+    // Look up the freshly inserted row so emit() carries the same shape as
+    // write()'s emission, with importance_score and timestamps populated.
+    if (this.listeners.size > 0) {
+      this.storage
+        .getById(id)
+        .then(created => {
+          if (created) this.emit('memory:created', created);
+        })
+        .catch(err => logger.warn({ err, id }, 'memory:created emit lookup failed'));
+    }
+
+    if (this.embeddingProvider?.isReady()) {
+      this.embeddingProvider
+        .embed(`${c.title} ${content}`, 'document')
+        .then(async vec => {
+          if (this.vectorStore) {
+            await this.vectorStore.upsert('entries', id, vec, {
+              entry_id: id,
+              project_id: projectId,
+              category: c.category,
+              domain: domain ?? '',
+              status,
+              tags: c.tags,
+              author: 'auto-extractor',
+              pinned,
+            });
+          }
+          await this.storage.saveEmbedding(id, vec);
+        })
+        .catch(err => logger.warn({ err, id }, 'failed to embed new auto-entry'));
+    }
+    return id;
+  }
+
+  /**
+   * Increment confirmation_count and append the new evidence source. Used by
+   * the session pipeline when DedupResolver returns CONFIRM (cosine > 0.85).
+   */
+  async confirmExisting(entryId: string, evidence: EvidenceSource): Promise<void> {
+    // Idempotency: if an evidence source with the same (type, id) already
+    // exists on the entry, do NOT increment confirmation_count or append.
+    // This protects against the session-pipeline retry path: a worker that
+    // crashes mid-extraction will re-run the whole list when picked up
+    // again, and the freshly-CREATEd entries would otherwise get falsely
+    // confirmed by the same session ID on the second pass.
+    const { rowCount } = await this.storage.getPool().query(
+      `
+      UPDATE entries
+      SET confirmation_count = confirmation_count + 1,
+          last_confirmed_at = NOW(),
+          evidence_sources = evidence_sources || $1::jsonb,
+          updated_at = NOW()
+      WHERE id = $2
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(evidence_sources) es
+          WHERE es->>'type' = $3 AND es->>'id' = $4
+        )
+      `,
+      [JSON.stringify([evidence]), entryId, evidence.type, evidence.id],
+    );
+    if (rowCount === 0) {
+      // Either the row is gone, or this evidence is already attached. Tell
+      // the row apart from the duplicate-evidence case.
+      const { rows } = await this.storage.getPool().query(
+        `SELECT 1 FROM entries WHERE id = $1`,
+        [entryId],
+      );
+      if (rows.length === 0) {
+        throw new Error(`confirmExisting: entry ${entryId} not found`);
+      }
+      // Duplicate evidence — silent no-op is correct here.
+      return;
+    }
+    try {
+      await this.recomputeImportanceScore(entryId);
+    } catch (err) {
+      logger.warn({ err, entryId }, 'Importance score recompute failed on confirm');
+    }
+
+    this.auditLogger
+      ?.log({
+        entryId,
+        projectId: '',
+        action: 'update',
+        actor: 'auto-extractor',
+        changes: {
+          confirmation:
+            evidence.type === 'personal_note'
+              ? '+1 from personal_note'
+              : `+1 from ${evidence.type}:${evidence.id}`,
+        },
+      })
+      .catch(err => logger.error({ err }, 'Audit log failed for auto-confirm'));
+
+    if (this.listeners.size > 0) {
+      this.storage
+        .getById(entryId)
+        .then(updated => {
+          if (updated) this.emit('memory:updated', updated);
+        })
+        .catch(err => logger.warn({ err, entryId }, 'memory:updated emit lookup failed'));
+    }
+  }
+
+  /**
+   * Replace title/content/tags with the merged result, increment count, and
+   * append evidence. Used by the session pipeline when DedupResolver returns
+   * MERGE (0.70 ≤ cosine ≤ 0.85) and NoteMerger has produced an atomic merge.
+   * Re-embeds the entry into Qdrant best-effort.
+   */
+  async mergeIntoExisting(
+    entryId: string,
+    merged: { title: string; fact: string; why: string; tags: string[] },
+    evidence: EvidenceSource,
+  ): Promise<void> {
+    const content = `${merged.fact}\n\nWhy: ${merged.why}`;
+    // Same idempotency rule as confirmExisting: don't double-apply the same
+    // evidence source on a retry of a partially-failed extraction.
+    const { rows, rowCount } = await this.storage.getPool().query(
+      `
+      UPDATE entries
+      SET title = $1, content = $2, tags = $3,
+          confirmation_count = confirmation_count + 1,
+          last_confirmed_at = NOW(),
+          evidence_sources = evidence_sources || $4::jsonb,
+          updated_at = NOW()
+      WHERE id = $5
+        AND NOT EXISTS (
+          SELECT 1 FROM jsonb_array_elements(evidence_sources) es
+          WHERE es->>'type' = $6 AND es->>'id' = $7
+        )
+      RETURNING project_id, category, domain, status, author
+      `,
+      [
+        merged.title,
+        content,
+        merged.tags,
+        JSON.stringify([evidence]),
+        entryId,
+        evidence.type,
+        evidence.id,
+      ],
+    );
+    if (rowCount === 0) {
+      const { rows: probe } = await this.storage.getPool().query(
+        `SELECT 1 FROM entries WHERE id = $1`,
+        [entryId],
+      );
+      if (probe.length === 0) {
+        throw new Error(`mergeIntoExisting: entry ${entryId} not found`);
+      }
+      // Duplicate evidence — already merged from the same source. No-op.
+      return;
+    }
+    const meta = rows[0] as {
+      project_id: string;
+      category: string;
+      domain: string | null;
+      status: string;
+      author: string;
+    };
+
+    try {
+      await this.recomputeImportanceScore(entryId);
+    } catch (err) {
+      logger.warn({ err, entryId }, 'Importance score recompute failed on merge');
+    }
+
+    this.auditLogger
+      ?.log({
+        entryId,
+        projectId: meta.project_id,
+        action: 'update',
+        actor: 'auto-extractor',
+        changes: {
+          merge_from:
+            evidence.type === 'personal_note'
+              ? 'personal_note'
+              : `${evidence.type}:${evidence.id}`,
+          title: merged.title,
+        },
+      })
+      .catch(err => logger.error({ err }, 'Audit log failed for auto-merge'));
+
+    if (this.listeners.size > 0) {
+      this.storage
+        .getById(entryId)
+        .then(updated => {
+          if (updated) this.emit('memory:updated', updated);
+        })
+        .catch(err => logger.warn({ err, entryId }, 'memory:updated emit lookup failed'));
+    }
+
+    if (this.embeddingProvider?.isReady()) {
+      this.embeddingProvider
+        .embed(`${merged.title} ${content}`, 'document')
+        .then(async vec => {
+          if (this.vectorStore) {
+            // Qdrant `upsert` REPLACES the payload, not merges it. Restore the
+            // full filter set (entry_id/project_id/category/domain/status/author)
+            // so subsequent qdrantHybridSearch can still resolve hits to entries.
+            await this.vectorStore.upsert('entries', entryId, vec, {
+              entry_id: entryId,
+              project_id: meta.project_id,
+              category: meta.category,
+              domain: meta.domain ?? '',
+              status: meta.status,
+              tags: merged.tags,
+              author: meta.author,
+            });
+          }
+          await this.storage.saveEmbedding(entryId, vec);
+        })
+        .catch(err => logger.warn({ err, entryId }, 'failed to re-embed merged entry'));
+    }
+  }
+
+  /** Public lookup used by the sessions pipeline before invoking the merger. */
+  async getById(id: string): Promise<MemoryEntry | undefined> {
+    const entry = await this.storage.getById(id);
+    if (!entry) return undefined;
+    return {
+      ...entry,
+      evidenceSources: sanitizeEvidenceSourcesForPublic(entry.evidenceSources),
+    };
+  }
+
   // === Entries ===
 
   async read(params: ReadParams): Promise<MemoryEntry[] | CompactMemoryEntry[]> {
@@ -147,7 +499,7 @@ export class MemoryManager {
 
     // Branch 1: batch fetch by IDs → always full
     if (ids && ids.length > 0) {
-      return this.storage.getByIds(projectId, ids);
+      return this.sanitizeFullEntries(await this.storage.getByIds(projectId, ids));
     }
 
     const cat = category === 'all' ? undefined : category;
@@ -158,7 +510,10 @@ export class MemoryManager {
       // Try Qdrant vector search first (when available)
       if (this.embeddingProvider?.isReady() && this.vectorStore) {
         try {
-          return await this.qdrantHybridSearch(projectId, search, filters, isCompact);
+          const result = await this.qdrantHybridSearch(projectId, search, filters, isCompact);
+          return isCompact
+            ? (result as CompactMemoryEntry[])
+            : this.sanitizeFullEntries(result as MemoryEntry[]);
         } catch (err) {
           logger.warn({ err }, 'Qdrant hybrid search failed, falling back');
         }
@@ -170,7 +525,9 @@ export class MemoryManager {
           if (isCompact) {
             return this.storage.hybridSearch(projectId, search, queryEmbedding, { ...filters, compact: true as const });
           }
-          return this.storage.hybridSearch(projectId, search, queryEmbedding, filters);
+          return this.sanitizeFullEntries(
+            await this.storage.hybridSearch(projectId, search, queryEmbedding, filters)
+          );
         } catch (err) {
           logger.warn({ err }, 'pgvector hybrid search failed, falling back to FTS');
         }
@@ -179,13 +536,25 @@ export class MemoryManager {
       if (isCompact) {
         return this.storage.search(projectId, search, { ...filters, compact: true as const });
       }
-      return this.storage.search(projectId, search, filters);
+      return this.sanitizeFullEntries(await this.storage.search(projectId, search, filters));
     }
 
     if (isCompact) {
       return this.storage.getAll(projectId, { ...filters, compact: true as const });
     }
-    return this.storage.getAll(projectId, filters);
+    return this.sanitizeFullEntries(await this.storage.getAll(projectId, filters));
+  }
+
+  /**
+   * Apply the public-evidence sanitizer (`sanitizeEvidenceSourcesForPublic`) to
+   * each entry returned by storage. Used by `read()` and `getById()` so the
+   * MCP/REST surface never leaks personal_note IDs of other agents.
+   */
+  private sanitizeFullEntries(entries: MemoryEntry[]): MemoryEntry[] {
+    return entries.map(entry => ({
+      ...entry,
+      evidenceSources: sanitizeEvidenceSourcesForPublic(entry.evidenceSources),
+    }));
   }
 
   /** Qdrant-based hybrid search: FTS from PG + vector from Qdrant, merged */
@@ -287,6 +656,14 @@ export class MemoryManager {
     };
 
     const created = await this.storage.add(entry);
+
+    // Recompute and persist importance score after insert
+    try {
+      created.importanceScore = await this.recomputeImportanceScore(created.id);
+    } catch (err) {
+      logger.warn({ err, entryId: created.id }, 'Importance score recompute failed on write');
+    }
+
     this.emit('memory:created', created);
     this.auditLogger?.log({
       entryId: created.id,
@@ -346,6 +723,13 @@ export class MemoryManager {
     const updated = result as MemoryEntry | undefined;
 
     if (updated) {
+      // Recompute and persist importance score after update
+      try {
+        updated.importanceScore = await this.recomputeImportanceScore(updated.id);
+      } catch (err) {
+        logger.warn({ err, entryId: updated.id }, 'Importance score recompute failed on update');
+      }
+
       // Save version snapshot only AFTER successful update
       if (this.versionManager && preUpdateEntry) {
         await this.versionManager.saveVersion(preUpdateEntry).catch(err =>
@@ -397,7 +781,10 @@ export class MemoryManager {
           .catch(err => logger.warn({ err, entryId: updated.id }, 'Failed to update Qdrant payload'));
       }
 
-      return updated;
+      return {
+        ...updated,
+        evidenceSources: sanitizeEvidenceSourcesForPublic(updated.evidenceSources),
+      };
     }
 
     return null;
@@ -707,7 +1094,7 @@ export class MemoryManager {
     const lastUpdated = await this.storage.getLastUpdated(projectId);
 
     return {
-      entries,
+      entries: this.sanitizeFullEntries(entries),
       lastUpdated,
       totalChanges: entries.length
     };
@@ -796,10 +1183,15 @@ export class MemoryManager {
     excludeProjectId?: string;
     limit?: number;
   }): Promise<(MemoryEntry & { projectName: string })[]> {
-    return this.storage.searchAcrossProjects(query, {
+    const results = await this.storage.searchAcrossProjects(query, {
       ...filters,
       status: 'active',
     });
+    // Sanitize evidence_sources before returning to other agents.
+    return results.map(r => ({
+      ...r,
+      evidenceSources: sanitizeEvidenceSourcesForPublic(r.evidenceSources),
+    }));
   }
 
   // === Onboarding ===
@@ -944,7 +1336,7 @@ export class MemoryManager {
   async getRecent(projectId?: string, hours = 24): Promise<MemoryEntry[]> {
     const pid = projectId || DEFAULT_PROJECT_ID;
     const since = new Date(Date.now() - hours * 60 * 60 * 1000).toISOString();
-    return this.storage.getChangesSince(pid, since);
+    return this.sanitizeFullEntries(await this.storage.getChangesSince(pid, since));
   }
 
   // === Auto-archive ===
@@ -1002,5 +1394,74 @@ export class MemoryManager {
       clearInterval(this.autoArchiveInterval);
       this.autoArchiveInterval = null;
     }
+  }
+
+  /**
+   * Start the v4.5 singleton-auto-decay job. Independent from
+   * `startAutoArchive` so deployments that disable the legacy time-based
+   * archival still get the auto-notes decay rule applied. Validates
+   * AUTO_DECAY_DAYS once at start; re-reads on each tick is unnecessary.
+   */
+  startSingletonAutoDecay(checkIntervalMs: number = 24 * 60 * 60 * 1000): void {
+    if (this.singletonDecayInterval) clearInterval(this.singletonDecayInterval);
+
+    const raw = parseInt(process.env.AUTO_DECAY_DAYS ?? '30', 10);
+    const decayDays = Number.isFinite(raw) && raw > 0 ? raw : 30;
+    if (decayDays !== raw && process.env.AUTO_DECAY_DAYS !== undefined) {
+      logger.warn(
+        { provided: process.env.AUTO_DECAY_DAYS, fallback: 30 },
+        'AUTO_DECAY_DAYS is invalid, falling back to 30',
+      );
+    }
+
+    const tick = async (): Promise<void> => {
+      try {
+        const ids = await archiveSingletonAutoEntries(this.storage.getPool(), decayDays);
+        if (ids.length > 0) {
+          logger.info({ count: ids.length, decayDays }, 'singleton auto-entries archived');
+        }
+      } catch (err) {
+        logger.error({ err }, 'singleton auto-decay failed');
+      }
+    };
+
+    tick().catch(err => logger.error({ err }, 'Initial singleton decay failed'));
+    this.singletonDecayInterval = setInterval(tick, checkIntervalMs);
+    logger.info({ decayDays, intervalHours: checkIntervalMs / 3600_000 }, 'Singleton auto-decay enabled');
+  }
+
+  stopSingletonAutoDecay(): void {
+    if (this.singletonDecayInterval) {
+      clearInterval(this.singletonDecayInterval);
+      this.singletonDecayInterval = null;
+    }
+  }
+
+  // === Importance Score Batch Recompute Job ===
+
+  startImportanceRecomputeJob(intervalHours: number = 24): void {
+    if (this.importanceJobInterval) return;
+    const tick = async () => {
+      const start = Date.now();
+      const { rowCount } = await this.storage.getPool().query(`
+        UPDATE entries SET importance_score =
+          0.4 * LEAST(confirmation_count::float / 5.0, 1.0)
+        + 0.3 * EXP(-EXTRACT(EPOCH FROM NOW() - COALESCE(last_confirmed_at, NOW())) / (60.0 * 86400.0))
+        + 0.2 * COALESCE(explicit_marker_strength, 0.5)
+        + 0.1 * LEAST(
+            (SELECT COUNT(DISTINCT COALESCE(es->>'agent_token_id', es->>'shared_by'))::float / 3.0
+             FROM jsonb_array_elements(evidence_sources) es),
+            1.0
+          )
+        WHERE status = 'active'
+      `);
+      logger.info({ rowCount, ms: Date.now() - start }, 'importance score batch recomputed');
+    };
+    this.importanceJobInterval = setInterval(() => { tick().catch(err => logger.error({ err }, 'importance job error')); }, intervalHours * 3600_000);
+    tick().catch(err => logger.error({ err }, 'importance job initial run error'));
+  }
+
+  stopImportanceRecomputeJob(): void {
+    if (this.importanceJobInterval) { clearInterval(this.importanceJobInterval); this.importanceJobInterval = null; }
   }
 }
