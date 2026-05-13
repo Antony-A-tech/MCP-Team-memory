@@ -35,11 +35,37 @@ export const DEFAULT_DOMAINS: string[] = [
 export type ProjectRole = 'developer' | 'qa' | 'lead' | 'devops';
 export const PROJECT_ROLES: ProjectRole[] = ['developer', 'qa', 'lead', 'devops'];
 
-export const ROLE_PRIORITIES: Record<ProjectRole, { categories: Category[]; domains: string[]; boost: number }> = {
-  developer: { categories: ['architecture', 'decisions', 'conventions'], domains: ['backend', 'frontend', 'database'], boost: 1.5 },
-  qa:        { categories: ['issues', 'tasks', 'conventions'], domains: ['testing'], boost: 1.5 },
-  lead:      { categories: ['progress', 'tasks', 'decisions'], domains: [], boost: 1.3 },
-  devops:    { categories: ['architecture', 'tasks'], domains: ['infrastructure', 'devops'], boost: 1.5 },
+/**
+ * Role-aware recall biasing — v5 model.
+ * Categories collapsed into 'knowledge'; old kind names now live in tags.
+ * Both 'categories' (kept for back-compat with persisted role configs) and
+ * 'tags' are checked: a role gets the boost if EITHER matches.
+ */
+export const ROLE_PRIORITIES: Record<ProjectRole, { categories: Category[]; tags: string[]; domains: string[]; boost: number }> = {
+  developer: {
+    categories: ['knowledge', 'profile'],
+    tags: ['architecture', 'decision', 'convention'],
+    domains: ['backend', 'frontend', 'database'],
+    boost: 1.5,
+  },
+  qa: {
+    categories: ['knowledge'],
+    tags: ['convention', 'incident', 'testing'],
+    domains: ['testing'],
+    boost: 1.5,
+  },
+  lead: {
+    categories: ['knowledge', 'profile'],
+    tags: ['decision', 'milestone', 'release'],
+    domains: [],
+    boost: 1.3,
+  },
+  devops: {
+    categories: ['knowledge'],
+    tags: ['deploy', 'incident', 'infrastructure'],
+    domains: ['infrastructure', 'devops'],
+    boost: 1.5,
+  },
 };
 
 export const ROLE_INFO: Record<ProjectRole, { name: string; nameEn: string; icon: string }> = {
