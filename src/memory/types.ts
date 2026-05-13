@@ -1,12 +1,13 @@
 // Категории памяти
 export type Category =
-  | 'architecture'  // Архитектурные решения
+  | 'architecture'  // Архитектурные решения (DEPRECATED v5 — read-only, collapsed into 'knowledge' by mig-022)
   | 'tasks'         // Текущие задачи (DEPRECATED v4.5)
-  | 'decisions'     // Принятые решения
+  | 'decisions'     // Принятые решения (DEPRECATED v5)
   | 'issues'        // Известные проблемы (DEPRECATED v4.5)
   | 'progress'      // Прогресс разработки (DEPRECATED v4.5)
-  | 'conventions'   // Конвенции проекта
-  | 'profile';      // Эталонный профиль проекта (one per project, v5)
+  | 'conventions'   // Конвенции проекта (DEPRECATED v5)
+  | 'profile'       // Эталонный профиль проекта (one per project, v5)
+  | 'knowledge';    // Объединённая категория для architecture/decisions/conventions (v5)
 
 // Приоритеты
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
@@ -293,6 +294,11 @@ export const CATEGORY_INFO: Record<Category, { name: string; description: string
     name: 'Профиль',
     description: 'Эталонная запись «как погрузиться в проект» — всегда показывается агенту первой',
     icon: '🗺️'
+  },
+  knowledge: {
+    name: 'Знания',
+    description: 'WHY-факты: архитектурные решения, паттерны, конвенции — объединённая категория (v5)',
+    icon: '📚'
   }
 };
 

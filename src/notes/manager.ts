@@ -39,7 +39,13 @@ export interface ShareParams {
    * production caller SHOULD provide it.
    */
   agentName?: string;
-  category: AutoCategory;
+  /**
+   * Target category. In v5 only 'knowledge' is written to the table, but for
+   * backward compatibility callers may still pass legacy category names
+   * ('architecture' | 'decisions' | 'conventions'); they are translated into
+   * category='knowledge' plus the corresponding kind tag.
+   */
+  category: AutoCategory | 'architecture' | 'decisions' | 'conventions';
   override?: {
     title?: string;
     content?: string;
@@ -208,10 +214,21 @@ export class NotesManager {
 
     const title = p.override?.title ?? note.title;
     const content = p.override?.content ?? note.content;
-    const tags = p.override?.tags ?? note.tags;
+    const baseTags = p.override?.tags ?? note.tags;
+
+    // v5: collapse legacy categories into 'knowledge' + kind tag.
+    const legacyToKind: Record<string, string | undefined> = {
+      architecture: 'architecture',
+      decisions: 'decision',
+      conventions: 'convention',
+    };
+    const kindTag = legacyToKind[p.category as string];
+    const tags = kindTag && !baseTags.includes(kindTag)
+      ? [kindTag, ...baseTags]
+      : baseTags;
 
     const candidate: CandidateNote = {
-      category: p.category,
+      category: 'knowledge',
       title,
       // The extraction pipeline expects "fact" + "why"; for a manual share
       // we use the note's content as the fact and a flag value for why.

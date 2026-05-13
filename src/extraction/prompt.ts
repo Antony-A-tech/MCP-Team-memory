@@ -60,10 +60,12 @@ export function buildExtractionPrompt(input: BuildExtractionPromptInput): string
   return `You analyze a development session and extract ONLY atomic facts
 worth preserving as long-term team knowledge.
 
-Categories you may extract into (output keys):
-- "architecture": system invariants, contracts, structural patterns
-- "decisions":    explicit "why X, not Y" choices the team committed to
-- "conventions":  rules, standards, agreed-upon practices
+Output schema: a single JSON object with one key "knowledge" whose value
+is an array of facts. Each fact MUST include exactly one kind tag in its
+"tags" array, one of:
+  - "architecture" — system invariants, contracts, structural patterns
+  - "decision"     — explicit "why X, not Y" choices the team committed to
+  - "convention"   — rules, standards, agreed-upon practices
 
 Each fact MUST satisfy:
 - Atomic: one statement, not a paragraph of multiple ideas.
@@ -76,17 +78,17 @@ For each fact provide:
 - "title": short identifier (5-10 words), language: ${lang}
 - "fact": the WHY statement, language: ${lang}
 - "why": background/rationale (1-2 sentences), language: ${lang}
-- "tags": 2-5 lowercase tags
+- "tags": 2-5 lowercase tags. MUST contain exactly one of: architecture, decision, convention.
 - "confidence": 0.0-1.0 — how confident you are this is a real durable fact
 - "explicit_marker_strength": 0.0-1.0 — how clearly the session marks this
   as a closure (phrases like "решили", "договорились", "конвенция",
   "итого", "root cause", final user "ОК так и делаем") vs casual mention
 
-If the session contains no such facts — return empty arrays.
+If the session contains no such facts — return empty array.
 Empty output is correct and expected for routine work.
 
 Output VALID JSON, no markdown, no commentary:
-{"architecture":[...],"decisions":[...],"conventions":[...]}
+{"knowledge":[...]}
 
 Session summary:
 ${input.summary}

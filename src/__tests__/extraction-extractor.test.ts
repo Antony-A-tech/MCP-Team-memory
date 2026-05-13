@@ -17,18 +17,16 @@ function fakeProvider(responses: string[]): ExtractionLlmProvider {
 }
 
 const goodResponse = JSON.stringify({
-  architecture: [],
-  decisions: [
+  knowledge: [
     {
       title: 'Use JWT with refresh',
       fact: 'Auth uses JWT plus 7-day refresh tokens because cookie session storage was rejected for cross-domain reasons.',
       why: 'Refresh allows revocation and short access tokens.',
-      tags: ['auth', 'jwt'],
+      tags: ['decision', 'auth', 'jwt'],
       confidence: 0.9,
       explicit_marker_strength: 0.8,
     },
   ],
-  conventions: [],
 });
 
 describe('NoteExtractor', () => {
@@ -36,7 +34,8 @@ describe('NoteExtractor', () => {
     const ex = new NoteExtractor(fakeProvider([goodResponse]));
     const res = await ex.extract({ summary: 's', messages: [] });
     expect(res.candidates).toHaveLength(1);
-    expect(res.candidates[0].category).toBe('decisions');
+    expect(res.candidates[0].category).toBe('knowledge');
+    expect(res.candidates[0].tags).toContain('decision');
   });
 
   it('retries once if first response is wrapped in markdown fences', async () => {
@@ -48,18 +47,16 @@ describe('NoteExtractor', () => {
 
   it('rejects low confidence', async () => {
     const r = JSON.stringify({
-      architecture: [],
-      decisions: [
+      knowledge: [
         {
           title: 'x'.repeat(6),
           fact: 'a'.repeat(50),
           why: 'y',
-          tags: ['a'],
+          tags: ['decision', 'a'],
           confidence: 0.4,
           explicit_marker_strength: 0.9,
         },
       ],
-      conventions: [],
     });
     const ex = new NoteExtractor(fakeProvider([r]));
     const res = await ex.extract({ summary: 's', messages: [] });
@@ -69,18 +66,16 @@ describe('NoteExtractor', () => {
 
   it('rejects fact shorter than minFactLen', async () => {
     const r = JSON.stringify({
-      architecture: [],
-      decisions: [
+      knowledge: [
         {
           title: 'longer title',
           fact: 'short',
           why: 'y',
-          tags: ['a'],
+          tags: ['decision', 'a'],
           confidence: 0.9,
           explicit_marker_strength: 0.9,
         },
       ],
-      conventions: [],
     });
     const ex = new NoteExtractor(fakeProvider([r]));
     const res = await ex.extract({ summary: 's', messages: [] });
@@ -92,11 +87,11 @@ describe('NoteExtractor', () => {
       title: `title-${i}`,
       fact: 'a'.repeat(50),
       why: 'y',
-      tags: ['a'],
+      tags: ['architecture', 'a'],
       confidence: 0.6 + i * 0.05,
       explicit_marker_strength: 0.5 + i * 0.05,
     }));
-    const r = JSON.stringify({ architecture: items, decisions: [], conventions: [] });
+    const r = JSON.stringify({ knowledge: items });
     const ex = new NoteExtractor(fakeProvider([r]));
     const res = await ex.extract({ summary: 's', messages: [] });
     expect(res.candidates).toHaveLength(5);

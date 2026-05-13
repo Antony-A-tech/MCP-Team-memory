@@ -1,8 +1,15 @@
 // src/extraction/types.ts
 import type { Category } from '../memory/types.js';
 
-export type AutoCategory = Extract<Category, 'architecture' | 'decisions' | 'conventions'>;
-export const AUTO_CATEGORIES: AutoCategory[] = ['architecture', 'decisions', 'conventions'];
+// v5: extractor produces 'knowledge' rows — the architecture/decision/convention
+// distinction lives in tags.
+export type AutoCategory = Extract<Category, 'knowledge'>;
+export const AUTO_CATEGORIES: AutoCategory[] = ['knowledge'];
+
+// Knowledge kind — encoded as a tag on the resulting knowledge entry.
+// Useful for the prompt and for downstream grouping in onboard.
+export type KnowledgeKind = 'architecture' | 'decision' | 'convention';
+export const KNOWLEDGE_KINDS: KnowledgeKind[] = ['architecture', 'decision', 'convention'];
 
 export interface CandidateNote {
   category: AutoCategory;

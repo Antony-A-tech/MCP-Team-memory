@@ -5,8 +5,7 @@
 // server-side filters, and caps the final list to `maxNotesPerSession`.
 
 import type { ExtractionLlmProvider } from './llm-provider.js';
-import type { CandidateNote, ExtractionResult, AutoCategory } from './types.js';
-import { AUTO_CATEGORIES } from './types.js';
+import type { CandidateNote, ExtractionResult } from './types.js';
 import { buildExtractionPrompt, type BuildExtractionPromptInput } from './prompt.js';
 import logger from '../logger.js';
 
@@ -123,14 +122,15 @@ function collectCandidates(parsed: unknown): CandidateNote[] {
   if (parsed === null || typeof parsed !== 'object') return [];
   const obj = parsed as Record<string, unknown>;
   const out: CandidateNote[] = [];
-  for (const cat of AUTO_CATEGORIES) {
-    const arr = obj[cat];
-    if (!Array.isArray(arr)) continue;
-    for (const it of arr) {
+
+  // v5: primary input is { knowledge: [...] }
+  const knowledgeArr = obj.knowledge;
+  if (Array.isArray(knowledgeArr)) {
+    for (const it of knowledgeArr) {
       if (!it || typeof it !== 'object') continue;
       const item = it as Record<string, unknown>;
       out.push({
-        category: cat as AutoCategory,
+        category: 'knowledge',
         title: String(item.title ?? ''),
         fact: String(item.fact ?? ''),
         why: String(item.why ?? ''),
@@ -142,6 +142,36 @@ function collectCandidates(parsed: unknown): CandidateNote[] {
       });
     }
   }
+
+  // Legacy fallback: { architecture: [...], decisions: [...], conventions: [...] }
+  // Auto-derive a kind tag from the array key.
+  const legacyKeys: Array<{ key: string; tag: string }> = [
+    { key: 'architecture', tag: 'architecture' },
+    { key: 'decisions', tag: 'decision' },
+    { key: 'conventions', tag: 'convention' },
+  ];
+  for (const { key, tag } of legacyKeys) {
+    const arr = obj[key];
+    if (!Array.isArray(arr)) continue;
+    for (const it of arr) {
+      if (!it || typeof it !== 'object') continue;
+      const item = it as Record<string, unknown>;
+      const existingTags = Array.isArray(item.tags)
+        ? item.tags.map(t => String(t).toLowerCase())
+        : [];
+      const tags = existingTags.includes(tag) ? existingTags : [tag, ...existingTags];
+      out.push({
+        category: 'knowledge',
+        title: String(item.title ?? ''),
+        fact: String(item.fact ?? ''),
+        why: String(item.why ?? ''),
+        tags,
+        confidence: Number(item.confidence ?? 0),
+        explicit_marker_strength: Number(item.explicit_marker_strength ?? 0),
+      });
+    }
+  }
+
   return out;
 }
 
