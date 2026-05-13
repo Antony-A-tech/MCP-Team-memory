@@ -276,6 +276,29 @@ function setupHandlers(
         }
       },
       {
+        name: 'memory_profile_get',
+        description: '► КОГДА ВЫЗЫВАТЬ:\n• В начале сессии для получения эталонного профиля проекта (миссия, стек, конвенции, guard-rails)\n• Когда нужен быстрый контекст «что за проект»\n\nВозвращает текущий активный project profile. Если не задан — пустой ответ с подсказкой как создать.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', description: 'ID проекта' },
+          },
+        }
+      },
+      {
+        name: 'memory_profile_set',
+        description: '► КОГДА ВЫЗЫВАТЬ:\n• Пользователь явно просит обновить профиль проекта\n• Найдено новое значимое правило/guard-rail/stack-факт, который должен быть always-on\n\nЗаменяет активный project profile новым содержимым. Старый профиль архивируется. Категория="profile", pinned=true, priority=high.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', description: 'ID проекта' },
+            content: { type: 'string', description: 'Markdown-контент профиля (mission, stack, conventions, guardrails)' },
+            tags: { type: 'array', items: { type: 'string' }, description: 'Теги' },
+          },
+          required: ['content']
+        }
+      },
+      {
         name: 'memory_cross_search',
         description: '► КОГДА ВЫЗЫВАТЬ:\n• Перед реализацией нового паттерна — проверь, решалась ли задача в других проектах.\n• Когда ищешь best practices или примеры решений.\n\nПоиск паттернов и решений МЕЖДУ проектами. ОБЯЗАТЕЛЬНЫЙ параметр: query. Пример: memory_cross_search(query="аутентификация JWT", category="decisions")',
         inputSchema: {
@@ -881,6 +904,31 @@ function setupHandlers(
           }
 
           return { content: [{ type: 'text', text: '❌ Неизвестное действие. Используйте: list, add, remove' }], isError: true };
+        }
+
+        case 'memory_profile_get': {
+          const profileProjectId = requireProjectId(args?.project_id as string | undefined, 'memory_profile_get');
+          if (typeof profileProjectId !== 'string') return profileProjectId.response;
+          const profile = await memoryManager.getProfile(profileProjectId);
+          if (!profile) {
+            return { content: [{ type: 'text', text: '🗺️ Profile не задан для этого проекта. Используйте memory_profile_set(content="...") для создания эталонного профиля проекта.' }] };
+          }
+          return { content: [{ type: 'text', text: `# 🗺️ Project Profile\n\n${profile.content}\n\n*ID: ${profile.id} | updated: ${profile.updatedAt}*` }] };
+        }
+
+        case 'memory_profile_set': {
+          const profileSetProjectId = requireProjectId(args?.project_id as string | undefined, 'memory_profile_set');
+          if (typeof profileSetProjectId !== 'string') return profileSetProjectId.response;
+          if (!args?.content || typeof args.content !== 'string') {
+            return { content: [{ type: 'text', text: '❌ Параметр content (string) обязателен' }], isError: true };
+          }
+          const profileEntry = await memoryManager.setProfile(
+            profileSetProjectId,
+            args.content,
+            (args.tags as string[]) || [],
+            isAgentToken ? callerAgent : undefined,
+          );
+          return { content: [{ type: 'text', text: `✅ Profile обновлён!\n\n**ID**: ${profileEntry.id}\n**Категория**: profile\n📌 Pinned, priority=high.\nПредыдущий активный profile (если был) архивирован.` }] };
         }
 
         case 'memory_onboard': {
