@@ -118,11 +118,15 @@ export async function buildAutoContext(
 
 function computeRoleScore(
   entry: MemoryEntry,
-  rolePriority: { categories: Category[]; domains: string[]; boost: number }
+  rolePriority: { categories: Category[]; tags: string[]; domains: string[]; boost: number }
 ): number {
   let score = 1.0;
   if (entry.pinned) score += 10; // pinned always first
   if (rolePriority.categories.includes(entry.category)) score *= rolePriority.boost;
+  // v5: tag-based boost — role tags overlap entry tags?
+  if (rolePriority.tags.length > 0 && entry.tags.some(t => rolePriority.tags.includes(t))) {
+    score *= rolePriority.boost;
+  }
   // Domain boost only when role specifies domains (lead has empty = no domain differentiation)
   if (rolePriority.domains.length > 0 && entry.domain && rolePriority.domains.includes(entry.domain)) {
     score *= rolePriority.boost;
