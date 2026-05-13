@@ -299,6 +299,36 @@ function setupHandlers(
         }
       },
       {
+        name: 'event_add',
+        description: '► КОГДА ВЫЗЫВАТЬ:\n• Произошло событие в проекте, достойное timeline: merge, release, deploy, incident, milestone\n• Пользователь явно сказал об этом ("смержил X", "выпустили v2.1", "задеплоил", "milestone закрыт")\n\nДобавляет событие в project_events timeline. Для ручных вызовов auto_generated=false.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', description: 'ID проекта' },
+            event_type: { type: 'string', enum: ['merge', 'release', 'deploy', 'incident', 'milestone'], description: 'Тип события' },
+            occurred_at: { type: 'string', description: 'ISO timestamp; default = сейчас' },
+            title: { type: 'string', description: 'Короткий заголовок' },
+            description: { type: 'string', description: 'Опциональное описание' },
+            actor: { type: 'string', description: 'Кто сделал' },
+            refs: { type: 'object', description: '{ pr_number, commit_sha, version_tag, deployment_url, incident_id }' },
+          },
+          required: ['event_type', 'title']
+        }
+      },
+      {
+        name: 'event_list',
+        description: '► КОГДА ВЫЗЫВАТЬ:\n• Нужна лента последних событий проекта (что произошло когда)\n• Для онбординга нового агента\n\nВозвращает последние N событий проекта, опционально фильтруя по типу или дате.',
+        inputSchema: {
+          type: 'object',
+          properties: {
+            project_id: { type: 'string', description: 'ID проекта' },
+            event_type: { type: 'string', enum: ['merge', 'release', 'deploy', 'incident', 'milestone'], description: 'Фильтр по типу' },
+            limit: { type: 'number', description: 'default 10, max 200' },
+            since: { type: 'string', description: 'ISO timestamp — события от этой даты' },
+          },
+        }
+      },
+      {
         name: 'memory_cross_search',
         description: '► КОГДА ВЫЗЫВАТЬ:\n• Перед реализацией нового паттерна — проверь, решалась ли задача в других проектах.\n• Когда ищешь best practices или примеры решений.\n\nПоиск паттернов и решений МЕЖДУ проектами. ОБЯЗАТЕЛЬНЫЙ параметр: query. Пример: memory_cross_search(query="аутентификация JWT", category="decisions")',
         inputSchema: {
@@ -929,6 +959,52 @@ function setupHandlers(
             isAgentToken ? callerAgent : undefined,
           );
           return { content: [{ type: 'text', text: `✅ Profile обновлён!\n\n**ID**: ${profileEntry.id}\n**Категория**: profile\n📌 Pinned, priority=high.\nПредыдущий активный profile (если был) архивирован.` }] };
+        }
+
+        case 'event_add': {
+          const eventsManager = memoryManager.getEventsManager();
+          if (!eventsManager) return { content: [{ type: 'text', text: '❌ Events not configured' }], isError: true };
+          const eventAddProjectId = requireProjectId(args?.project_id as string | undefined, 'event_add');
+          if (typeof eventAddProjectId !== 'string') return eventAddProjectId.response;
+          const eventType = args?.event_type as string;
+          const eventTitle = args?.title as string;
+          if (!eventType || !eventTitle) {
+            return { content: [{ type: 'text', text: '❌ event_type и title обязательны' }], isError: true };
+          }
+          try {
+            const ev = await eventsManager.add({
+              projectId: eventAddProjectId,
+              eventType: eventType as 'merge' | 'release' | 'deploy' | 'incident' | 'milestone',
+              occurredAt: (args?.occurred_at as string) || new Date().toISOString(),
+              title: eventTitle,
+              description: args?.description as string | undefined,
+              actor: (args?.actor as string) || (isAgentToken ? callerAgent : undefined),
+              refs: (args?.refs as Record<string, unknown>) || {},
+            });
+            const icon = { merge: '🔀', release: '🚀', deploy: '📦', incident: '🚨', milestone: '🏁' }[ev.eventType] ?? '·';
+            return { content: [{ type: 'text', text: `✅ Событие добавлено!\n${icon} **${ev.eventType}**: ${ev.title}\n**ID**: ${ev.id}` }] };
+          } catch (err) {
+            return { content: [{ type: 'text', text: `❌ ${(err as Error).message}` }], isError: true };
+          }
+        }
+
+        case 'event_list': {
+          const eventsManager = memoryManager.getEventsManager();
+          if (!eventsManager) return { content: [{ type: 'text', text: '❌ Events not configured' }], isError: true };
+          const eventListProjectId = requireProjectId(args?.project_id as string | undefined, 'event_list');
+          if (typeof eventListProjectId !== 'string') return eventListProjectId.response;
+          const events = await eventsManager.list(eventListProjectId, {
+            eventType: args?.event_type as 'merge' | 'release' | 'deploy' | 'incident' | 'milestone' | undefined,
+            limit: (args?.limit as number) ?? 10,
+            since: args?.since as string | undefined,
+          });
+          if (events.length === 0) return { content: [{ type: 'text', text: '📋 Событий не найдено' }] };
+          const lines = events.map(ev => {
+            const date = ev.occurredAt.substring(0, 10);
+            const icon = { merge: '🔀', release: '🚀', deploy: '📦', incident: '🚨', milestone: '🏁' }[ev.eventType] ?? '·';
+            return `- ${date} ${icon} **${ev.eventType}**: ${ev.title}${ev.actor ? ` — ${ev.actor}` : ''}${ev.autoGenerated ? ' _(auto)_' : ''}`;
+          });
+          return { content: [{ type: 'text', text: `📈 События (${events.length}):\n${lines.join('\n')}` }] };
         }
 
         case 'memory_onboard': {
