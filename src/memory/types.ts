@@ -1,11 +1,12 @@
 // Категории памяти
 export type Category =
   | 'architecture'  // Архитектурные решения
-  | 'tasks'         // Текущие задачи
+  | 'tasks'         // Текущие задачи (DEPRECATED v4.5)
   | 'decisions'     // Принятые решения
-  | 'issues'        // Известные проблемы
-  | 'progress'      // Прогресс разработки
-  | 'conventions';  // Конвенции проекта (стиль кода, паттерны, правила)
+  | 'issues'        // Известные проблемы (DEPRECATED v4.5)
+  | 'progress'      // Прогресс разработки (DEPRECATED v4.5)
+  | 'conventions'   // Конвенции проекта
+  | 'profile';      // Эталонный профиль проекта (one per project, v5)
 
 // Приоритеты
 export type Priority = 'low' | 'medium' | 'high' | 'critical';
@@ -287,6 +288,11 @@ export const CATEGORY_INFO: Record<Category, { name: string; description: string
     name: 'Конвенции',
     description: 'Стиль кода, архитектурные паттерны, правила проекта',
     icon: '📏'
+  },
+  profile: {
+    name: 'Профиль',
+    description: 'Эталонная запись «как погрузиться в проект» — всегда показывается агенту первой',
+    icon: '🗺️'
   }
 };
 

@@ -1121,6 +1121,7 @@ export class MemoryManager {
       issues: [],
       progress: [],
       conventions: [],
+      profile: [],
     };
 
     entries.forEach(e => {
@@ -1319,6 +1320,7 @@ export class MemoryManager {
         issues: dbStats.byCategory.issues || 0,
         progress: dbStats.byCategory.progress || 0,
         conventions: dbStats.byCategory.conventions || 0,
+        profile: dbStats.byCategory.profile || 0,
       },
       byDomain: dbStats.byDomain,
       byStatus: {
