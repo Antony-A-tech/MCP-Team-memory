@@ -889,17 +889,29 @@ function setupHandlers(
           const projectId: string | undefined = convProjectId;
 
           if (action === 'list') {
-            const entries = await memoryManager.read({
+            // v5: conventions live in 'knowledge' with kind tag 'convention'.
+            // Read includes legacy 'conventions' category entries via a separate
+            // call for projects that haven't been migrated yet.
+            const knowledgeConv = await memoryManager.read({
+              projectId,
+              category: 'knowledge',
+              tags: ['convention'],
+              status: 'active',
+              limit: 100,
+              mode: 'full',
+            });
+            const legacyConv = await memoryManager.read({
               projectId,
               category: 'conventions',
               status: 'active',
               limit: 100,
               mode: 'full',
             });
+            const entries = [...(knowledgeConv as MemoryEntry[]), ...(legacyConv as MemoryEntry[])];
             if (entries.length === 0) {
               return { content: [{ type: 'text', text: 'Конвенции не заданы. Используйте action: "add" для добавления.' }] };
             }
-            const formatted = (entries as MemoryEntry[]).map(e => {
+            const formatted = entries.map(e => {
               const dom = e.domain ? ` [${e.domain}]` : '';
               const tags = e.tags.length > 0 ? ` (${e.tags.join(', ')})` : '';
               return `### 📏 ${e.title}${dom}${tags}\n${e.content}\n`;
@@ -911,13 +923,16 @@ function setupHandlers(
             if (!args?.title || !args?.content) {
               return { content: [{ type: 'text', text: '❌ Для добавления конвенции укажите title и content.' }], isError: true };
             }
+            // v5: write as category='knowledge' with kind tag 'convention'.
+            const callerTags = (args?.tags as string[]) || [];
+            const tags = callerTags.includes('convention') ? callerTags : ['convention', ...callerTags];
             const entry = await memoryManager.write({
               projectId,
-              category: 'conventions',
+              category: 'knowledge',
               title: args?.title as string,
               content: args?.content as string,
               domain: args?.domain as string,
-              tags: (args?.tags as string[]) || [],
+              tags,
               priority: 'high',
               pinned: true,
               author: isAgentToken ? callerAgent : undefined,
