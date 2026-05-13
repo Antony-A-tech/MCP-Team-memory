@@ -1261,18 +1261,21 @@ export class MemoryManager {
     const pid = projectId || DEFAULT_PROJECT_ID;
     const project = await this.storage.getProject(pid);
 
-    const [conventions, architecture, decisions, tasks, issues, progress] = await Promise.all([
-      this.storage.getAll(pid, { category: 'conventions', status: 'active', limit: 50 }),
+    // v5: profile, recent events, knowledge (grouped by kind), domains, stats.
+    // Legacy categories are queried only as a transitional fallback for projects
+    // that haven't run migration 022 yet — they contribute alongside knowledge.
+    const [profile, recentEvents, knowledge, legacyArch, legacyDec, legacyConv] = await Promise.all([
+      this.getProfile(pid),
+      this.eventsManager ? this.eventsManager.listRecent(pid, 10) : Promise.resolve([]),
+      this.storage.getAll(pid, { category: 'knowledge', status: 'active', limit: 50 }),
       this.storage.getAll(pid, { category: 'architecture', status: 'active', limit: 10 }),
       this.storage.getAll(pid, { category: 'decisions', status: 'active', limit: 10 }),
-      this.storage.getAll(pid, { category: 'tasks', status: 'active', limit: 15 }),
-      this.storage.getAll(pid, { category: 'issues', status: 'active', limit: 10 }),
-      this.storage.getAll(pid, { category: 'progress', status: 'active', limit: 5 }),
+      this.storage.getAll(pid, { category: 'conventions', status: 'active', limit: 50 }),
     ]);
 
     const lines: string[] = [];
     lines.push(`# Onboarding: ${project?.name || pid}`);
-    lines.push(`> Автоматическая сводка для нового участника. Сгенерирована ${new Date().toLocaleString()}`);
+    lines.push(`> Сгенерирована ${new Date().toLocaleString()} (формат v5)`);
     lines.push('');
 
     if (project?.description) {
@@ -1280,77 +1283,95 @@ export class MemoryManager {
       lines.push('');
     }
 
-    // Rich domain list for agents
+    // 1. Profile — always first
+    lines.push('## 🗺️ Profile');
+    if (profile) {
+      lines.push(profile.content);
+    } else {
+      lines.push('> Profile не задан. Создайте его через `memory_profile_set(content="...")` — это эталонная запись «как погрузиться в проект» (mission, stack, conventions, guard-rails).');
+    }
+    lines.push('');
+
+    // 2. Recent events
+    if (recentEvents.length > 0) {
+      lines.push('## 📈 Recent activity (last 10)');
+      const eventIcons: Record<string, string> = { merge: '🔀', release: '🚀', deploy: '📦', incident: '🚨', milestone: '🏁' };
+      for (const ev of recentEvents) {
+        const date = ev.occurredAt.substring(0, 10);
+        const icon = eventIcons[ev.eventType] ?? '·';
+        lines.push(`- ${date} ${icon} **${ev.title}**${ev.actor ? ` — ${ev.actor}` : ''}`);
+      }
+      lines.push('');
+    }
+
+    // 3. Domains
     const projectDomains = await this.storage.getProjectDomains(pid);
     if (projectDomains.length > 0) {
-      lines.push('## Домены проекта');
+      lines.push('## 🌐 Домены проекта');
       lines.push('При записи в память используйте один из этих доменов (поле `domain`):');
       for (const d of projectDomains) {
         const desc = d.description ? ` — ${d.description}` : '';
         lines.push(`- \`${d.slug}\` (${d.name})${desc}`);
       }
       lines.push('');
-      lines.push('Если запись не относится к конкретному домену — оставьте domain пустым.');
-      lines.push('');
     }
 
-    if (conventions.length > 0) {
-      lines.push('## 📏 Конвенции проекта');
-      lines.push('> Обязательно следуйте этим правилам при работе с кодом.');
+    // 4. Knowledge — grouped by kind tag (with legacy fallback)
+    const archByTag = knowledge.filter(e => e.tags.includes('architecture'));
+    const decByTag  = knowledge.filter(e => e.tags.includes('decision'));
+    const convByTag = knowledge.filter(e => e.tags.includes('convention'));
+    const otherKnowledge = knowledge.filter(e =>
+      !archByTag.includes(e) && !decByTag.includes(e) && !convByTag.includes(e),
+    );
+
+    const architecture = [...archByTag, ...legacyArch];
+    const decisions = [...decByTag, ...legacyDec];
+    const conventions = [...convByTag, ...legacyConv];
+
+    if (architecture.length + decisions.length + conventions.length + otherKnowledge.length > 0) {
+      lines.push('## 📚 Knowledge');
       lines.push('');
-      conventions.forEach(e => {
-        lines.push(`### ${e.title}${e.domain ? ` [${e.domain}]` : ''}`);
-        lines.push(e.content);
+
+      if (conventions.length > 0) {
+        lines.push('### 📏 Conventions');
+        lines.push('> Обязательно следуйте этим правилам.');
         lines.push('');
-      });
-    }
+        for (const e of conventions) {
+          lines.push(`#### ${e.title}${e.domain ? ` [${e.domain}]` : ''}`);
+          lines.push(e.content);
+          lines.push('');
+        }
+      }
 
-    if (architecture.length > 0) {
-      lines.push('## 🏗️ Архитектура');
-      architecture.forEach(e => {
-        lines.push(`### ${e.title}${e.domain ? ` [${e.domain}]` : ''}`);
-        lines.push(e.content.length > 500 ? e.content.substring(0, 500) + '...' : e.content);
+      if (architecture.length > 0) {
+        lines.push('### 🏗️ Architecture');
+        for (const e of architecture.slice(0, 10)) {
+          lines.push(`- **${e.title}**${e.domain ? ` [${e.domain}]` : ''}: ${e.content.length > 200 ? e.content.substring(0, 200) + '...' : e.content}`);
+        }
         lines.push('');
-      });
+      }
+
+      if (decisions.length > 0) {
+        lines.push('### ✅ Decisions');
+        for (const e of decisions.slice(0, 10)) {
+          lines.push(`- **${e.title}**: ${e.content.length > 200 ? e.content.substring(0, 200) + '...' : e.content}`);
+        }
+        lines.push('');
+      }
+
+      if (otherKnowledge.length > 0) {
+        lines.push('### Other');
+        for (const e of otherKnowledge.slice(0, 5)) {
+          lines.push(`- **${e.title}**: ${e.content.length > 200 ? e.content.substring(0, 200) + '...' : e.content}`);
+        }
+        lines.push('');
+      }
     }
 
-    if (decisions.length > 0) {
-      lines.push('## ✅ Ключевые решения');
-      decisions.forEach(e => {
-        lines.push(`- **${e.title}**: ${e.content.length > 200 ? e.content.substring(0, 200) + '...' : e.content}`);
-      });
-      lines.push('');
-    }
-
-    if (tasks.length > 0) {
-      lines.push('## 📋 Активные задачи');
-      tasks.forEach(e => {
-        const pi = e.priority === 'critical' ? '🔴' : e.priority === 'high' ? '🟠' : e.priority === 'medium' ? '🟡' : '🟢';
-        lines.push(`- ${pi} **${e.title}**${e.domain ? ` [${e.domain}]` : ''} — ${e.author}`);
-      });
-      lines.push('');
-    }
-
-    if (issues.length > 0) {
-      lines.push('## 🐛 Известные проблемы');
-      issues.forEach(e => {
-        lines.push(`- **${e.title}**: ${e.content.length > 150 ? e.content.substring(0, 150) + '...' : e.content}`);
-      });
-      lines.push('');
-    }
-
-    if (progress.length > 0) {
-      lines.push('## 📈 Последний прогресс');
-      progress.forEach(e => {
-        lines.push(`- ${e.title} (${new Date(e.updatedAt).toLocaleDateString()})`);
-      });
-      lines.push('');
-    }
-
+    // 5. Stats
     const stats = await this.getStats(pid);
     lines.push('## 📊 Статистика');
-    lines.push(`- Всего записей: ${stats.totalEntries}`);
-    lines.push(`- Активных: ${stats.byStatus.active}, Завершённых: ${stats.byStatus.completed}, Архивных: ${stats.byStatus.archived}`);
+    lines.push(`- Knowledge: ${stats.byCategory.knowledge ?? 0}, Profile: ${profile ? 1 : 0}, Events: ${recentEvents.length}`);
     lines.push(`- Активность за 24ч: ${stats.recentActivity.last24h}, за 7 дней: ${stats.recentActivity.last7d}`);
 
     return lines.join('\n');
