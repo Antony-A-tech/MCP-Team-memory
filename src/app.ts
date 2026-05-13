@@ -442,6 +442,34 @@ async function main(): Promise<void> {
     }
   });
 
+  // === Project Profile (v5) ===
+  app.get('/api/projects/:id/profile', async (req, res) => {
+    try {
+      const profile = await memoryManager.getProfile(req.params.id);
+      if (!profile) { res.status(404).json({ success: false, error: 'Profile not set for this project' }); return; }
+      res.json({ success: true, profile });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/projects/:id/profile failed');
+      res.status(500).json({ success: false, error: 'Failed to fetch profile' });
+    }
+  });
+
+  app.put('/api/projects/:id/profile', async (req, res) => {
+    const { content, tags } = req.body ?? {};
+    if (typeof content !== 'string' || content.trim() === '') {
+      res.status(400).json({ success: false, error: 'content (non-empty string) is required' });
+      return;
+    }
+    try {
+      const author = (req as any).auth?.agentTokenId as string | undefined;
+      const entry = await memoryManager.setProfile(req.params.id, content, Array.isArray(tags) ? tags : [], author);
+      res.json({ success: true, profile: entry });
+    } catch (err) {
+      logger.error({ err }, 'PUT /api/projects/:id/profile failed');
+      res.status(500).json({ success: false, error: 'Failed to set profile' });
+    }
+  });
+
   // === Notes REST API ===
   app.get('/api/notes', async (req, res) => {
     if (!notesManager) { res.json({ success: true, notes: [], hasMore: false, offset: 0, limit: 20 }); return; }
