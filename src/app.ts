@@ -478,6 +478,64 @@ async function main(): Promise<void> {
     }
   });
 
+  // === Project Events (v5) ===
+  app.get('/api/projects/:id/events', async (req, res) => {
+    const events = memoryManager.getEventsManager();
+    if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
+    const limit = Math.min(parseInt(req.query.limit as string) || 10, 200);
+    const eventType = req.query.event_type as string | undefined;
+    const since = req.query.since as string | undefined;
+    try {
+      const list = await events.list(req.params.id, {
+        limit,
+        eventType: eventType as 'merge' | 'release' | 'deploy' | 'incident' | 'milestone' | undefined,
+        since,
+      });
+      res.json({ success: true, events: list, count: list.length });
+    } catch (err) {
+      logger.error({ err }, 'GET /api/projects/:id/events failed');
+      res.status(500).json({ success: false, error: 'Failed to list events' });
+    }
+  });
+
+  app.post('/api/projects/:id/events', async (req, res) => {
+    const events = memoryManager.getEventsManager();
+    if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
+    const { event_type, occurred_at, title, description, actor, refs } = req.body ?? {};
+    if (!event_type || !title) {
+      res.status(400).json({ success: false, error: 'event_type and title are required' });
+      return;
+    }
+    try {
+      const ev = await events.add({
+        projectId: req.params.id,
+        eventType: event_type,
+        occurredAt: occurred_at || new Date().toISOString(),
+        title,
+        description,
+        actor: actor || (req as any).auth?.agentTokenId,
+        refs: refs || {},
+      });
+      res.json({ success: true, event: ev });
+    } catch (err) {
+      logger.error({ err }, 'POST /api/projects/:id/events failed');
+      res.status(500).json({ success: false, error: 'Failed to add event' });
+    }
+  });
+
+  app.delete('/api/projects/:projectId/events/:eventId', async (req, res) => {
+    const events = memoryManager.getEventsManager();
+    if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
+    try {
+      const ok = await events.delete(req.params.eventId);
+      if (!ok) { res.status(404).json({ success: false, error: 'Event not found' }); return; }
+      res.json({ success: true });
+    } catch (err) {
+      logger.error({ err }, 'DELETE /api/projects/:projectId/events/:eventId failed');
+      res.status(500).json({ success: false, error: 'Failed to delete event' });
+    }
+  });
+
   // === Notes REST API ===
   app.get('/api/notes', async (req, res) => {
     if (!notesManager) { res.json({ success: true, notes: [], hasMore: false, offset: 0, limit: 20 }); return; }
