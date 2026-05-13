@@ -272,6 +272,7 @@ async function main(): Promise<void> {
       memoryManager,
       config.extractNotesEnabled,
       config.extractMaxMergesPerSession,
+      eventsManager,
     );
     sessionManager.startWorker(30); // Process queued sessions every 30 sec
     logger.info('Session manager initialized with background worker');

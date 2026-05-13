@@ -82,6 +82,7 @@ if (config.transport === 'http') {
       const { SessionManager } = await import('./sessions/manager.js');
       const sessionStorage = new SessionStorage(storage.getPool());
       sessionManager = new SessionManager(sessionStorage, memoryManager.getVectorStore() ?? undefined, memoryManager.getEmbeddingProvider() ?? undefined, llmClient);
+      sessionManager.setEventsManager(eventsManager);
       sessionManager.startWorker(30);
 
       logger.info('Agent tokens, notes, and sessions managers initialized (stdio)');

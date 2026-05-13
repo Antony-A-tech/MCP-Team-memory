@@ -9,6 +9,8 @@ import type { DedupResolver } from '../extraction/dedup.js';
 import { NoteMerger } from '../extraction/merger.js';
 import type { MemoryManager } from '../memory/manager.js';
 import type { EvidenceSource } from '../extraction/types.js';
+import type { EventsManager } from '../events/manager.js';
+import { buildEventsPrompt, parseEventsResponse } from '../events/extractor.js';
 import { chunkMessage } from './chunking.js';
 import logger from '../logger.js';
 
@@ -33,7 +35,12 @@ export class SessionManager {
     private memoryManager?: MemoryManager,
     private extractionEnabled: boolean = true,
     private maxMergesPerSession: number = 3,
+    private eventsManager?: EventsManager,
   ) {}
+
+  setEventsManager(em: EventsManager): void {
+    this.eventsManager = em;
+  }
 
   /**
    * Import session — saves to PG immediately, queues LLM + embedding for background processing.
@@ -266,6 +273,14 @@ export class SessionManager {
     }
 
     const messages = await this.storage.getMessages(session.id, 0);
+
+    // v5: parallel pass — extract WHAT-events (merge/release/deploy/incident/milestone).
+    // Independent from notes extraction; failure doesn't block the main pipeline.
+    if (this.eventsManager && this.llmClient) {
+      this.runEventsExtraction(session, messages.map(m => ({ role: m.role, content: m.content })))
+        .catch(err => logger.error({ err, sessionId: session.id }, 'events extraction failed'));
+    }
+
     const result = await this.noteExtractor.extract({
       summary: session.summary,
       messages: messages.map(m => ({ role: m.role, content: m.content })),
@@ -373,6 +388,57 @@ export class SessionManager {
         `extraction: all ${summary.errors} decisions failed for session ${session.id}`,
       );
     }
+  }
+
+  /**
+   * v5: LLM-pass that extracts WHAT-events from a session (merge/release/deploy/incident/milestone).
+   * Independent from notes extraction. Idempotency relies on the parser dropping
+   * low-confidence events; the same session ran twice will reinsert events with
+   * a new id — callers should rely on dedup via evidence_sources if needed.
+   */
+  private async runEventsExtraction(
+    session: Session,
+    messages: Array<{ role: string; content: string }>,
+  ): Promise<void> {
+    if (!this.eventsManager || !this.llmClient || !session.projectId) return;
+
+    const prompt = buildEventsPrompt({
+      summary: session.summary,
+      messages,
+    });
+    const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
+    const candidates = parseEventsResponse(raw);
+
+    if (candidates.length === 0) {
+      logger.info({ sessionId: session.id }, 'events extraction yielded zero candidates');
+      return;
+    }
+
+    const evidence: EvidenceSource = {
+      type: 'session',
+      id: session.id,
+      agent_token_id: session.agentTokenId,
+      confirmed_at: new Date().toISOString(),
+    };
+
+    let added = 0;
+    for (const candidate of candidates) {
+      try {
+        await this.eventsManager.add({
+          ...candidate,
+          projectId: session.projectId,
+          evidenceSources: [evidence],
+        });
+        added++;
+      } catch (err) {
+        logger.warn({ err, sessionId: session.id, eventType: candidate.eventType }, 'failed to add event');
+      }
+    }
+
+    logger.info(
+      { sessionId: session.id, added, total: candidates.length },
+      'events extraction completed',
+    );
   }
 
   /**
