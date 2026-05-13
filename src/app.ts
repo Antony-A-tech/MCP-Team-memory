@@ -46,6 +46,13 @@ async function main(): Promise<void> {
   const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
   await memoryManager.initialize();
 
+  // Events manager (v5) — WHAT-event timeline per project
+  const { EventsStorage } = await import('./events/storage.js');
+  const { EventsManager } = await import('./events/manager.js');
+  const eventsManager = new EventsManager(new EventsStorage(storage.getPool()));
+  memoryManager.setEventsManager(eventsManager);
+  logger.info('Events manager initialized');
+
   // Auto-migrate from JSON if needed
   const jsonPath = path.join(__dirname, '..', 'data', 'memory.json');
   if (existsSync(jsonPath)) {
