@@ -32,6 +32,7 @@ export function sanitizeEvidenceSourcesForPublic(
 }
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
+import type { EventsManager } from '../events/manager.js';
 import type {
   MemoryEntry,
   CompactMemoryEntry,
@@ -58,6 +59,7 @@ export class MemoryManager {
   private versionManager: VersionManager | null = null;
   private embeddingProvider: EmbeddingProvider | null = null;
   private vectorStore: VectorStore | null = null;
+  private eventsManager: EventsManager | null = null;
   private listeners: Set<EventListener> = new Set();
   private autoArchiveInterval: NodeJS.Timeout | null = null;
   private singletonDecayInterval: NodeJS.Timeout | null = null;
@@ -80,6 +82,14 @@ export class MemoryManager {
 
   getVectorStore(): VectorStore | null {
     return this.vectorStore;
+  }
+
+  setEventsManager(em: EventsManager): void {
+    this.eventsManager = em;
+  }
+
+  getEventsManager(): EventsManager | null {
+    return this.eventsManager;
   }
 
   async close(): Promise<void> {

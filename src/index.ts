@@ -34,6 +34,12 @@ if (config.transport === 'http') {
     const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
     await memoryManager.initialize();
 
+    // Events manager (v5) — WHAT-event timeline per project
+    const { EventsStorage } = await import('./events/storage.js');
+    const { EventsManager } = await import('./events/manager.js');
+    const eventsManager = new EventsManager(new EventsStorage(storage.getPool()));
+    memoryManager.setEventsManager(eventsManager);
+
     // Embedding provider — Ollama with nomic-embed-text-v2-moe
     const { OllamaEmbeddingProvider } = await import('./embedding/ollama.js');
     const embProvider = new OllamaEmbeddingProvider(config.ollamaUrl, config.ollamaEmbeddingModel);
