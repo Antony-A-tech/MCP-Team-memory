@@ -60,19 +60,20 @@ describe('sampleMessagesForPrompt', () => {
 });
 
 describe('buildExtractionPrompt', () => {
-  it('includes summary, transcript, language tag, and category JSON skeleton', () => {
+  it('includes summary, transcript, language tag, and knowledge JSON skeleton', () => {
     const prompt = buildExtractionPrompt({
       summary: 'Worked on auth refactor',
       messages: [{ role: 'user', content: 'Решили использовать JWT' }],
     });
     expect(prompt).toContain('Worked on auth refactor');
     expect(prompt).toContain('Решили использовать JWT');
-    // Language hint appears somewhere in the prompt
     expect(prompt).toMatch(/Russian|English/);
-    // All three valid categories must be in the JSON skeleton
-    expect(prompt).toContain('"architecture"');
-    expect(prompt).toContain('"decisions"');
-    expect(prompt).toContain('"conventions"');
+    // v5: single 'knowledge' output array
+    expect(prompt).toContain('"knowledge"');
+    // Kind markers (architecture/decision/convention) must be mentioned as tags
+    expect(prompt).toContain('architecture');
+    expect(prompt).toContain('decision');
+    expect(prompt).toContain('convention');
   });
 
   it('truncates very long messages to keep the prompt bounded', () => {
