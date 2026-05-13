@@ -848,6 +848,47 @@ export class MemoryManager {
     return false;
   }
 
+  // === Profile (v5 — one curated always-on entry per project) ===
+
+  /**
+   * Returns the active profile entry for a project, or null if not set.
+   * Backed by the partial UNIQUE index `idx_entries_one_active_profile`.
+   */
+  async getProfile(projectId: string): Promise<MemoryEntry | null> {
+    const entries = await this.storage.getAll(projectId, {
+      category: 'profile',
+      status: 'active',
+      limit: 1,
+    });
+    return entries[0] ?? null;
+  }
+
+  /**
+   * Sets the project profile. If an active profile already exists,
+   * archive it first. Always pinned, always priority=high.
+   */
+  async setProfile(
+    projectId: string,
+    content: string,
+    tags: string[] = [],
+    author?: string,
+  ): Promise<MemoryEntry> {
+    const existing = await this.getProfile(projectId);
+    if (existing) {
+      await this.delete({ id: existing.id, archive: true });
+    }
+    return this.write({
+      projectId,
+      category: 'profile',
+      title: 'Project Profile',
+      content,
+      tags,
+      priority: 'high',
+      pinned: true,
+      author,
+    });
+  }
+
   async pin(id: string, pinned: boolean = true): Promise<MemoryEntry | null> {
     const result = await this.storage.update(id, { pinned });
     if (result && !('conflict' in result)) {
