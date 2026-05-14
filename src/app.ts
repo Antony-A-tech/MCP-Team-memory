@@ -618,7 +618,17 @@ async function main(): Promise<void> {
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     const { title, content, tags, session_id } = req.body;
     if (!title || !content) { res.status(400).json({ success: false, error: 'title and content are required' }); return; }
+    // v5 invariant: project_id required (param or X-Project-Id header). Enforced
+    // in DB by migration 025 NOT NULL constraint — reject early with 400 so the
+    // caller gets a clear message instead of a 500.
     const projectId = (req.body.project_id as string) || (req.headers['x-project-id'] as string) || null;
+    if (!projectId) {
+      res.status(400).json({
+        success: false,
+        error: 'project_id is required (pass in body or as X-Project-Id header). Personal notes must be bound to a project.',
+      });
+      return;
+    }
     try {
       if (!agentTokenId) { res.status(400).json({ success: false, error: 'Agent token required to create notes. Use an agent token instead of master token.' }); return; }
       const note = await notesManager.write(agentTokenId, {
