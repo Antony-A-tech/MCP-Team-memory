@@ -1007,17 +1007,17 @@ function setupHandlers(
           // note_write requires agent token — master cannot create personal notes (no owner)
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required to create personal notes' }], isError: true };
-          // Fallback to X-Project-Id header if caller didn't pass project_id.
-          // Without this, agents that rely on the header (per .mcp.json config)
-          // create orphaned notes (project_id=null) that the Web UI doesn't show
-          // when a project is selected.
-          const noteProjectId = resolveProjectId(parsed.data.project_id) ?? null;
+          // v5 invariant: every personal_note MUST be bound to a project.
+          // Enforced at the schema level too (migration 025: NOT NULL constraint).
+          // Reject the call early with a helpful message instead of a DB error.
+          const noteProjectIdResult = requireProjectId(parsed.data.project_id ?? undefined, 'note_write');
+          if (typeof noteProjectIdResult !== 'string') return noteProjectIdResult.response;
           const note = await notesManager.write(agentTokenId, {
             title: parsed.data.title,
             content: parsed.data.content,
             tags: parsed.data.tags,
             priority: parsed.data.priority,
-            projectId: noteProjectId,
+            projectId: noteProjectIdResult,
             sessionId: parsed.data.session_id ?? null,
           });
           return { content: [{ type: 'text', text: `📝 Заметка создана: ${note.id}\n**${note.title}**` }] };
@@ -1177,15 +1177,15 @@ function setupHandlers(
           if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for session import' }], isError: true };
-          // Fallback to X-Project-Id header if caller didn't pass project_id.
-          // Same bug class as note_write — sessions imported without project_id
-          // become orphaned and don't appear in any project's session list.
-          const sessionProjectId = resolveProjectId(parsed.data.project_id ?? undefined);
+          // v5 invariant: every imported session MUST be bound to a project.
+          // Same rationale as note_write — orphaned rows are invisible in the UI.
+          const sessionProjectIdResult = requireProjectId(parsed.data.project_id ?? undefined, 'session_import');
+          if (typeof sessionProjectIdResult !== 'string') return sessionProjectIdResult.response;
           const session = await sessionManager.importSession(agentTokenId, {
             externalId: parsed.data.external_id ?? undefined,
             name: parsed.data.name ?? undefined,
             summary: parsed.data.summary ?? undefined,
-            projectId: sessionProjectId,
+            projectId: sessionProjectIdResult,
             workingDirectory: parsed.data.working_directory ?? undefined,
             gitBranch: parsed.data.git_branch ?? undefined,
             tags: parsed.data.tags,
