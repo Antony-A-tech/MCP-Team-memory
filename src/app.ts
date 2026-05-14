@@ -10,6 +10,7 @@ import { existsSync } from 'fs';
 import { fileURLToPath } from 'url';
 import { PgStorage } from './storage/pg-storage.js';
 import { MemoryManager } from './memory/manager.js';
+import { EVENT_TYPES, type EventType } from './events/types.js';
 import { buildMcpServer } from './server.js';
 import { mountMcpTransport } from './transport/http.js';
 import { WebServer } from './web/server.js';
@@ -504,10 +505,14 @@ async function main(): Promise<void> {
     const limit = Math.min(parseInt(req.query.limit as string) || 10, 200);
     const eventType = req.query.event_type as string | undefined;
     const since = req.query.since as string | undefined;
+    if (eventType && !EVENT_TYPES.includes(eventType as EventType)) {
+      res.status(400).json({ success: false, error: `event_type must be one of: ${EVENT_TYPES.join(', ')}` });
+      return;
+    }
     try {
       const list = await events.list(req.params.id, {
         limit,
-        eventType: eventType as 'merge' | 'release' | 'deploy' | 'incident' | 'milestone' | undefined,
+        eventType: eventType as EventType | undefined,
         since,
       });
       res.json({ success: true, events: list, count: list.length });
@@ -523,6 +528,10 @@ async function main(): Promise<void> {
     const { event_type, occurred_at, title, description, actor, refs } = req.body ?? {};
     if (!event_type || !title) {
       res.status(400).json({ success: false, error: 'event_type and title are required' });
+      return;
+    }
+    if (!EVENT_TYPES.includes(event_type)) {
+      res.status(400).json({ success: false, error: `event_type must be one of: ${EVENT_TYPES.join(', ')}` });
       return;
     }
     try {
