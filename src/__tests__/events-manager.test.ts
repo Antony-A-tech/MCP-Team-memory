@@ -75,6 +75,16 @@ describe('EventsManager', () => {
     })).rejects.toThrow(/title/);
   });
 
+  it('rejects unknown event_type (defense-in-depth, callers also validate)', async () => {
+    await expect(manager.add({
+      projectId: PID,
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      eventType: 'foo' as any,
+      occurredAt: new Date(),
+      title: 'x',
+    })).rejects.toThrow(/event_type must be one of/);
+  });
+
   it('delete returns true for existing event', async () => {
     const ev = await manager.add({ projectId: PID, eventType: 'merge', occurredAt: new Date(), title: 'x' });
     const ok = await manager.delete(ev.id);
