@@ -695,8 +695,96 @@ async function deleteDomain(domain) {
   }
 }
 
+// ===== Custom nav tooltips =====
+// One reusable tooltip element kept on document.body. Triggered by hover on
+// any .nav-item with data-tooltip-title / data-tooltip-body / data-tooltip-example.
+// Positioned to the right of the hovered button at vertical center, with a
+// small viewport-edge clamp. Hidden when no anchor.
+let _navTooltipEl = null;
+let _navTooltipShowTimer = null;
+let _navTooltipHideTimer = null;
+const NAV_TOOLTIP_SHOW_DELAY_MS = 250;
+const NAV_TOOLTIP_GAP_PX = 12;
+
+function ensureNavTooltipEl() {
+  if (_navTooltipEl) return _navTooltipEl;
+  const el = document.createElement('div');
+  el.className = 'nav-tooltip';
+  el.innerHTML = `
+    <span class="nav-tooltip-title"></span>
+    <span class="nav-tooltip-body"></span>
+    <span class="nav-tooltip-example"></span>
+  `;
+  document.body.appendChild(el);
+  _navTooltipEl = el;
+  return el;
+}
+
+function positionNavTooltip(anchor) {
+  const el = ensureNavTooltipEl();
+  const rect = anchor.getBoundingClientRect();
+  // Place to the right of the sidebar item, vertically centered.
+  let left = rect.right + NAV_TOOLTIP_GAP_PX;
+  let top = rect.top + rect.height / 2;
+  // Clamp to viewport — if not enough room on the right, fall back to left side.
+  const maxRight = window.innerWidth - 8;
+  const tooltipW = el.offsetWidth || 280;
+  if (left + tooltipW > maxRight) {
+    left = Math.max(8, rect.left - NAV_TOOLTIP_GAP_PX - tooltipW);
+  }
+  el.style.left = left + 'px';
+  el.style.top = top + 'px';
+}
+
+function showNavTooltipFor(anchor) {
+  const title = anchor.dataset.tooltipTitle;
+  const body = anchor.dataset.tooltipBody;
+  if (!title && !body) return;
+  const el = ensureNavTooltipEl();
+  el.querySelector('.nav-tooltip-title').textContent = title || '';
+  el.querySelector('.nav-tooltip-body').textContent = body || '';
+  const exampleEl = el.querySelector('.nav-tooltip-example');
+  if (anchor.dataset.tooltipExample) {
+    exampleEl.textContent = anchor.dataset.tooltipExample;
+    exampleEl.style.display = '';
+  } else {
+    exampleEl.style.display = 'none';
+  }
+  // Make sure offsetWidth is correct before positioning.
+  el.classList.add('is-visible');
+  positionNavTooltip(anchor);
+  // Re-position once after font/icon-load layout settles.
+  requestAnimationFrame(() => positionNavTooltip(anchor));
+}
+
+function hideNavTooltip() {
+  if (_navTooltipEl) _navTooltipEl.classList.remove('is-visible');
+}
+
+function bindNavTooltips() {
+  document.querySelectorAll('.nav-item[data-tooltip-title]').forEach(item => {
+    item.addEventListener('mouseenter', () => {
+      clearTimeout(_navTooltipHideTimer);
+      clearTimeout(_navTooltipShowTimer);
+      _navTooltipShowTimer = setTimeout(() => showNavTooltipFor(item), NAV_TOOLTIP_SHOW_DELAY_MS);
+    });
+    item.addEventListener('mouseleave', () => {
+      clearTimeout(_navTooltipShowTimer);
+      _navTooltipHideTimer = setTimeout(hideNavTooltip, 60);
+    });
+    item.addEventListener('focus', () => showNavTooltipFor(item));
+    item.addEventListener('blur', hideNavTooltip);
+  });
+  // Hide on click (so the tooltip doesn't linger after the user navigates).
+  document.addEventListener('click', () => {
+    clearTimeout(_navTooltipShowTimer);
+    hideNavTooltip();
+  });
+}
+
 // Navigation
 function initNavigation() {
+  bindNavTooltips();
   document.querySelectorAll('.nav-item[data-category]').forEach(item => {
     item.addEventListener('click', () => {
       if (isGraphView) toggleGraphView(false);

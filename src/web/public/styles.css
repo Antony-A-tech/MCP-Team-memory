@@ -3533,3 +3533,60 @@ body.readonly-mode .chat-session-list {
   border-radius: 4px;
   font-family: var(--font-mono, monospace);
 }
+
+/* ===== v5 nav-item tooltips ===== */
+.nav-tooltip {
+  position: fixed;
+  z-index: 9999;
+  max-width: 320px;
+  min-width: 220px;
+  padding: 12px 14px;
+  background: var(--bg-secondary, #1a1a1a);
+  border: 1px solid var(--border-color, #2e2e2e);
+  border-radius: var(--radius-lg, 8px);
+  color: var(--text-primary, #e8e8e8);
+  font-size: 13px;
+  line-height: 1.5;
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35), 0 2px 8px rgba(0, 0, 0, 0.2);
+  pointer-events: none;
+  opacity: 0;
+  transform: translateY(-50%) translateX(-6px);
+  transition: opacity 120ms ease, transform 120ms ease;
+}
+.nav-tooltip.is-visible {
+  opacity: 1;
+  transform: translateY(-50%) translateX(0);
+}
+.nav-tooltip::before {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: -6px;
+  width: 12px;
+  height: 12px;
+  background: var(--bg-secondary, #1a1a1a);
+  border-left: 1px solid var(--border-color, #2e2e2e);
+  border-bottom: 1px solid var(--border-color, #2e2e2e);
+  transform: translateY(-50%) rotate(45deg);
+}
+.nav-tooltip-title {
+  display: block;
+  font-weight: 600;
+  font-size: 13px;
+  margin-bottom: 6px;
+  color: var(--text-primary, #fff);
+}
+.nav-tooltip-body {
+  display: block;
+  color: var(--text-secondary, #bdbdbd);
+  font-size: 12.5px;
+}
+.nav-tooltip-example {
+  display: block;
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border-color, #2e2e2e);
+  color: var(--text-muted, #888);
+  font-size: 12px;
+  font-style: italic;
+}
