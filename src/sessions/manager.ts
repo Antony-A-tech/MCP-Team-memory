@@ -392,15 +392,31 @@ export class SessionManager {
 
   /**
    * v5: LLM-pass that extracts WHAT-events from a session (merge/release/deploy/incident/milestone).
-   * Independent from notes extraction. Idempotency relies on the parser dropping
-   * low-confidence events; the same session ran twice will reinsert events with
-   * a new id — callers should rely on dedup via evidence_sources if needed.
+   * Independent from notes extraction.
+   *
+   * Idempotency: before doing the (expensive) LLM call, we check whether
+   * any event already references this session in evidence_sources — if so,
+   * the previous pass succeeded and we skip. This makes retries from the
+   * worker (e.g. after a crash) safe and cheap.
    */
   private async runEventsExtraction(
     session: Session,
     messages: Array<{ role: string; content: string }>,
   ): Promise<void> {
     if (!this.eventsManager || !this.llmClient || !session.projectId) return;
+
+    // Retry guard — skip if events already extracted for this session
+    const alreadyExtracted = await this.eventsManager.hasEventForSession(
+      session.projectId,
+      session.id,
+    );
+    if (alreadyExtracted) {
+      logger.info(
+        { sessionId: session.id },
+        'events extraction skipped — events for this session already exist',
+      );
+      return;
+    }
 
     const prompt = buildEventsPrompt({
       summary: session.summary,

@@ -83,4 +83,21 @@ describe('EventsStorage', () => {
     const ok = await storage.delete('00000000-0000-0000-0000-000000000000');
     expect(ok).toBe(false);
   });
+
+  it('hasEventForSession returns false when no event references the session', async () => {
+    const flag = await storage.hasEventForSession(PID, 'sess-not-here');
+    expect(flag).toBe(false);
+  });
+
+  it('hasEventForSession returns true when an event references the session', async () => {
+    await storage.insert({
+      projectId: PID,
+      eventType: 'merge',
+      occurredAt: new Date(),
+      title: 'm',
+      evidenceSources: [{ type: 'session', id: 'sess-A', confirmed_at: new Date().toISOString() }],
+    });
+    expect(await storage.hasEventForSession(PID, 'sess-A')).toBe(true);
+    expect(await storage.hasEventForSession(PID, 'sess-B')).toBe(false);
+  });
 });

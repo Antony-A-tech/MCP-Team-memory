@@ -479,7 +479,19 @@ async function main(): Promise<void> {
       const author = (req as any).auth?.agentTokenId as string | undefined;
       const entry = await memoryManager.setProfile(req.params.id, content, Array.isArray(tags) ? tags : [], author);
       res.json({ success: true, profile: entry });
-    } catch (err) {
+    } catch (err: any) {
+      // Concurrent setProfile race: archive-then-write is two queries, two
+      // callers can both win the archive then both try to insert. The partial
+      // UNIQUE index `idx_entries_one_active_profile` enforces the invariant
+      // by rejecting the second insert with 23505. Map that to 409 so the
+      // caller knows to retry, not 500 (which would suggest server bug).
+      if (err?.code === '23505' || /unique|duplicate key/i.test(err?.message ?? '')) {
+        res.status(409).json({
+          success: false,
+          error: 'Profile was concurrently modified — retry the request',
+        });
+        return;
+      }
       logger.error({ err }, 'PUT /api/projects/:id/profile failed');
       res.status(500).json({ success: false, error: 'Failed to set profile' });
     }

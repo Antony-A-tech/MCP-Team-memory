@@ -22,4 +22,8 @@ export class EventsManager {
   async delete(id: string): Promise<boolean> {
     return this.storage.delete(id);
   }
+
+  async hasEventForSession(projectId: string, sessionId: string): Promise<boolean> {
+    return this.storage.hasEventForSession(projectId, sessionId);
+  }
 }
