@@ -41,22 +41,24 @@ export const PROJECT_ROLES: ProjectRole[] = ['developer', 'qa', 'lead', 'devops'
  * Both 'categories' (kept for back-compat with persisted role configs) and
  * 'tags' are checked: a role gets the boost if EITHER matches.
  */
+// v5: tag list includes both singular (LLM-extractor output) and plural
+// (legacy migration 022 output). Boost applies if entry has ANY listed tag.
 export const ROLE_PRIORITIES: Record<ProjectRole, { categories: Category[]; tags: string[]; domains: string[]; boost: number }> = {
   developer: {
     categories: ['knowledge', 'profile'],
-    tags: ['architecture', 'decision', 'convention'],
+    tags: ['architecture', 'decision', 'decisions', 'convention', 'conventions'],
     domains: ['backend', 'frontend', 'database'],
     boost: 1.5,
   },
   qa: {
     categories: ['knowledge'],
-    tags: ['convention', 'incident', 'testing'],
+    tags: ['convention', 'conventions', 'incident', 'testing'],
     domains: ['testing'],
     boost: 1.5,
   },
   lead: {
     categories: ['knowledge', 'profile'],
-    tags: ['decision', 'milestone', 'release'],
+    tags: ['decision', 'decisions', 'milestone', 'release'],
     domains: [],
     boost: 1.3,
   },

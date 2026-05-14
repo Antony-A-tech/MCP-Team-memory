@@ -1317,9 +1317,16 @@ export class MemoryManager {
     }
 
     // 4. Knowledge — grouped by kind tag (with legacy fallback)
-    const archByTag = knowledge.filter(e => e.tags.includes('architecture'));
-    const decByTag  = knowledge.filter(e => e.tags.includes('decision'));
-    const convByTag = knowledge.filter(e => e.tags.includes('convention'));
+    // Accept both singular ('decision'/'convention' — emitted by the LLM-extractor)
+    // and plural ('decisions'/'conventions' — written by migration 022 from the
+    // legacy category::text). 'architecture' is the same in both.
+    const ARCH_TAGS = ['architecture'];
+    const DEC_TAGS = ['decision', 'decisions'];
+    const CONV_TAGS = ['convention', 'conventions'];
+    const hasAny = (tags: string[], wanted: string[]) => tags.some(t => wanted.includes(t));
+    const archByTag = knowledge.filter(e => hasAny(e.tags, ARCH_TAGS));
+    const decByTag  = knowledge.filter(e => hasAny(e.tags, DEC_TAGS));
+    const convByTag = knowledge.filter(e => hasAny(e.tags, CONV_TAGS));
     const otherKnowledge = knowledge.filter(e =>
       !archByTag.includes(e) && !decByTag.includes(e) && !convByTag.includes(e),
     );
