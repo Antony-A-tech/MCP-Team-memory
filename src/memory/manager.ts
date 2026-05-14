@@ -33,6 +33,7 @@ export function sanitizeEvidenceSourcesForPublic(
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
 import type { EventsManager } from '../events/manager.js';
+import { EVENT_TYPE_ICONS } from '../events/types.js';
 import type {
   MemoryEntry,
   CompactMemoryEntry,
@@ -1319,10 +1320,9 @@ export class MemoryManager {
     // 2. Recent events
     if (recentEvents.length > 0) {
       lines.push('## 📈 Recent activity (last 10)');
-      const eventIcons: Record<string, string> = { merge: '🔀', release: '🚀', deploy: '📦', incident: '🚨', milestone: '🏁' };
       for (const ev of recentEvents) {
         const date = ev.occurredAt.substring(0, 10);
-        const icon = eventIcons[ev.eventType] ?? '·';
+        const icon = EVENT_TYPE_ICONS[ev.eventType] ?? '·';
         lines.push(`- ${date} ${icon} **${ev.title}**${ev.actor ? ` — ${ev.actor}` : ''}`);
       }
       lines.push('');
