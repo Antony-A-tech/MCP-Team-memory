@@ -1007,12 +1007,17 @@ function setupHandlers(
           // note_write requires agent token — master cannot create personal notes (no owner)
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required to create personal notes' }], isError: true };
+          // Fallback to X-Project-Id header if caller didn't pass project_id.
+          // Without this, agents that rely on the header (per .mcp.json config)
+          // create orphaned notes (project_id=null) that the Web UI doesn't show
+          // when a project is selected.
+          const noteProjectId = resolveProjectId(parsed.data.project_id) ?? null;
           const note = await notesManager.write(agentTokenId, {
             title: parsed.data.title,
             content: parsed.data.content,
             tags: parsed.data.tags,
             priority: parsed.data.priority,
-            projectId: parsed.data.project_id ?? null,
+            projectId: noteProjectId,
             sessionId: parsed.data.session_id ?? null,
           });
           return { content: [{ type: 'text', text: `📝 Заметка создана: ${note.id}\n**${note.title}**` }] };
@@ -1172,11 +1177,15 @@ function setupHandlers(
           if (!parsed.success) return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           const agentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
           if (!agentTokenId) return { content: [{ type: 'text', text: '❌ Agent token required for session import' }], isError: true };
+          // Fallback to X-Project-Id header if caller didn't pass project_id.
+          // Same bug class as note_write — sessions imported without project_id
+          // become orphaned and don't appear in any project's session list.
+          const sessionProjectId = resolveProjectId(parsed.data.project_id ?? undefined);
           const session = await sessionManager.importSession(agentTokenId, {
             externalId: parsed.data.external_id ?? undefined,
             name: parsed.data.name ?? undefined,
             summary: parsed.data.summary ?? undefined,
-            projectId: parsed.data.project_id ?? undefined,
+            projectId: sessionProjectId,
             workingDirectory: parsed.data.working_directory ?? undefined,
             gitBranch: parsed.data.git_branch ?? undefined,
             tags: parsed.data.tags,
