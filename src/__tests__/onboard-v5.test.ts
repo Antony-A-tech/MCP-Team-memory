@@ -116,6 +116,35 @@ describe('Onboarding v5 format', () => {
     expect(out).toContain('Legacy arch');
   });
 
+  it('groups migrated knowledge with PLURAL kind tags (decisions/conventions) into proper sections (C1 regression)', async () => {
+    // Reproduces what migration 022 actually writes:
+    //   decisions → category=knowledge, tags=['decisions']
+    //   conventions → category=knowledge, tags=['conventions']
+    await pool.query(
+      `INSERT INTO entries (project_id, category, title, content, tags)
+       VALUES ($1, 'knowledge', 'Migrated decision', 'decision content', ARRAY['decisions'])`,
+      [PID],
+    );
+    await pool.query(
+      `INSERT INTO entries (project_id, category, title, content, tags)
+       VALUES ($1, 'knowledge', 'Migrated convention', 'convention content', ARRAY['conventions'])`,
+      [PID],
+    );
+    const out = await manager.generateOnboarding(PID);
+    // Both must show up in their proper section, NOT in "Other"
+    expect(out).toContain('✅ Decisions');
+    expect(out).toContain('Migrated decision');
+    expect(out).toContain('📏 Conventions');
+    expect(out).toContain('Migrated convention');
+    // Sanity: ensure they did NOT leak into Other
+    const otherIdx = out.indexOf('### Other');
+    if (otherIdx >= 0) {
+      const afterOther = out.slice(otherIdx);
+      expect(afterOther).not.toContain('Migrated decision');
+      expect(afterOther).not.toContain('Migrated convention');
+    }
+  });
+
   it('stats line mentions Knowledge, Profile, Events counters', async () => {
     await manager.setProfile(PID, '# Mission', []);
     await eventsManager.add({ projectId: PID, eventType: 'merge', occurredAt: new Date(), title: 'm' });
