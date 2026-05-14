@@ -3447,3 +3447,89 @@ body.readonly-mode .chat-session-list {
 }
 .chat-toast.error { background: #c94a4a; }
 .chat-toast.warning { background: #d49a2c; }
+
+/* ===== v5 Events timeline ===== */
+.events-container {
+  padding: 24px 32px;
+  overflow-y: auto;
+}
+.events-timeline {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  max-width: 880px;
+}
+.event-card {
+  display: flex;
+  gap: 14px;
+  padding: 14px 18px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  align-items: flex-start;
+}
+.event-icon {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--bg-tertiary);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-secondary);
+}
+.event-card--merge .event-icon    { color: #a855f7; }
+.event-card--release .event-icon  { color: #22c55e; }
+.event-card--deploy .event-icon   { color: #3b82f6; }
+.event-card--incident .event-icon { color: #ef4444; }
+.event-card--milestone .event-icon{ color: #f59e0b; }
+.event-body { flex: 1; min-width: 0; }
+.event-header {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.event-type {
+  font-weight: 600;
+  color: var(--text-secondary);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+.event-auto-tag {
+  display: inline-block;
+  padding: 1px 6px;
+  background: var(--bg-tertiary);
+  color: var(--text-muted);
+  border-radius: 4px;
+  font-size: 10px;
+  text-transform: uppercase;
+}
+.event-title {
+  font-size: 14px;
+  color: var(--text-primary);
+  font-weight: 500;
+}
+.event-actor { color: var(--text-muted); font-weight: 400; }
+.event-description {
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+}
+.event-refs {
+  margin-top: 8px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  font-size: 12px;
+}
+.event-ref {
+  background: var(--bg-tertiary);
+  color: var(--text-secondary);
+  padding: 2px 8px;
+  border-radius: 4px;
+  font-family: var(--font-mono, monospace);
+}

@@ -1,11 +1,18 @@
 import { z } from 'zod';
 
+// v5 active categories: profile, knowledge.
+// Legacy values kept for backward-compat reads (older clients, hidden Web UI
+// tabs reserved for V5+ Azure DevOps integration). The DB CHECK constraint
+// (migrations 021/022) still accepts all of these.
 const CategoryEnum = z.enum([
+  'profile', 'knowledge',
   'architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions',
 ]);
 
 const CategoryWithAllEnum = z.enum([
-  'architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions', 'all',
+  'profile', 'knowledge',
+  'architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions',
+  'all',
 ]);
 
 const PriorityEnum = z.enum(['low', 'medium', 'high', 'critical']);
