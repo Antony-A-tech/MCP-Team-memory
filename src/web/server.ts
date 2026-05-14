@@ -230,12 +230,22 @@ export class WebServer {
     app.get('/api/memory', async (req: Request, res: Response) => {
       try {
         const pinnedQuery = req.query.pinned;
+        // tags: comma-separated string in query, parsed into array.
+        // Empty string or empty list → undefined (no filter).
+        const tagsQuery = req.query.tags;
+        let tags: string[] | undefined;
+        if (typeof tagsQuery === 'string' && tagsQuery.trim()) {
+          tags = tagsQuery.split(',').map(t => t.trim()).filter(Boolean);
+          if (tags.length === 0) tags = undefined;
+        }
+
         const parsed = ReadParamsSchema.safeParse({
           project_id: req.query.project_id,
           category: req.query.category || 'all',
           domain: req.query.domain,
           search: req.query.search,
           status: req.query.status,
+          tags,
           limit: req.query.limit ? parseInt(req.query.limit as string, 10) : undefined,
           offset: req.query.offset ? parseInt(req.query.offset as string, 10) : undefined,
           pinned: pinnedQuery === 'true' ? true : pinnedQuery === 'false' ? false : undefined,
@@ -246,13 +256,14 @@ export class WebServer {
           return;
         }
 
-        const { project_id, category, domain, search, status, limit, offset, pinned } = parsed.data;
+        const { project_id, category, domain, search, status, tags: parsedTags, limit, offset, pinned } = parsed.data;
         const entries = await this.memoryManager.read({
           projectId: project_id,
           category,
           domain,
           search,
           status,
+          tags: parsedTags,
           limit,
           offset,
           pinned,

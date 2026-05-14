@@ -79,6 +79,10 @@ For each fact provide:
 - "fact": the WHY statement, language: ${lang}
 - "why": background/rationale (1-2 sentences), language: ${lang}
 - "tags": 2-5 lowercase tags. MUST contain exactly one of: architecture, decision, convention.
+  Prefer reusing these tech-area tags when applicable, instead of inventing new ones:
+    backend, frontend, infrastructure, devops, database, testing, security, performance,
+    api, ui, authentication, deployment, migration, refactor.
+  Use ad-hoc tags only for project-specific concepts that aren't covered above.
 - "confidence": 0.0-1.0 — how confident you are this is a real durable fact
 - "explicit_marker_strength": 0.0-1.0 — how clearly the session marks this
   as a closure (phrases like "решили", "договорились", "конвенция",
