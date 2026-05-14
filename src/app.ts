@@ -468,6 +468,13 @@ async function main(): Promise<void> {
       res.status(400).json({ success: false, error: 'content (non-empty string) is required' });
       return;
     }
+    if (Buffer.byteLength(content, 'utf-8') > MemoryManager.MAX_PROFILE_BYTES) {
+      res.status(413).json({
+        success: false,
+        error: `content exceeds ${MemoryManager.MAX_PROFILE_BYTES} bytes`,
+      });
+      return;
+    }
     try {
       const author = (req as any).auth?.agentTokenId as string | undefined;
       const entry = await memoryManager.setProfile(req.params.id, content, Array.isArray(tags) ? tags : [], author);
