@@ -53,6 +53,22 @@
           <span>Закреплённые</span>
           <span class="nav-count" id="count-pinned">0</span>
         </button>
+        <!-- v5 nav items: Profile / Knowledge / Events -->
+        <button class="nav-item" data-category="profile">
+          <i data-lucide="map" class="nav-icon"></i>
+          <span>Профиль</span>
+          <span class="nav-count" id="count-profile">0</span>
+        </button>
+        <button class="nav-item" data-category="knowledge">
+          <i data-lucide="book-open" class="nav-icon"></i>
+          <span>Знания</span>
+          <span class="nav-count" id="count-knowledge">0</span>
+        </button>
+        <button class="nav-item" data-category="events">
+          <i data-lucide="activity" class="nav-icon"></i>
+          <span>События</span>
+          <span class="nav-count" id="count-events">0</span>
+        </button>
         <!--
           v5 LEGACY-RESERVED NAV ITEMS — hidden, not removed.
           Reasoning:
@@ -252,6 +268,14 @@
 
       <!-- Notes List (hidden by default) -->
       <div class="notes-container" id="notes-container" style="display:none">
+        <div class="loading">
+          <i data-lucide="loader-2" class="spin"></i>
+          <span>Загрузка...</span>
+        </div>
+      </div>
+
+      <!-- Events Timeline (hidden by default) — v5 project_events -->
+      <div class="events-container" id="events-container" style="display:none">
         <div class="loading">
           <i data-lucide="loader-2" class="spin"></i>
           <span>Загрузка...</span>

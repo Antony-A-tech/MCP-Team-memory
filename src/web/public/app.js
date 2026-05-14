@@ -721,6 +721,13 @@ function initNavigation() {
       const notesLoadMore = document.getElementById('notes-load-more-btn');
       if (notesLoadMore) notesLoadMore.remove();
 
+      // Reset all alternative-view containers before showing the active one.
+      const altContainers = ['sessions-container', 'notes-container', 'events-container'];
+      altContainers.forEach(id => {
+        const el = document.getElementById(id);
+        if (el) el.style.display = 'none';
+      });
+
       if (currentCategory === 'sessions') {
         document.getElementById('entries-container').style.display = 'none';
         document.getElementById('sessions-container').style.display = '';
@@ -737,7 +744,18 @@ function initNavigation() {
         pageTitle.textContent = 'Заметки';
         updateHeaderStatsForNotes();
         loadNotes();
+      } else if (currentCategory === 'events') {
+        // v5: project_events live in a separate table; show timeline view.
+        document.getElementById('entries-container').style.display = 'none';
+        document.getElementById('events-container').style.display = '';
+        document.getElementById('domain-filters').style.display = 'none';
+        statusSelect.style.display = 'none';
+        pageTitle.textContent = 'События';
+        loadEvents();
       } else {
+        // entries-container path covers: all, pinned, profile, knowledge, and
+        // any legacy categories (if their nav buttons are unhidden later).
+        document.getElementById('entries-container').style.display = '';
         statusSelect.style.display = '';
         pageTitle.textContent = categoryConfig[currentCategory]?.title || 'Все записи';
         loadStats();
@@ -1429,12 +1447,21 @@ async function loadStats() {
       const stats = result.stats;
 
       document.getElementById('count-all').textContent = stats.totalEntries;
+      // v5 active categories
+      const knowledgeEl = document.getElementById('count-knowledge');
+      if (knowledgeEl) knowledgeEl.textContent = stats.byCategory.knowledge || 0;
+      const profileEl = document.getElementById('count-profile');
+      if (profileEl) profileEl.textContent = stats.byCategory.profile || 0;
+      // Legacy counts — kept for the hidden nav items and possible V5+ Azure
+      // revive (see index.html comment block).
       document.getElementById('count-architecture').textContent = stats.byCategory.architecture || 0;
       document.getElementById('count-tasks').textContent = stats.byCategory.tasks || 0;
       document.getElementById('count-decisions').textContent = stats.byCategory.decisions || 0;
       document.getElementById('count-issues').textContent = stats.byCategory.issues || 0;
       document.getElementById('count-progress').textContent = stats.byCategory.progress || 0;
       document.getElementById('count-conventions').textContent = stats.byCategory.conventions || 0;
+      // Events live in a separate table — fetched independently.
+      updateEventsCount();
 
       document.getElementById('stat-total').textContent = stats.totalEntries;
       document.getElementById('stat-24h').textContent = stats.recentActivity?.last24h || 0;
@@ -3126,6 +3153,145 @@ async function updateSessionNotesCounts() {
     const notesResult = await notesRes.json();
     if (notesResult.success) {
       document.getElementById('count-notes').textContent = notesResult.count;
+    }
+  } catch (e) {
+    // Silently fail
+  }
+}
+
+// ===== Events UI (v5) =====
+// Project events live in their own `project_events` table (separate from
+// `entries`), so they need their own fetch + render path. Read-only here —
+// creating new events goes through MCP `event_add` or REST POST.
+
+const EVENT_TYPE_LABELS = {
+  merge: { icon: 'git-merge', title: 'Merge' },
+  release: { icon: 'rocket', title: 'Release' },
+  deploy: { icon: 'package', title: 'Deploy' },
+  incident: { icon: 'alert-triangle', title: 'Incident' },
+  milestone: { icon: 'flag', title: 'Milestone' },
+};
+
+async function loadEvents() {
+  const container = document.getElementById('events-container');
+  if (!currentProjectId) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="activity"></i>
+        <div class="empty-state-text">Выберите проект для просмотра событий</div>
+      </div>
+    `;
+    lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = `
+    <div class="loading">
+      <i data-lucide="loader-2" class="spin"></i>
+      <span>Загрузка событий...</span>
+    </div>
+  `;
+  lucide.createIcons();
+
+  try {
+    const params = new URLSearchParams();
+    params.append('limit', '50');
+    const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/events?${params}`);
+    const result = await response.json();
+
+    if (!result.success) {
+      container.innerHTML = `<div class="empty-state"><div class="empty-state-text">${result.error || 'Не удалось загрузить события'}</div></div>`;
+      return;
+    }
+
+    if (!result.events || result.events.length === 0) {
+      container.innerHTML = `
+        <div class="empty-state">
+          <i data-lucide="activity"></i>
+          <div class="empty-state-text">Событий пока нет</div>
+          <div class="empty-state-hint" style="color:var(--text-muted);font-size:13px;margin-top:8px">
+            События (merge / release / deploy / incident / milestone) добавляются автоматически из сессий
+            или вручную через <code>event_add</code> MCP / REST.
+          </div>
+        </div>
+      `;
+      lucide.createIcons();
+      return;
+    }
+
+    container.innerHTML = renderEventsTimeline(result.events);
+    lucide.createIcons();
+  } catch (e) {
+    container.innerHTML = `<div class="empty-state"><div class="empty-state-text">Ошибка загрузки событий</div></div>`;
+    console.error('loadEvents failed', e);
+  }
+}
+
+function renderEventsTimeline(events) {
+  const items = events.map(ev => {
+    const meta = EVENT_TYPE_LABELS[ev.eventType] || { icon: 'circle', title: ev.eventType };
+    const date = ev.occurredAt ? new Date(ev.occurredAt).toLocaleString() : '';
+    const refsHtml = renderEventRefs(ev.refs);
+    const actor = ev.actor ? `<span class="event-actor">— ${escapeHtml(ev.actor)}</span>` : '';
+    const autoTag = ev.autoGenerated
+      ? '<span class="event-auto-tag" title="Извлечено из сессии автоматически">auto</span>'
+      : '';
+    const desc = ev.description
+      ? `<div class="event-description">${escapeHtml(ev.description)}</div>`
+      : '';
+    return `
+      <div class="event-card event-card--${escapeHtml(ev.eventType)}">
+        <div class="event-icon"><i data-lucide="${meta.icon}"></i></div>
+        <div class="event-body">
+          <div class="event-header">
+            <span class="event-type">${escapeHtml(meta.title)}</span>
+            <span class="event-date">${escapeHtml(date)}</span>
+            ${autoTag}
+          </div>
+          <div class="event-title">${escapeHtml(ev.title)} ${actor}</div>
+          ${desc}
+          ${refsHtml}
+        </div>
+      </div>
+    `;
+  }).join('');
+  return `<div class="events-timeline">${items}</div>`;
+}
+
+function renderEventRefs(refs) {
+  if (!refs || typeof refs !== 'object' || Object.keys(refs).length === 0) return '';
+  const parts = Object.entries(refs).map(([k, v]) => {
+    const value = typeof v === 'object' ? JSON.stringify(v) : String(v);
+    return `<span class="event-ref"><strong>${escapeHtml(k)}</strong>: ${escapeHtml(value)}</span>`;
+  });
+  return `<div class="event-refs">${parts.join(' · ')}</div>`;
+}
+
+function escapeHtml(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+    .replace(/'/g, '&#39;');
+}
+
+async function updateEventsCount() {
+  if (!currentProjectId) {
+    const el = document.getElementById('count-events');
+    if (el) el.textContent = '0';
+    return;
+  }
+  try {
+    // No dedicated /events/count endpoint — fetch last 200 and use the length.
+    // For projects with > 200 events the badge shows "200+" instead.
+    const res = await authFetch(`${API_BASE}/projects/${currentProjectId}/events?limit=200`);
+    const result = await res.json();
+    if (result.success) {
+      const n = result.count ?? (result.events?.length || 0);
+      const el = document.getElementById('count-events');
+      if (el) el.textContent = n >= 200 ? '200+' : String(n);
     }
   } catch (e) {
     // Silently fail
