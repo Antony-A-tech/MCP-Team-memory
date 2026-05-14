@@ -62,4 +62,17 @@ describe('MemoryManager.getProfile/setProfile', () => {
     const active = await manager.getProfile(PROJECT_ID);
     expect(active?.id).toBe(second.id);
   });
+
+  it('setProfile rejects content larger than MAX_PROFILE_BYTES (64KB)', async () => {
+    const oversize = 'x'.repeat(70 * 1024); // 70 KB > 64 KB cap
+    await expect(manager.setProfile(PROJECT_ID, oversize, [])).rejects.toThrow(
+      /exceeds 65536 bytes/,
+    );
+  });
+
+  it('setProfile accepts content right at the cap (64 KB)', async () => {
+    const exact = 'x'.repeat(64 * 1024);
+    const entry = await manager.setProfile(PROJECT_ID, exact, []);
+    expect(entry.content.length).toBe(64 * 1024);
+  });
 });
