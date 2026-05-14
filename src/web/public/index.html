@@ -43,28 +43,41 @@
       </div>
 
       <nav class="nav">
-        <button class="nav-item active" data-category="all">
+        <button class="nav-item active" data-category="all"
+          data-tooltip-title="Все записи"
+          data-tooltip-body="Все entries проекта вне зависимости от категории: профиль, знания, плюс legacy. События живут в отдельной таблице — для них есть отдельный таб.">
           <i data-lucide="layout-grid" class="nav-icon"></i>
           <span>Все записи</span>
           <span class="nav-count" id="count-all">0</span>
         </button>
-        <button class="nav-item" data-category="pinned">
+        <button class="nav-item" data-category="pinned"
+          data-tooltip-title="Закреплённые"
+          data-tooltip-body="Записи, которые автор пометил как «всегда видимые». Закреплённые не подвержены auto-decay через 30 дней.">
           <i data-lucide="pin" class="nav-icon"></i>
           <span>Закреплённые</span>
           <span class="nav-count" id="count-pinned">0</span>
         </button>
         <!-- v5 nav items: Profile / Knowledge / Events -->
-        <button class="nav-item" data-category="profile">
+        <button class="nav-item" data-category="profile"
+          data-tooltip-title="🗺️ Профиль проекта"
+          data-tooltip-body="Эталонная карточка для онбординга агента: миссия, стек, repo-map, ключевые конвенции, guard-rails. Ровно одна активная на проект. Всегда первая секция в memory_onboard. Редактируется через memory_profile_set."
+          data-tooltip-example="Что входит: миссия в 2–3 строки, стек, ссылки на критичные файлы, правила коммитов, что нельзя делать без согласования.">
           <i data-lucide="map" class="nav-icon"></i>
           <span>Профиль</span>
           <span class="nav-count" id="count-profile">0</span>
         </button>
-        <button class="nav-item" data-category="knowledge">
+        <button class="nav-item" data-category="knowledge"
+          data-tooltip-title="📚 Знания (WHY-факты)"
+          data-tooltip-body="Архитектурные решения, принятые decisions, конвенции — всё с тегом kind (architecture / decision / convention). Автоматически извлекается LLM-extractor из сессий или публикуется вручную через note_share."
+          data-tooltip-example="Примеры: «Выбрали JWT с 7-day refresh — почему», «Pre-commit hook обязателен», «Async I/O везде, кроме миграций».">
           <i data-lucide="book-open" class="nav-icon"></i>
           <span>Знания</span>
           <span class="nav-count" id="count-knowledge">0</span>
         </button>
-        <button class="nav-item" data-category="events">
+        <button class="nav-item" data-category="events"
+          data-tooltip-title="⚡ События (WHAT-timeline)"
+          data-tooltip-body="Лента того, что произошло в проекте: merge / release / deploy / incident / milestone. Auto-extract из сессий («смержил v5 в main») + ручное добавление через event_add. Хранится в отдельной таблице project_events с refs (PR#, commit SHA, version tag)."
+          data-tooltip-example="Примеры: «v5.0.0 released», «feat/auth merged to main #42», «prod deploy 14:30», «incident: 503 на API 5 мин».">
           <i data-lucide="activity" class="nav-icon"></i>
           <span>События</span>
           <span class="nav-count" id="count-events">0</span>
@@ -82,43 +95,60 @@
           To revive: drop the `style="display:none"` and update categoryConfig
           in app.js to point at the new Azure-backed source.
         -->
-        <button class="nav-item" data-category="architecture" style="display:none">
+        <button class="nav-item" data-category="architecture" style="display:none"
+          data-tooltip-title="Архитектура (legacy)"
+          data-tooltip-body="V4.5 категория. Migration 022 collapse-нула в knowledge с тегом 'architecture'. Скрыта, но reserved для V5+ Azure integration (может стать shadow view над Azure Wiki).">
           <i data-lucide="building-2" class="nav-icon"></i>
           <span>Архитектура</span>
           <span class="nav-count" id="count-architecture">0</span>
         </button>
-        <button class="nav-item" data-category="tasks" style="display:none">
+        <button class="nav-item" data-category="tasks" style="display:none"
+          data-tooltip-title="Задачи (legacy)"
+          data-tooltip-body="V4.5 категория. Reserved для V5+ Azure integration — может стать shadow view над Azure DevOps Work Items (Tasks).">
           <i data-lucide="clipboard-list" class="nav-icon"></i>
           <span>Задачи</span>
           <span class="nav-count" id="count-tasks">0</span>
         </button>
-        <button class="nav-item" data-category="decisions" style="display:none">
+        <button class="nav-item" data-category="decisions" style="display:none"
+          data-tooltip-title="Решения (legacy)"
+          data-tooltip-body="V4.5 категория. Migration 022 collapse-нула в knowledge с тегом 'decision'. Скрыта, reserved для V5+ Azure.">
           <i data-lucide="check-circle-2" class="nav-icon"></i>
           <span>Решения</span>
           <span class="nav-count" id="count-decisions">0</span>
         </button>
-        <button class="nav-item" data-category="issues" style="display:none">
+        <button class="nav-item" data-category="issues" style="display:none"
+          data-tooltip-title="Проблемы (legacy)"
+          data-tooltip-body="V4.5 категория. Reserved для V5+ Azure integration — может стать shadow view над Azure DevOps Work Items (Bugs).">
           <i data-lucide="bug" class="nav-icon"></i>
           <span>Проблемы</span>
           <span class="nav-count" id="count-issues">0</span>
         </button>
-        <button class="nav-item" data-category="progress" style="display:none">
+        <button class="nav-item" data-category="progress" style="display:none"
+          data-tooltip-title="Прогресс (legacy)"
+          data-tooltip-body="V4.5 категория. В V5 заменена событиями (release / deploy / milestone). Reserved для V5+ Azure (может стать shadow над Iterations).">
           <i data-lucide="trending-up" class="nav-icon"></i>
           <span>Прогресс</span>
           <span class="nav-count" id="count-progress">0</span>
         </button>
-        <button class="nav-item" data-category="conventions" style="display:none">
+        <button class="nav-item" data-category="conventions" style="display:none"
+          data-tooltip-title="Конвенции (legacy)"
+          data-tooltip-body="V4.5 категория. Migration 022 collapse-нула в knowledge с тегом 'convention'. Скрыта, reserved для V5+ Azure.">
           <i data-lucide="book-open" class="nav-icon"></i>
           <span>Конвенции</span>
           <span class="nav-count" id="count-conventions">0</span>
         </button>
         <div class="nav-divider"></div>
-        <button class="nav-item" data-category="sessions">
+        <button class="nav-item" data-category="sessions"
+          data-tooltip-title="💬 Сессии"
+          data-tooltip-body="Импортированные сессии Claude Code. Каждая сессия проходит через auto-extraction pipeline: LLM генерирует summary, а потом извлекает атомарные WHY-факты в Knowledge и WHAT-события в Events.">
           <i data-lucide="message-square" class="nav-icon"></i>
           <span>Сессии</span>
           <span class="nav-count" id="count-sessions">0</span>
         </button>
-        <button class="nav-item" data-category="notes">
+        <button class="nav-item" data-category="notes"
+          data-tooltip-title="📝 Заметки"
+          data-tooltip-body="Личные черновики агента (приватные, видны только владельцу токена). До публикации в командную память — рабочее пространство. Опубликовать в knowledge: note_share."
+          data-tooltip-example="Use case: «надо обсудить с командой», «черновик ADR», «proposed convention», «open question».">
           <i data-lucide="sticky-note" class="nav-icon"></i>
           <span>Заметки</span>
           <span class="nav-count" id="count-notes">0</span>
