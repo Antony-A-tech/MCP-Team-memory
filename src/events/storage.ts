@@ -62,6 +62,22 @@ export class EventsStorage {
     return (rowCount ?? 0) > 0;
   }
 
+  /**
+   * Checks whether any event for a project already references a given session
+   * in its evidence_sources. Used by the sessions pipeline to keep
+   * event auto-extraction idempotent across worker retries.
+   */
+  async hasEventForSession(projectId: string, sessionId: string): Promise<boolean> {
+    const { rows } = await this.pool.query(
+      `SELECT 1 FROM project_events
+       WHERE project_id = $1
+         AND evidence_sources @> $2::jsonb
+       LIMIT 1`,
+      [projectId, JSON.stringify([{ type: 'session', id: sessionId }])],
+    );
+    return rows.length > 0;
+  }
+
   private rowToEvent(row: Record<string, unknown>): ProjectEvent {
     const occurredAt = row.occurred_at as Date | string;
     const createdAt = row.created_at as Date | string;
