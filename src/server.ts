@@ -53,19 +53,6 @@ export interface ExtractionDeps {
   merger?: NoteMerger;
 }
 
-/**
- * Returned to MCP clients that still call the deprecated `memory_write`.
- * Points them at the v4.5 replacements: note_write/note_share for the
- * intentional path, and session_import for the auto-extracted path.
- */
-export const MEMORY_WRITE_DEPRECATED_MESSAGE =
-  '❌ memory_write устарел с v4.5. ' +
-  'Используй note_write для создания личного черновика, затем note_share для публикации в командную память ' +
-  '(с дедупликацией против существующих записей). Сессии, импортированные через session_import, автоматически извлекают атомарные факты.\n\n' +
-  'memory_write deprecated since v4.5. ' +
-  'Use note_write to create a personal draft, then note_share to publish to team memory ' +
-  '(with dedup vs existing entries). Sessions imported via session_import auto-extract atomic facts.';
-
 export function buildMcpServer(
   memoryManager: MemoryManager,
   agentTokenStore?: AgentTokenStore,
@@ -101,7 +88,7 @@ function setupHandlers(
             project_id: { type: 'string', description: 'ID проекта. Если не указан — берётся из заголовка X-Project-Id.' },
             category: {
               type: 'string',
-              enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions', 'all'],
+              enum: ['profile', 'knowledge', 'tasks', 'issues', 'progress', 'all'],
               description: 'Категория памяти для чтения'
             },
             domain: { type: 'string', description: 'Фильтр по домену (backend, frontend, infrastructure, и т.д.)' },
@@ -130,15 +117,6 @@ function setupHandlers(
             }
           }
         }
-      },
-      {
-        name: 'memory_write',
-        description:
-          'УСТАРЕЛО с v4.5 — используй note_write для создания личного черновика и note_share для публикации в командную память. Импорт сессий через session_import автоматически извлекает атомарные факты. / DEPRECATED since v4.5 — use note_write + note_share, or session_import for auto-extracted facts.',
-        inputSchema: {
-          type: 'object',
-          properties: {},
-        },
       },
       {
         name: 'memory_update',
@@ -251,7 +229,7 @@ function setupHandlers(
           properties: {
             project_id: { type: 'string', description: 'ID проекта' },
             format: { type: 'string', enum: ['markdown', 'json'], default: 'markdown', description: 'Формат экспорта' },
-            category: { type: 'string', enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions', 'all'], description: 'Категория' },
+            category: { type: 'string', enum: ['profile', 'knowledge', 'tasks', 'issues', 'progress', 'all'], description: 'Категория' },
           },
         },
       },
@@ -338,7 +316,7 @@ function setupHandlers(
             query: { type: 'string', description: 'Поисковый запрос' },
             category: {
               type: 'string',
-              enum: ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions', 'all'],
+              enum: ['profile', 'knowledge', 'tasks', 'issues', 'progress', 'all'],
               description: 'Фильтр по категории'
             },
             domain: { type: 'string', description: 'Фильтр по домену' },
@@ -446,8 +424,10 @@ function setupHandlers(
             note_id: { type: 'string', description: 'UUID заметки' },
             category: {
               type: 'string',
-              enum: ['architecture', 'decisions', 'conventions'],
-              description: 'Категория командной записи',
+              // v5 only writes knowledge; legacy values accepted by NotesManager.share
+              // for backward compat are auto-translated to knowledge + kind tag.
+              enum: ['knowledge', 'architecture', 'decisions', 'conventions'],
+              description: 'Категория командной записи (legacy значения автоматически переводятся в knowledge + kind tag)',
             },
             override: {
               type: 'object',
@@ -648,25 +628,6 @@ function setupHandlers(
             return `## ${pin}${pi} ${e.title}\n**ID**: ${e.id}\n**Категория**: ${e.category}${dom} | **Статус**: ${e.status} | **Автор**: ${e.author}${e.pinned ? ' | 📌' : ''}\n**Теги**: ${e.tags.join(', ') || 'нет'}${rel}\n**Обновлено**: ${new Date(e.updatedAt).toLocaleString()}\n\n${e.content}\n\n---`;
           }).join('\n\n');
           return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей)\n\n${formatted}` }] };
-        }
-
-        case 'memory_write': {
-          // Deprecated since v4.5 — direct memory_write is replaced by:
-          //   1) note_write to create a personal draft, then
-          //   2) note_share to publish the draft as a team-memory entry
-          //      (with optional dedup against existing entries), or
-          //   3) session_import → background auto-extraction.
-          // Returns a 410-Gone-style error so existing automations fail
-          // loudly instead of silently writing through a parallel API.
-          return {
-            content: [
-              {
-                type: 'text',
-                text: MEMORY_WRITE_DEPRECATED_MESSAGE,
-              },
-            ],
-            isError: true,
-          };
         }
 
         case 'memory_update': {
@@ -1337,7 +1298,7 @@ function setupHandlers(
         : 'Нет изменений за 24 часа.';
       return { contents: [{ uri, mimeType: 'text/markdown', text: `# Последние изменения\n\n${text}` }] };
     }
-    const VALID_CATEGORIES = ['architecture', 'tasks', 'decisions', 'issues', 'progress', 'conventions'];
+    const VALID_CATEGORIES = ['profile', 'knowledge', 'tasks', 'issues', 'progress'];
     const m = uri.match(/^memory:\/\/(\w+)$/);
     if (m && VALID_CATEGORIES.includes(m[1])) {
       const category = m[1] as Category;

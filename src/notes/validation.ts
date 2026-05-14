@@ -49,7 +49,10 @@ export const NoteSearchSchema = z.object({
 
 export const NoteShareSchema = z.object({
   note_id: UuidSchema,
-  category: z.enum(['architecture', 'decisions', 'conventions']),
+  // v5: NotesManager.share accepts legacy names and translates them to
+  // category='knowledge' + kind tag (architecture / decision / convention).
+  // New callers should pass 'knowledge' directly.
+  category: z.enum(['knowledge', 'architecture', 'decisions', 'conventions']),
   override: z
     .object({
       title: z.string().min(1).max(500).optional(),
