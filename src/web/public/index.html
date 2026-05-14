@@ -53,32 +53,45 @@
           <span>Закреплённые</span>
           <span class="nav-count" id="count-pinned">0</span>
         </button>
-        <button class="nav-item" data-category="architecture">
+        <!--
+          v5 LEGACY-RESERVED NAV ITEMS — hidden, not removed.
+          Reasoning:
+            - architecture / decisions / conventions: collapsed into 'knowledge'
+              by migration 022 (always show 0 entries now).
+            - tasks / issues / progress: deprecated since v4.5, but live data
+              still exists across projects (tasks: 2, issues: 5, progress: 9).
+          Reserved for V5+ Azure DevOps integration where these may be revived
+          as shadow views over Azure work items (Tasks, Bugs, Features,
+          Iterations). See docs/superpowers/specs/2026-05-14-azure-devops-integration-scope.md.
+          To revive: drop the `style="display:none"` and update categoryConfig
+          in app.js to point at the new Azure-backed source.
+        -->
+        <button class="nav-item" data-category="architecture" style="display:none">
           <i data-lucide="building-2" class="nav-icon"></i>
           <span>Архитектура</span>
           <span class="nav-count" id="count-architecture">0</span>
         </button>
-        <button class="nav-item" data-category="tasks">
+        <button class="nav-item" data-category="tasks" style="display:none">
           <i data-lucide="clipboard-list" class="nav-icon"></i>
           <span>Задачи</span>
           <span class="nav-count" id="count-tasks">0</span>
         </button>
-        <button class="nav-item" data-category="decisions">
+        <button class="nav-item" data-category="decisions" style="display:none">
           <i data-lucide="check-circle-2" class="nav-icon"></i>
           <span>Решения</span>
           <span class="nav-count" id="count-decisions">0</span>
         </button>
-        <button class="nav-item" data-category="issues">
+        <button class="nav-item" data-category="issues" style="display:none">
           <i data-lucide="bug" class="nav-icon"></i>
           <span>Проблемы</span>
           <span class="nav-count" id="count-issues">0</span>
         </button>
-        <button class="nav-item" data-category="progress">
+        <button class="nav-item" data-category="progress" style="display:none">
           <i data-lucide="trending-up" class="nav-icon"></i>
           <span>Прогресс</span>
           <span class="nav-count" id="count-progress">0</span>
         </button>
-        <button class="nav-item" data-category="conventions">
+        <button class="nav-item" data-category="conventions" style="display:none">
           <i data-lucide="book-open" class="nav-icon"></i>
           <span>Конвенции</span>
           <span class="nav-count" id="count-conventions">0</span>
@@ -454,19 +467,25 @@
           <div class="form-row">
             <div class="form-group">
               <label>Категория</label>
-              <input type="hidden" id="entry-category" value="architecture">
+              <input type="hidden" id="entry-category" value="knowledge">
               <div class="custom-select custom-select--compact" id="category-select">
                 <button class="custom-select-trigger" type="button">
-                  <span class="custom-select-value">Архитектура</span>
+                  <span class="custom-select-value">Знания</span>
                   <i data-lucide="chevron-down" class="custom-select-arrow"></i>
                 </button>
                 <div class="custom-select-options">
-                  <div class="custom-select-option selected" data-value="architecture"><span class="custom-select-option-name">Архитектура</span></div>
-                  <div class="custom-select-option" data-value="tasks"><span class="custom-select-option-name">Задачи</span></div>
-                  <div class="custom-select-option" data-value="decisions"><span class="custom-select-option-name">Решения</span></div>
-                  <div class="custom-select-option" data-value="issues"><span class="custom-select-option-name">Проблемы</span></div>
-                  <div class="custom-select-option" data-value="progress"><span class="custom-select-option-name">Прогресс</span></div>
-                  <div class="custom-select-option" data-value="conventions"><span class="custom-select-option-name">Конвенции</span></div>
+                  <div class="custom-select-option selected" data-value="knowledge"><span class="custom-select-option-name">Знания</span></div>
+                  <!--
+                    v5 LEGACY-RESERVED CATEGORIES — hidden, not removed.
+                    Same rationale as the nav items above. Revive by dropping
+                    the `style="display:none"` here and in the nav block.
+                  -->
+                  <div class="custom-select-option" data-value="architecture" style="display:none"><span class="custom-select-option-name">Архитектура</span></div>
+                  <div class="custom-select-option" data-value="tasks" style="display:none"><span class="custom-select-option-name">Задачи</span></div>
+                  <div class="custom-select-option" data-value="decisions" style="display:none"><span class="custom-select-option-name">Решения</span></div>
+                  <div class="custom-select-option" data-value="issues" style="display:none"><span class="custom-select-option-name">Проблемы</span></div>
+                  <div class="custom-select-option" data-value="progress" style="display:none"><span class="custom-select-option-name">Прогресс</span></div>
+                  <div class="custom-select-option" data-value="conventions" style="display:none"><span class="custom-select-option-name">Конвенции</span></div>
                 </div>
               </div>
             </div>

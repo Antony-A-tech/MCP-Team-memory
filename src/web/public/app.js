@@ -131,9 +131,17 @@ const projectsModal = document.getElementById('projects-modal');
 let projectDomains = []; // ProjectDomain[] from API
 
 // Category config
+// v5: 'knowledge' is the canonical category for WHY-facts. Legacy categories
+// are kept here so that entries already in the DB still render with proper
+// title/icon, even though the nav buttons for them are display:none.
+// When V5+ Azure DevOps integration revives tasks/issues/progress as shadow
+// views over Azure work items, unhide the nav buttons and these configs are
+// already correct.
 const categoryConfig = {
   all: { title: 'Все записи', icon: 'layout-grid' },
   pinned: { title: 'Закреплённые', icon: 'pin' },
+  knowledge: { title: 'Знания', icon: 'book-open' },
+  profile: { title: 'Профиль', icon: 'map' },
   architecture: { title: 'Архитектура', icon: 'building-2' },
   tasks: { title: 'Задачи', icon: 'clipboard-list' },
   decisions: { title: 'Решения', icon: 'check-circle-2' },
@@ -1065,7 +1073,9 @@ function openModal(entry = null) {
     modalTitle.textContent = 'Добавить запись';
     entryForm.reset();
     document.getElementById('entry-id').value = '';
-    setFormSelectValue('category-select', 'entry-category', 'architecture');
+    // v5: default new entries to 'knowledge' (architecture/decisions/conventions
+    // are now legacy-hidden and collapsed into knowledge by migration 022).
+    setFormSelectValue('category-select', 'entry-category', 'knowledge');
     setFormSelectValue('priority-select', 'entry-priority', 'medium');
     setFormSelectValue('entry-status-select', 'entry-status', 'active');
     setFormSelectValue('domain-select', 'entry-domain', '');
@@ -2749,6 +2759,13 @@ async function openShareNoteModal(noteId) {
           </div>
           <div class="form-group">
             <label for="share-note-category">Категория</label>
+            <!--
+              v5: NotesManager.share accepts these legacy values and translates
+              them into category='knowledge' + the kind tag (architecture /
+              decision / convention). Kept here as the UX surface because the
+              author still picks WHAT kind of fact they're sharing — the
+              translation is internal.
+            -->
             <select id="share-note-category">
               <option value="decisions">decisions — почему мы выбрали X</option>
               <option value="architecture">architecture — структура / контракты</option>
