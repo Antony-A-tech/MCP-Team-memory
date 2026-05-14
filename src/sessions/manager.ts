@@ -273,18 +273,30 @@ export class SessionManager {
     }
 
     const messages = await this.storage.getMessages(session.id, 0);
+    const promptMessages = messages.map(m => ({ role: m.role, content: m.content }));
 
-    // v5: parallel pass — extract WHAT-events (merge/release/deploy/incident/milestone).
-    // Independent from notes extraction; failure doesn't block the main pipeline.
-    if (this.eventsManager && this.llmClient) {
-      this.runEventsExtraction(session, messages.map(m => ({ role: m.role, content: m.content })))
-        .catch(err => logger.error({ err, sessionId: session.id }, 'events extraction failed'));
-    }
+    // v5: run notes-extraction and events-extraction in parallel.
+    // Events extraction is idempotent (hasEventForSession guard), so a worker
+    // retry doesn't duplicate events. We AWAIT both so the session is only
+    // marked complete after both passes have finished or surfaced an error.
+    // The notes pass is mandatory; the events pass is best-effort — its
+    // failures are logged but do not propagate so they can't block the
+    // (much more critical) knowledge extraction.
+    const eventsPromise = this.eventsManager && this.llmClient
+      ? this.runEventsExtraction(session, promptMessages).catch(err => {
+          logger.error({ err, sessionId: session.id }, 'events extraction failed');
+        })
+      : Promise.resolve();
 
     const result = await this.noteExtractor.extract({
       summary: session.summary,
-      messages: messages.map(m => ({ role: m.role, content: m.content })),
+      messages: promptMessages,
     });
+
+    // Wait for events pass before continuing dedup — guarantees that if the
+    // worker process is shut down between these two awaits, we still flushed
+    // (or recorded the failure of) the events insert.
+    await eventsPromise;
 
     if (result.candidates.length === 0) {
       logger.info(

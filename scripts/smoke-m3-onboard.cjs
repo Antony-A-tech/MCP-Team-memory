@@ -2,8 +2,13 @@
 // Quick smoke: invoke memory_onboard via MCP HTTP transport, print summary.
 const http = require('http');
 
-const TOKEN = process.env.TM_TOKEN || 'tm_143ca58e50d3e6640b9913449a548f76';
-const PID = process.argv[2] || '45c8f3bc-af69-404a-8fa2-897b53748e12';
+const TOKEN = process.env.TM_TOKEN;
+const PID = process.argv[2] || process.env.TM_PROJECT_ID || '45c8f3bc-af69-404a-8fa2-897b53748e12';
+
+if (!TOKEN) {
+  console.error('TM_TOKEN env var is required');
+  process.exit(1);
+}
 
 let mcpSid;
 
