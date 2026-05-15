@@ -133,6 +133,14 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
   }
 
   private async embedBatchSingleFallback(batch: string[], prefix: string): Promise<number[][]> {
+    // Used after a 400-class error on the batched embed (typically: one input
+    // exceeded Ollama's max tokens even after truncate). We retry each input
+    // individually so the good ones still produce vectors. A per-item failure
+    // now throws and propagates: zero-vector fallback corrupted the dedup
+    // pipeline (zero vector has unusual cosine-similarity behaviour against
+    // arbitrary content, producing both false-positive and false-negative
+    // matches). Callers that need to tolerate per-item failures must batch
+    // smaller or split inputs themselves.
     const results: number[][] = [];
     for (let idx = 0; idx < batch.length; idx++) {
       const text = batch[idx];
@@ -143,29 +151,26 @@ export class OllamaEmbeddingProvider implements EmbeddingProvider {
           body: JSON.stringify({ model: this.modelName, truncate: true, input: prefix + truncateForEmbed(text) }),
           signal: AbortSignal.timeout(EMBED_TIMEOUT_MS),
         });
-        if (singleRes.ok) {
-          const singleData = await singleRes.json() as { embeddings: number[][] };
-          results.push(singleData.embeddings[0]);
-        } else {
+        if (!singleRes.ok) {
           const errorBody = await singleRes.text();
-          // textPreview deliberately omitted — imported session content can contain
-          // tokens/secrets pasted during development. Index + length are enough to
-          // correlate against the source batch.
+          // textPreview deliberately omitted — imported session content can
+          // contain tokens/secrets pasted during development. Index + length
+          // are enough to correlate against the source batch.
           logger.warn({ status: singleRes.status, idx, textLength: text.length, error: errorBody },
-            'Single text embedding failed, using zero vector');
-          results.push(new Array(this.dimensions).fill(0));
+            'Single text embedding failed, throwing to caller');
+          throw new Error(`Ollama embed failed for batch index ${idx}: ${singleRes.status} ${errorBody}`);
         }
+        const singleData = await singleRes.json() as { embeddings: number[][] };
+        results.push(singleData.embeddings[0]);
       } catch (err) {
-        // Timeouts/aborts are a different failure class than "input too long after
-        // truncate" — don't silently mask them as zero-vectors; let the caller fail
-        // the whole batch the same way any other non-400 error would.
+        // Surface every failure class identically — the caller now owns the
+        // "what to do when embedding fails for one item" decision.
         const name = (err as { name?: string } | undefined)?.name;
         if (name === 'TimeoutError' || name === 'AbortError') {
           throw err;
         }
-        logger.warn({ err, idx, textLength: text.length },
-          'Single text embedding threw, using zero vector');
-        results.push(new Array(this.dimensions).fill(0));
+        if (err instanceof Error) throw err;
+        throw new Error(`Single text embedding threw at idx=${idx}: ${String(err)}`);
       }
     }
     return results;
