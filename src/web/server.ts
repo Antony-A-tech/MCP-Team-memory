@@ -14,6 +14,32 @@ import logger from '../logger.js';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
+/**
+ * Build pg_dump invocation parameters without leaking the database password
+ * into argv. Password is passed via PGPASSWORD env var for the direct path;
+ * the docker path relies on local socket trust auth inside the container and
+ * intentionally does not propagate the credential (`-e PGPASSWORD=...` would
+ * still leak it to host `ps` output).
+ *
+ * Exported for testability.
+ */
+export function buildPgDumpInvocation(
+  dbUrl: string,
+  container: string,
+): { directArgs: string[]; dockerArgs: string[]; env: NodeJS.ProcessEnv } {
+  const url = new URL(dbUrl);
+  const dbName = decodeURIComponent(url.pathname.slice(1));
+  const dbUser = decodeURIComponent(url.username);
+  const dbPassword = url.password ? decodeURIComponent(url.password) : '';
+  const dbHost = url.hostname || 'localhost';
+  const dbPort = url.port || '5432';
+  return {
+    directArgs: ['-h', dbHost, '-p', dbPort, '-U', dbUser, '-d', dbName],
+    dockerArgs: ['exec', container, 'pg_dump', '-U', dbUser, '-d', dbName],
+    env: { ...process.env, PGPASSWORD: dbPassword },
+  };
+}
+
 export class WebServer {
   private app: Express | null = null;
   private memoryManager: MemoryManager;
@@ -504,16 +530,18 @@ export class WebServer {
 
         const dbUrl = process.env.DATABASE_URL || 'postgresql://memory:memory@localhost:5432/team_memory';
         const container = process.env.PG_CONTAINER || 'team-memory-pg';
+        const { directArgs, dockerArgs, env: childEnv } = buildPgDumpInvocation(dbUrl, container);
         const fd = fs.openSync(backupFile, 'w');
         try {
           try {
             execFileSync('pg_dump', ['--version'], { stdio: 'pipe' });
-            execFileSync('pg_dump', [dbUrl], { stdio: ['pipe', fd, 'pipe'] });
+            execFileSync('pg_dump', directArgs, { stdio: ['pipe', fd, 'pipe'], env: childEnv });
           } catch {
-            // pg_dump not in PATH — use docker exec
-            const url = new URL(dbUrl);
-            execFileSync('docker', ['exec', container, 'pg_dump', '-U', url.username, url.pathname.slice(1)],
-              { stdio: ['pipe', fd, 'pipe'] });
+            // pg_dump not in PATH — use docker exec. Inside the container,
+            // pg_dump connects via local socket which defaults to trust auth
+            // on the official postgres image; no PGPASSWORD needed and we
+            // avoid leaking the credential into host argv via `-e`.
+            execFileSync('docker', dockerArgs, { stdio: ['pipe', fd, 'pipe'] });
           }
         } finally {
           fs.closeSync(fd);
