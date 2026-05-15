@@ -217,9 +217,44 @@ export class SyncWebSocketServer {
     }
   }
 
+  /**
+   * Extract `projectId` from an event payload if present. Used by broadcast/
+   * broadcastExcept to scope per-project events (memory:*, agent:connected,
+   * agent:disconnected) to clients connected to the same project — without
+   * this filter, a UI in project A would receive activity events from
+   * project B (REST audit found this leak).
+   *
+   * Returns undefined for global events (memory:sync ping/pong, etc.), which
+   * fan out to every connected client regardless of project binding.
+   */
+  private getProjectIdFromEvent(event: WSEvent): string | undefined {
+    const p = event.payload;
+    if (p && typeof p === 'object' && 'projectId' in p) {
+      const id = (p as { projectId?: unknown }).projectId;
+      if (typeof id === 'string' && id.length > 0) return id;
+    }
+    return undefined;
+  }
+
+  /**
+   * Decide whether to deliver an event with `eventProjectId` to a client
+   * whose subscription is bound to `clientProjectId`.
+   *
+   * - No projectId on the event → global → deliver to everyone.
+   * - Client has no projectId (legacy/global viewer) → deliver everything.
+   * - Otherwise match strictly.
+   */
+  private shouldDeliver(eventProjectId: string | undefined, clientProjectId: string | undefined): boolean {
+    if (!eventProjectId) return true;
+    if (!clientProjectId) return true;
+    return eventProjectId === clientProjectId;
+  }
+
   private broadcast(event: WSEvent): void {
     const message = JSON.stringify(event);
+    const targetProjectId = this.getProjectIdFromEvent(event);
     this.clients.forEach((client) => {
+      if (!this.shouldDeliver(targetProjectId, client.projectId)) return;
       if (client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(message, (err) => {
           if (err) logger.error({ clientName: client.name, err }, 'WebSocket broadcast failed');
@@ -230,8 +265,11 @@ export class SyncWebSocketServer {
 
   private broadcastExcept(excludeId: string, event: WSEvent): void {
     const message = JSON.stringify(event);
+    const targetProjectId = this.getProjectIdFromEvent(event);
     this.clients.forEach((client, id) => {
-      if (id !== excludeId && client.ws.readyState === WebSocket.OPEN) {
+      if (id === excludeId) return;
+      if (!this.shouldDeliver(targetProjectId, client.projectId)) return;
+      if (client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(message, (err) => {
           if (err) logger.error({ clientName: client.name, err }, 'WebSocket broadcast failed');
         });
