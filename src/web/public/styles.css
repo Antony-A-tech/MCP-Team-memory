@@ -2450,6 +2450,91 @@ select:focus {
   color: var(--bg-primary);
 }
 
+/* Per-token project access (RBAC, migration 028) */
+.btn-access {
+  background: transparent;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid var(--accent, #3b82f6);
+  color: var(--accent, #3b82f6);
+}
+.btn-access:hover {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+}
+
+.agent-access-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.agent-access-badge.none {
+  border-color: var(--red, #ef4444);
+  color: var(--red, #ef4444);
+}
+.agent-access-badge.full {
+  border-color: var(--green, #22c55e);
+  color: var(--green, #22c55e);
+}
+.agent-access-badge:hover {
+  background: var(--bg-hover);
+}
+
+.agent-access-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.agent-access-list {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg-secondary);
+}
+
+.agent-access-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.agent-access-row:hover {
+  background: var(--bg-hover);
+}
+.agent-access-row input[type="checkbox"] {
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.agent-access-row-name {
+  flex: 1;
+  font-size: 14px;
+}
+.agent-access-row-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.agent-access-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
+}
+
 .agent-row {
   cursor: pointer;
 }
