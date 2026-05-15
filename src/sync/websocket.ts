@@ -58,9 +58,21 @@ export class SyncWebSocketServer {
       let resolvedAgentName: string | undefined;
 
       if (effectiveToken) {
-        // SECURITY NOTE: query param token may leak to access logs, proxies, browser history.
-        // Prefer Authorization: Bearer header. Query param kept for WebSocket clients that can't set headers.
-        const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || url.searchParams.get('token');
+        // SECURITY NOTE: query param tokens leak to access logs, reverse
+        // proxies, browser history, and referrer headers. Prefer
+        // Authorization: Bearer or the Sec-WebSocket-Protocol sub-protocol
+        // mechanism. The query param is DEPRECATED and kept only for
+        // backward compatibility — log a warning each time it's used so
+        // operators can spot the dependency.
+        const headerToken = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+        const queryToken = url.searchParams.get('token') || undefined;
+        if (queryToken && !headerToken) {
+          logger.warn(
+            { ip: req.socket.remoteAddress, host: req.headers.host },
+            'WS auth: token passed via query param `?token=` is DEPRECATED — switch the client to Authorization: Bearer header. Query-param token will be removed in a future release.',
+          );
+        }
+        const token = headerToken || queryToken;
         if (!token) {
           if (!this.allowReadonly) {
             ws.close(4401, 'Unauthorized');
