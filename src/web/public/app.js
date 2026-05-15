@@ -2901,7 +2901,7 @@ async function openShareNoteModal(noteId) {
             <input id="share-note-title" type="text" maxlength="500" />
           </div>
           <div class="form-group">
-            <label for="share-note-category">Категория</label>
+            <label>Категория</label>
             <!--
               v5: NotesManager.share accepts these legacy values and translates
               them into category='knowledge' + the kind tag (architecture /
@@ -2909,24 +2909,38 @@ async function openShareNoteModal(noteId) {
               author still picks WHAT kind of fact they're sharing — the
               translation is internal.
             -->
-            <select id="share-note-category">
-              <option value="decisions">decisions — почему мы выбрали X</option>
-              <option value="architecture">architecture — структура / контракты</option>
-              <option value="conventions">conventions — правила и стандарты</option>
-            </select>
+            <input type="hidden" id="share-note-category" value="decisions">
+            <div class="custom-select" id="share-note-category-select">
+              <button class="custom-select-trigger" type="button">
+                <span class="custom-select-value">decisions — почему мы выбрали X</span>
+                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+              </button>
+              <div class="custom-select-options">
+                <div class="custom-select-option selected" data-value="decisions"><span class="custom-select-option-name">decisions — почему мы выбрали X</span></div>
+                <div class="custom-select-option" data-value="architecture"><span class="custom-select-option-name">architecture — структура / контракты</span></div>
+                <div class="custom-select-option" data-value="conventions"><span class="custom-select-option-name">conventions — правила и стандарты</span></div>
+              </div>
+            </div>
           </div>
           <div class="form-group">
             <label for="share-note-content">Содержимое</label>
             <textarea id="share-note-content" rows="6"></textarea>
           </div>
           <div class="form-group">
-            <label for="share-note-on-match">При найденном дубликате</label>
-            <select id="share-note-on-match">
-              <option value="prompt">Спросить (показать совпадение)</option>
-              <option value="confirm_existing">Подтвердить существующую</option>
-              <option value="merge">Объединить</option>
-              <option value="create_new">Создать новую (игнорировать)</option>
-            </select>
+            <label>При найденном дубликате</label>
+            <input type="hidden" id="share-note-on-match" value="prompt">
+            <div class="custom-select" id="share-note-on-match-select">
+              <button class="custom-select-trigger" type="button">
+                <span class="custom-select-value">Спросить (показать совпадение)</span>
+                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+              </button>
+              <div class="custom-select-options">
+                <div class="custom-select-option selected" data-value="prompt"><span class="custom-select-option-name">Спросить (показать совпадение)</span></div>
+                <div class="custom-select-option" data-value="confirm_existing"><span class="custom-select-option-name">Подтвердить существующую</span></div>
+                <div class="custom-select-option" data-value="merge"><span class="custom-select-option-name">Объединить</span></div>
+                <div class="custom-select-option" data-value="create_new"><span class="custom-select-option-name">Создать новую (игнорировать)</span></div>
+              </div>
+            </div>
           </div>
           <div id="share-note-status" style="margin-top: 12px;"></div>
         </div>
@@ -2938,6 +2952,12 @@ async function openShareNoteModal(noteId) {
     `;
     document.body.appendChild(modal);
 
+    // Wire up the themed custom-selects (replaces the native <select>s that
+    // ignored project theme and were jarring next to the rest of the modal).
+    initFormSelect('share-note-category-select', 'share-note-category');
+    initFormSelect('share-note-on-match-select', 'share-note-on-match');
+    if (window.lucide) window.lucide.createIcons();
+
     modal.addEventListener('click', e => {
       if (e.target === modal) closeShareNoteModal();
       if (e.target.dataset?.action === 'closeShareModal') closeShareNoteModal();
@@ -2948,8 +2968,8 @@ async function openShareNoteModal(noteId) {
   modal.dataset.noteId = note.id;
   modal.querySelector('#share-note-title').value = note.title;
   modal.querySelector('#share-note-content').value = note.content;
-  modal.querySelector('#share-note-category').value = 'decisions';
-  modal.querySelector('#share-note-on-match').value = 'prompt';
+  setFormSelectValue('share-note-category-select', 'share-note-category', 'decisions');
+  setFormSelectValue('share-note-on-match-select', 'share-note-on-match', 'prompt');
   modal.querySelector('#share-note-status').innerHTML = '';
   modal.querySelector('#share-note-submit').disabled = false;
   modal.style.display = 'flex';
@@ -3011,7 +3031,7 @@ async function submitShareNote() {
         confirmText: 'Подтвердить связь',
       });
       if (proceed) {
-        modal.querySelector('#share-note-on-match').value = 'confirm_existing';
+        setFormSelectValue('share-note-on-match-select', 'share-note-on-match', 'confirm_existing');
         await submitShareNote();
         return;
       }
