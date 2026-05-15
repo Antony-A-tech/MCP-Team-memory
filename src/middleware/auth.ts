@@ -3,6 +3,29 @@ import crypto from 'crypto';
 import logger from '../logger.js';
 import type { AgentTokenStore } from '../auth/agent-tokens.js';
 
+// RFC 4122 UUID format (any version). Defence-in-depth — SQL injection is
+// already blocked by parameterized queries, but rejecting malformed input at
+// the edge gives clearer 400s and keeps logs free of postgres syntax errors.
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+
+/**
+ * Reads and validates the X-Project-Id header. Returns the trimmed value if
+ * present and well-formed, or undefined if absent. Sends a 400 and returns
+ * `false` if the header is present but malformed.
+ */
+function readProjectIdHeader(req: Request, res: Response): string | undefined | false {
+  const raw = req.headers['x-project-id'];
+  if (raw === undefined) return undefined;
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  if (typeof value !== 'string' || value.trim() === '') return undefined;
+  const trimmed = value.trim();
+  if (!UUID_RE.test(trimmed)) {
+    res.status(400).json({ error: 'Invalid X-Project-Id header: must be a UUID' });
+    return false;
+  }
+  return trimmed;
+}
+
 /**
  * Creates Bearer token auth middleware.
  * If token is undefined — auth is disabled (all requests pass through).
@@ -26,7 +49,8 @@ export function createAuthMiddleware(
   return (req: Request, res: Response, next: NextFunction): void => {
     // No token configured — auth disabled, but still extract X-Project-Id
     if (!trimmedToken) {
-      const projectId = req.headers['x-project-id'] as string | undefined;
+      const projectId = readProjectIdHeader(req, res);
+      if (projectId === false) return; // 400 already sent
       if (projectId) {
         (req as any).auth = { clientId: 'master', scopes: [], projectId };
       }
@@ -45,7 +69,8 @@ export function createAuthMiddleware(
       // Allow readonly access without token when enabled
       if (allowReadonly) {
         req.readOnly = true;
-        const projectId = req.headers['x-project-id'] as string | undefined;
+        const projectId = readProjectIdHeader(req, res);
+        if (projectId === false) return;
         (req as any).auth = { clientId: 'viewer', scopes: ['readonly'], projectId };
         next();
         return;
@@ -69,7 +94,8 @@ export function createAuthMiddleware(
         req.agentName = agentInfo.agentName;
         req.agentRole = agentInfo.role;
         // MCP SDK reads req.auth for StreamableHTTPServerTransport → extra.authInfo
-        const projectId = req.headers['x-project-id'] as string | undefined;
+        const projectId = readProjectIdHeader(req, res);
+        if (projectId === false) return;
         (req as any).auth = { clientId: agentInfo.agentName, agentTokenId: agentInfo.id, scopes: [agentInfo.role], projectId };
         agentTokenStore.trackLastUsed(agentInfo.id);
         next();
@@ -88,7 +114,8 @@ export function createAuthMiddleware(
     }
 
     // Master token — full admin access, no agentName (author comes from params)
-    const projectId = req.headers['x-project-id'] as string | undefined;
+    const projectId = readProjectIdHeader(req, res);
+    if (projectId === false) return;
     (req as any).auth = { clientId: 'master', scopes: ['admin'], projectId };
     next();
   };
