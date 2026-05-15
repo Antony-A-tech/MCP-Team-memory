@@ -231,7 +231,16 @@ export class SyncWebSocketServer {
     const p = event.payload;
     if (p && typeof p === 'object' && 'projectId' in p) {
       const id = (p as { projectId?: unknown }).projectId;
-      if (typeof id === 'string' && id.length > 0) return id;
+      if (typeof id === 'string') {
+        if (id.length === 0) {
+          // An empty-string projectId would fall through to "global event"
+          // semantics and leak to every connected client — almost certainly
+          // a bug at the emit site (uninitialised string vs undefined).
+          logger.warn({ eventType: event.type }, 'WS event has empty-string projectId; treating as global');
+          return undefined;
+        }
+        return id;
+      }
     }
     return undefined;
   }

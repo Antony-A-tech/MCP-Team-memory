@@ -2360,6 +2360,8 @@ async function deleteAgent(id, name) {
 // Theme Switching
 // ============================================
 
+let _themeModalA11yDetach = null;
+
 function getCurrentTheme() {
   return document.documentElement.dataset.theme || 'nothing';
 }
@@ -2454,7 +2456,6 @@ function openThemeModal() {
   });
 }
 
-let _themeModalA11yDetach = null;
 function closeThemeModal() {
   if (_themeModalA11yDetach) { _themeModalA11yDetach(); _themeModalA11yDetach = null; }
   document.getElementById('theme-modal').classList.remove('active');

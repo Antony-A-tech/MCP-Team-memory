@@ -244,9 +244,16 @@
     if (!modal) return;
     modal.classList.add('active');
     if (typeof window.attachModalA11y === 'function') {
+      // Cancel deliberately wins initial focus over the header × — a
+      // destructive prompt should land on the non-destructive choice. CSS
+      // selector list returns DOM-order first match (× appears earlier in
+      // the markup), so we resolve the element manually instead of relying
+      // on `'#chat-delete-cancel, #chat-delete-modal-close'`.
+      const cancelBtn = modal.querySelector('#chat-delete-cancel');
+      const closeBtn = modal.querySelector('#chat-delete-modal-close');
       _chatDeleteModalA11yDetach = window.attachModalA11y(modal, {
         onClose: closeDeleteChatModal,
-        initialFocusSelector: '#chat-delete-cancel, #chat-delete-modal-close',
+        initialFocusSelector: cancelBtn ? '#chat-delete-cancel' : (closeBtn ? '#chat-delete-modal-close' : undefined),
       });
     }
   }

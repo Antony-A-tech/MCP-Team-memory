@@ -292,8 +292,9 @@
   // Stacking: confirm/prompt/alert (`activeModal`) always wins ESC handling.
   // Among legacy modals, only the top of `legacyA11yStack` responds — opening
   // a legacy modal while another is open pushes onto the stack; closing pops.
-  // In practice legacy modals don't stack on top of each other in this app,
-  // but the discipline keeps multi-handler firing safe.
+  // This matters in practice: a confirm modal opened from inside a legacy
+  // modal (e.g., "delete project?" from inside projects-modal) must close
+  // only the confirm, not both.
   // ---------------------------------------------------------------------------
 
   const legacyA11yStack = [];
@@ -339,8 +340,15 @@
       detachLegacyA11y(legacyA11yStack[existingIdx], { restoreFocus: false });
     }
 
-    if (!modalEl.hasAttribute('role')) modalEl.setAttribute('role', 'dialog');
-    modalEl.setAttribute('aria-modal', 'true');
+    // ARIA goes on the actual dialog container — `.modal-content` — not on
+    // the backdrop. AT (screen readers, voice control) infer focus boundaries
+    // and "inert siblings" semantics from the element bearing aria-modal, and
+    // the backdrop's bounds are larger than the dialog itself. Fallback to
+    // modalEl if `.modal-content` is missing (some future dynamic modal might
+    // not follow the convention).
+    const dialogEl = modalEl.querySelector('.modal-content') || modalEl;
+    if (!dialogEl.hasAttribute('role')) dialogEl.setAttribute('role', 'dialog');
+    dialogEl.setAttribute('aria-modal', 'true');
 
     const previousFocus = document.activeElement;
 
