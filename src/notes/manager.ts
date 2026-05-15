@@ -297,18 +297,31 @@ export class NotesManager {
           }
 
           if (onMatch === 'merge' && p.merger && existing) {
-            const merged = await p.merger.merge(
-              { title: existing.title, content: existing.content, tags: existing.tags },
-              candidate,
-            );
-            await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
-            const linked = await this.storage.setSharedToEntry(note.id, decision.entry_id);
-            if (!linked) {
-              throw new Error('Note already shared');
+            try {
+              const merged = await p.merger.merge(
+                { title: existing.title, content: existing.content, tags: existing.tags },
+                candidate,
+              );
+              await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
+              const linked = await this.storage.setSharedToEntry(note.id, decision.entry_id);
+              if (!linked) {
+                throw new Error('Note already shared');
+              }
+              return { action: 'merged', entryId: decision.entry_id };
+            } catch (err) {
+              // Merger throws (malformed LLM output) — fall through to
+              // CREATE_NEW below instead of silently writing a near-
+              // duplicate via the old candidate-fallback. The user gets a
+              // separate entry; recoverable by manual merge. The
+              // alternative (silent merge of candidate-as-is) destroyed
+              // the existing entry's nuance and was strictly worse.
+              logger.warn({ err, noteId: note.id, existingEntryId: decision.entry_id },
+                'Merge failed, falling back to CREATE_NEW for this share');
+              // Continue to the CREATE_NEW path below.
             }
-            return { action: 'merged', entryId: decision.entry_id };
           }
-          // onMatch='create_new' (or 'merge' without merger) → fall through to create.
+          // onMatch='create_new' (or 'merge' without merger / merger failed)
+          // → fall through to create.
         }
       }
     }
