@@ -705,5 +705,60 @@ export class WebServer {
         res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });
+
+    // === Per-token project access (RBAC, migration 028) ===
+    //
+    // Master-only endpoints — the agents page is admin UX. Agents can't
+    // grant themselves access to other projects; that would defeat the
+    // allowlist.
+    app.get('/api/agent-tokens/:id/projects', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const allowed = await this.agentTokenStore.getAllowedProjects(req.params.id);
+        res.json({ success: true, projects: allowed });
+      } catch (error) {
+        logger.error({ err: error }, 'GET /api/agent-tokens/:id/projects failed');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.put('/api/agent-tokens/:id/projects', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const body = req.body as { projects?: unknown };
+        if (!Array.isArray(body?.projects)) {
+          res.status(400).json({ success: false, error: 'Body must be { projects: string[] }' });
+          return;
+        }
+        // Strict UUID check on every entry — protects against typos and
+        // injection-shaped values reaching the partial UNIQUE constraint.
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        for (const p of body.projects) {
+          if (typeof p !== 'string' || !UUID_RE.test(p)) {
+            res.status(400).json({ success: false, error: `Invalid project UUID: ${String(p).slice(0, 64)}` });
+            return;
+          }
+        }
+        const granter = (req as any).auth?.clientId as string | undefined;
+        await this.agentTokenStore.setAllowedProjects(req.params.id, body.projects as string[], granter);
+        const allowed = await this.agentTokenStore.getAllowedProjects(req.params.id);
+        res.json({ success: true, projects: allowed });
+      } catch (error: any) {
+        if (typeof error?.message === 'string' && error.message.includes('migration 028')) {
+          res.status(503).json({ success: false, error: error.message });
+          return;
+        }
+        logger.error({ err: error }, 'PUT /api/agent-tokens/:id/projects failed');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
   }
 }

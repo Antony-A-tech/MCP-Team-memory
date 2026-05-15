@@ -56,6 +56,7 @@ export class SyncWebSocketServer {
       // Verify token if auth is enabled
       const effectiveToken = this.apiToken?.trim();
       let resolvedAgentName: string | undefined;
+      let resolvedAgentTokenId: string | undefined;
 
       if (effectiveToken) {
         // SECURITY NOTE: query param tokens leak to access logs, reverse
@@ -94,6 +95,7 @@ export class SyncWebSocketServer {
           const agentInfo = this.agentTokenStore?.resolve(token);
           if (agentInfo) {
             resolvedAgentName = agentInfo.agentName;
+            resolvedAgentTokenId = agentInfo.id;
             this.agentTokenStore!.trackLastUsed(agentInfo.id);
           } else {
             // Fallback: master token (timing-safe)
@@ -111,6 +113,21 @@ export class SyncWebSocketServer {
       const isReadonlyClient = !resolvedAgentName && this.allowReadonly && !req.headers.authorization;
       const clientType = url.searchParams.get('client_type') === 'ui' ? 'ui' as const : 'agent' as const;
       const projectId = url.searchParams.get('project_id') || undefined;
+
+      // RBAC check (migration 028): if the connection used an agent token
+      // AND specified a project_id, that project must be in the token's
+      // allowlist. Without this the WS layer would bypass the REST RBAC
+      // enforcement — same threat profile as the broadcast leak Phase 3.F
+      // closed earlier.
+      if (resolvedAgentTokenId && projectId && this.agentTokenStore
+          && !this.agentTokenStore.hasProjectAccess(resolvedAgentTokenId, projectId)) {
+        logger.warn(
+          { agentName: resolvedAgentName, agentTokenId: resolvedAgentTokenId, projectId },
+          'WS connect rejected: agent token has no access to requested project',
+        );
+        ws.close(4403, 'Forbidden: no access to project');
+        return;
+      }
       const clientName = resolvedAgentName || req.headers['x-agent-name']?.toString() || (clientType === 'ui' ? `ui-${clientId.slice(0, 8)}` : `agent-${clientId.slice(0, 8)}`);
 
       const client: ConnectedClient = {

@@ -212,6 +212,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDomainModal();
   initDomainContextMenu();
   initEntryActions();
+  initAgentAccessModal();
   await loadProjects();
   await loadProjectDomains();
   renderDomainFilters();
@@ -2193,6 +2194,7 @@ function initAgentsPanel() {
       if (action === 'revoke') { await revokeAgent(id, name); return; }
       if (action === 'activate') { await activateAgent(id, name); return; }
       if (action === 'delete') { await deleteAgent(id, name); return; }
+      if (action === 'editAccess') { await openAgentAccessModal(id, name); return; }
     }
 
     // Row click — toggle token row
@@ -2219,6 +2221,9 @@ async function loadAgents() {
       return;
     }
 
+    // Total project count is known from the projects selector cache. Used
+    // to render the "N из M" access badge per agent.
+    const totalProjects = Array.isArray(projects) ? projects.length : 0;
     tbody.innerHTML = data.tokens.map(t => {
       const statusDot = t.isActive ? '<span class="agent-status-dot active"></span>Активен' : '<span class="agent-status-dot inactive"></span>Отключён';
       const roleIcons = { developer: 'code-2', qa: 'bug', lead: 'crown', devops: 'container' };
@@ -2230,7 +2235,15 @@ async function loadAgents() {
       const lastUsed = t.lastUsedAt ? formatDate(t.lastUsedAt) : 'никогда';
       const cost = formatAgentCost(t.totalCostUsd, t.totalPromptTokens, t.totalCompletionTokens);
 
+      // RBAC access badge — colour-coded so "0 of N" pops as a warning.
+      const accessCount = Array.isArray(t.allowedProjects) ? t.allowedProjects.length : 0;
+      let accessClass = '';
+      if (totalProjects > 0 && accessCount === 0) accessClass = 'none';
+      else if (totalProjects > 0 && accessCount === totalProjects) accessClass = 'full';
+      const accessBadge = `<span class="agent-access-badge ${accessClass}" data-action="editAccess" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}" title="Управление доступом к проектам">${accessCount} из ${totalProjects}</span>`;
+
       const actions = [];
+      actions.push(`<button class="btn-access" data-action="editAccess" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Доступ</button>`);
       if (t.isActive) {
         actions.push(`<button class="btn-revoke" data-action="revoke" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Отключить</button>`);
       } else {
@@ -2243,13 +2256,14 @@ async function loadAgents() {
         <td>${statusDot}</td>
         <td><strong>${escapeHtml(t.agentName)}</strong></td>
         <td>${roleBadge}</td>
+        <td>${accessBadge}</td>
         <td>${created}</td>
         <td>${lastUsed}</td>
         <td class="agent-cost">${cost}</td>
         <td class="agents-actions">${actions.join(' ')}</td>
       </tr>
       <tr class="agent-token-row" id="${rowId}" style="display:none">
-        <td colspan="7">
+        <td colspan="8">
           <div class="agent-token-inline">
             <code>${escapeHtml(t.token)}</code>
             <button class="btn-copy-inline" data-action="copy" data-token="${escapeHtml(t.token)}" title="Копировать">
@@ -2353,6 +2367,118 @@ async function deleteAgent(id, name) {
     }
   } catch (e) {
     showToast('Ошибка сети', 'error');
+  }
+}
+
+// ============================================
+// Per-token project access (RBAC, migration 028)
+// ============================================
+
+let _agentAccessModalA11yDetach = null;
+let _agentAccessCurrentTokenId = null;
+
+async function openAgentAccessModal(tokenId, agentName) {
+  const modal = document.getElementById('agent-access-modal');
+  const list = document.getElementById('agent-access-list');
+  const subtitle = document.getElementById('agent-access-subtitle');
+  const status = document.getElementById('agent-access-status');
+  if (!modal || !list) return;
+
+  _agentAccessCurrentTokenId = tokenId;
+  status.innerHTML = '';
+  subtitle.textContent = `Отметьте проекты, к которым агент "${agentName}" может обращаться. Master-токен видит всё всегда.`;
+  list.innerHTML = '<div class="agent-access-empty">Загрузка…</div>';
+  modal.classList.add('active');
+
+  if (_agentAccessModalA11yDetach) { _agentAccessModalA11yDetach(); _agentAccessModalA11yDetach = null; }
+  _agentAccessModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeAgentAccessModal,
+    initialFocusSelector: '#agent-access-cancel',
+  });
+
+  try {
+    const [accessRes, projectsRes] = await Promise.all([
+      authFetch(`${API_BASE}/agent-tokens/${tokenId}/projects`),
+      authFetch(`${API_BASE}/projects`),
+    ]);
+    const accessData = await accessRes.json();
+    const projectsData = await projectsRes.json();
+    const allowed = new Set((accessData.projects || []).map(String));
+    const allProjects = projectsData.projects || projectsData || [];
+
+    if (allProjects.length === 0) {
+      list.innerHTML = '<div class="agent-access-empty">Ещё нет ни одного проекта. Создайте проект, чтобы выдать доступ.</div>';
+      return;
+    }
+
+    list.innerHTML = allProjects.map(p => {
+      const checked = allowed.has(String(p.id)) ? 'checked' : '';
+      const desc = p.description ? `<span class="agent-access-row-desc">${escapeHtml(p.description)}</span>` : '';
+      return `<label class="agent-access-row">
+        <input type="checkbox" data-project-id="${escapeHtml(p.id)}" ${checked} />
+        <span class="agent-access-row-name">${escapeHtml(p.name)}</span>
+        ${desc}
+      </label>`;
+    }).join('');
+  } catch (err) {
+    list.innerHTML = `<div class="agent-access-empty" style="color: var(--red, #ef4444);">Не удалось загрузить: ${escapeHtml(err.message || String(err))}</div>`;
+  }
+}
+
+function closeAgentAccessModal() {
+  const modal = document.getElementById('agent-access-modal');
+  if (!modal) return;
+  if (_agentAccessModalA11yDetach) { _agentAccessModalA11yDetach(); _agentAccessModalA11yDetach = null; }
+  modal.classList.remove('active');
+  _agentAccessCurrentTokenId = null;
+}
+
+function initAgentAccessModal() {
+  const modal = document.getElementById('agent-access-modal');
+  if (!modal) return;
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeAgentAccessModal(); });
+  document.getElementById('agent-access-close')?.addEventListener('click', closeAgentAccessModal);
+  document.getElementById('agent-access-cancel')?.addEventListener('click', closeAgentAccessModal);
+  document.getElementById('agent-access-select-all')?.addEventListener('click', () => {
+    modal.querySelectorAll('#agent-access-list input[type="checkbox"]').forEach((c) => { c.checked = true; });
+  });
+  document.getElementById('agent-access-clear-all')?.addEventListener('click', () => {
+    modal.querySelectorAll('#agent-access-list input[type="checkbox"]').forEach((c) => { c.checked = false; });
+  });
+  document.getElementById('agent-access-save')?.addEventListener('click', saveAgentAccess);
+}
+
+async function saveAgentAccess() {
+  const tokenId = _agentAccessCurrentTokenId;
+  if (!tokenId) return;
+  const modal = document.getElementById('agent-access-modal');
+  const status = document.getElementById('agent-access-status');
+  const saveBtn = document.getElementById('agent-access-save');
+  const checks = Array.from(modal.querySelectorAll('#agent-access-list input[type="checkbox"]'));
+  const selected = checks.filter(c => c.checked).map(c => c.dataset.projectId);
+  saveBtn.disabled = true;
+  status.textContent = 'Сохранение…';
+  status.style.color = 'var(--text-secondary)';
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens/${tokenId}/projects`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: selected }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      status.textContent = '❌ ' + (data.error || `HTTP ${res.status}`);
+      status.style.color = 'var(--red, #ef4444)';
+      saveBtn.disabled = false;
+      return;
+    }
+    showToast(`Сохранено: ${selected.length} проектов`, 'success');
+    closeAgentAccessModal();
+    loadAgents();
+  } catch (err) {
+    status.textContent = '❌ Ошибка сети: ' + escapeHtml(err.message || String(err));
+    status.style.color = 'var(--red, #ef4444)';
+    saveBtn.disabled = false;
   }
 }
 

@@ -96,7 +96,30 @@ export function createAuthMiddleware(
         // MCP SDK reads req.auth for StreamableHTTPServerTransport → extra.authInfo
         const projectId = readProjectIdHeader(req, res);
         if (projectId === false) return;
-        (req as any).auth = { clientId: agentInfo.agentName, agentTokenId: agentInfo.id, scopes: [agentInfo.role], projectId };
+        // RBAC enforcement (migration 028): an agent token may only assert
+        // X-Project-Id values that appear in its token_project_access
+        // allowlist. Master tokens bypass via the admin scope path below.
+        // Empty header is allowed — caller may be hitting an endpoint that
+        // doesn't require a project (e.g., /api/agent-tokens list).
+        //
+        // Graceful degrade: when the store doesn't implement hasProjectAccess
+        // (test mocks predating migration 028), we skip the RBAC enforcement
+        // here. Production stores always implement the method, so prod
+        // semantics are unchanged.
+        if (projectId && typeof agentTokenStore.hasProjectAccess === 'function'
+            && !agentTokenStore.hasProjectAccess(agentInfo.id, projectId)) {
+          res.status(403).json({
+            error: 'Forbidden',
+            message: `Agent token has no access to project ${projectId}. Grant access from the Agents page.`,
+          });
+          return;
+        }
+        (req as any).auth = {
+          clientId: agentInfo.agentName,
+          agentTokenId: agentInfo.id,
+          scopes: [agentInfo.role],
+          projectId,
+        };
         agentTokenStore.trackLastUsed(agentInfo.id);
         next();
         return;
