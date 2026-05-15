@@ -291,11 +291,24 @@ export class AgentTokenStore {
     }
     // Refresh the in-memory cache for THIS token so the new allowlist is
     // visible on the very next auth check. Find the cached entry by id.
+    let cacheUpdated = false;
     for (const entry of this.cache.values()) {
       if (entry.id === tokenId) {
         entry.allowedProjects = new Set(dedup);
+        cacheUpdated = true;
         break;
       }
+    }
+    if (!cacheUpdated) {
+      // The token isn't in cache — most likely it was revoked between the
+      // request arriving and this cache update. DB now has the new grant
+      // rows, but `hasProjectAccess` will keep returning false until the
+      // token is re-activated (activate() calls fetchAllowedProjects).
+      // Log so ops can spot the discrepancy.
+      logger.warn(
+        { tokenId, projectCount: dedup.length },
+        'setAllowedProjects: target token missing from in-memory cache (likely revoked); DB updated, cache will rehydrate on activate()',
+      );
     }
   }
 
