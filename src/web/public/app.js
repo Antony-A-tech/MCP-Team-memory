@@ -1840,18 +1840,40 @@ function isEventForCurrentProject(payload) {
   return payload.projectId === currentProjectId;
 }
 
+// WebSocket reload debounce — when the server broadcasts a burst of
+// memory:* events (bulk import, mass-archive, etc.) we'd otherwise call
+// loadEntries() once per event. With ~100 entries flying in, the UI
+// re-renders 100 times within a few hundred ms and the tab visibly freezes.
+// Coalesce into a single reload per ~150ms window.
+let _wsReloadTimer = null;
+let _wsReloadFlags = { entries: false, stats: false };
+function scheduleWsReload(flags) {
+  if (flags.entries) _wsReloadFlags.entries = true;
+  if (flags.stats) _wsReloadFlags.stats = true;
+  if (_wsReloadTimer) return;
+  _wsReloadTimer = setTimeout(() => {
+    _wsReloadTimer = null;
+    const f = _wsReloadFlags;
+    _wsReloadFlags = { entries: false, stats: false };
+    if (f.entries && currentCategory !== 'sessions' && currentCategory !== 'notes') {
+      loadEntries();
+    }
+    if (f.stats) loadStats();
+  }, 150);
+}
+
 function handleWSMessage(data) {
   switch (data.type) {
     case 'memory:created':
     case 'memory:updated':
     case 'memory:deleted':
       if (isEventForCurrentProject(data.payload)) {
-        // Don't reload entries on sessions/notes tabs — they use separate APIs
-        if (currentCategory !== 'sessions' && currentCategory !== 'notes') {
-          loadEntries();
-        }
-        loadStats();
+        scheduleWsReload({ entries: true, stats: true });
         if (data.type === 'memory:created') {
+          // Toasts are not debounced — one per event is fine and we'd lose
+          // the "N new entries" signal if we coalesced them. If we ever
+          // observe toast spam under load, switch this to a count + show
+          // "N новых записей" after the debounce.
           showToast('Новая запись добавлена', 'info');
         }
       }
@@ -1859,13 +1881,13 @@ function handleWSMessage(data) {
 
     case 'agent:connected':
       if (isEventForCurrentProject(data.payload) && !data.payload.renamed) {
-        loadStats();
+        scheduleWsReload({ stats: true });
       }
       break;
 
     case 'agent:disconnected':
       if (isEventForCurrentProject(data.payload)) {
-        loadStats();
+        scheduleWsReload({ stats: true });
       }
       break;
   }
