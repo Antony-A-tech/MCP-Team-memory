@@ -6,7 +6,7 @@
   <title>Team Memory - Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <script src="theme-init.js"></script>
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="stylesheet" href="styles.css?v=16">
   <link rel="stylesheet" href="themes.css?v=2">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <!-- Graph visualization: force-graph (2D canvas, d3-force) -->
@@ -293,6 +293,14 @@
             <i data-lucide="loader-2" class="spin"></i>
             <span>Загрузка сообщений...</span>
           </div>
+        </div>
+      </div>
+
+      <!-- Profile View (hidden by default) — v5 single curated entry per project -->
+      <div class="profile-container" id="profile-container" style="display:none">
+        <div class="loading">
+          <i data-lucide="loader-2" class="spin"></i>
+          <span>Загрузка...</span>
         </div>
       </div>
 
@@ -799,7 +807,7 @@
   </div>
 
   <script src="components/modal.js?v=1"></script>
-  <script src="app.js?v=7"></script>
+  <script src="app.js?v=8"></script>
   <script src="graph.js?v=6"></script>
   <script src="chat.js?v=16"></script>
 </body>

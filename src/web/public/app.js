@@ -810,7 +810,7 @@ function initNavigation() {
       if (notesLoadMore) notesLoadMore.remove();
 
       // Reset all alternative-view containers before showing the active one.
-      const altContainers = ['sessions-container', 'notes-container', 'events-container'];
+      const altContainers = ['sessions-container', 'notes-container', 'events-container', 'profile-container'];
       altContainers.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
@@ -840,6 +840,15 @@ function initNavigation() {
         statusSelect.style.display = 'none';
         pageTitle.textContent = 'События';
         loadEvents();
+      } else if (currentCategory === 'profile') {
+        // v5: profile is a single curated entry per project — show single
+        // markdown card view instead of the grid used for other categories.
+        document.getElementById('entries-container').style.display = 'none';
+        document.getElementById('profile-container').style.display = '';
+        document.getElementById('domain-filters').style.display = 'none';
+        statusSelect.style.display = 'none';
+        pageTitle.textContent = 'Профиль проекта';
+        loadProfile();
       } else {
         // entries-container path covers: all, pinned, profile, knowledge, and
         // any legacy categories (if their nav buttons are unhidden later).
@@ -3331,6 +3340,166 @@ const EVENT_TYPE_LABELS = {
   incident: { icon: 'alert-triangle', title: 'Incident' },
   milestone: { icon: 'flag', title: 'Milestone' },
 };
+
+// ===== Profile (v5 — one curated active entry per project) =====
+
+async function loadProfile() {
+  const container = document.getElementById('profile-container');
+  if (!container) return;
+  if (!currentProjectId) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="map"></i>
+        <h3>Выбери проект</h3>
+        <p>Профиль привязан к конкретному проекту. Выбери его в селекторе слева.</p>
+      </div>`;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = `<div class="loading"><i data-lucide="loader-2" class="spin"></i><span>Загрузка...</span></div>`;
+  if (window.lucide) window.lucide.createIcons();
+
+  try {
+    const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/profile`);
+    if (response.status === 404) {
+      renderEmptyProfile(container);
+      return;
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      container.innerHTML = `<div class="empty-state"><i data-lucide="alert-triangle"></i><h3>Ошибка</h3><p>${escapeHtml(err.error || `HTTP ${response.status}`)}</p></div>`;
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+    const data = await response.json();
+    renderProfileCard(container, data.profile);
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><i data-lucide="wifi-off"></i><h3>Ошибка сети</h3><p>${escapeHtml(err.message || 'Не удалось загрузить профиль')}</p></div>`;
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+function renderEmptyProfile(container) {
+  if (isReadOnly) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="map"></i>
+        <h3>Профиль не задан</h3>
+        <p>Администратор ещё не создал профиль этого проекта.</p>
+      </div>`;
+  } else {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="map"></i>
+        <h3>Профиль не задан</h3>
+        <p>Эталонная карточка проекта для онбординга агентов: миссия, стек, repo-map, конвенции, guard-rails.</p>
+        <button class="btn btn-primary" id="profile-create-btn">Создать профиль</button>
+      </div>`;
+    if (window.lucide) window.lucide.createIcons();
+    document.getElementById('profile-create-btn')?.addEventListener('click', () => openProfileEdit(null));
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderProfileCard(container, profile) {
+  const updated = profile.updatedAt ? new Date(profile.updatedAt).toLocaleString() : '';
+  const tagsHtml = (profile.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(' ');
+  const renderedBody = (typeof window.marked !== 'undefined' && typeof window.DOMPurify !== 'undefined')
+    ? window.DOMPurify.sanitize(window.marked.parse(profile.content || ''))
+    : `<pre>${escapeHtml(profile.content || '')}</pre>`;
+
+  container.innerHTML = `
+    <article class="profile-card">
+      <header class="profile-card-header">
+        <div class="profile-card-title">
+          <i data-lucide="map"></i>
+          <h2>${escapeHtml(profile.title || 'Project Profile')}</h2>
+        </div>
+        <div class="profile-card-actions">
+          ${!isReadOnly ? `<button class="btn btn-secondary" id="profile-edit-btn"><i data-lucide="edit"></i> Редактировать</button>` : ''}
+        </div>
+      </header>
+      <div class="profile-card-meta">
+        <span class="profile-card-updated">Обновлено: ${escapeHtml(updated)}</span>
+        ${tagsHtml ? `<span class="profile-card-tags">${tagsHtml}</span>` : ''}
+      </div>
+      <div class="profile-card-body markdown-body">${renderedBody}</div>
+    </article>`;
+  if (window.lucide) window.lucide.createIcons();
+  document.getElementById('profile-edit-btn')?.addEventListener('click', () => openProfileEdit(profile));
+}
+
+function openProfileEdit(currentProfile) {
+  const container = document.getElementById('profile-container');
+  const content = currentProfile?.content ?? '';
+  const tags = (currentProfile?.tags ?? []).join(', ');
+  container.innerHTML = `
+    <article class="profile-card profile-card--editing">
+      <header class="profile-card-header">
+        <div class="profile-card-title">
+          <i data-lucide="edit"></i>
+          <h2>${currentProfile ? 'Редактирование профиля' : 'Создание профиля'}</h2>
+        </div>
+      </header>
+      <form id="profile-edit-form">
+        <div class="form-group">
+          <label for="profile-content-input">Содержимое (markdown, до 64 KB)</label>
+          <textarea id="profile-content-input" rows="18" required>${escapeHtml(content)}</textarea>
+        </div>
+        <div class="form-group">
+          <label for="profile-tags-input">Теги (через запятую)</label>
+          <input type="text" id="profile-tags-input" value="${escapeHtml(tags)}" placeholder="mission, stack, repo-map">
+        </div>
+        <div id="profile-edit-status" class="form-status"></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="profile-cancel-btn">Отмена</button>
+          <button type="submit" class="btn btn-primary" id="profile-save-btn">Сохранить</button>
+        </div>
+      </form>
+    </article>`;
+  if (window.lucide) window.lucide.createIcons();
+
+  document.getElementById('profile-cancel-btn').addEventListener('click', () => loadProfile());
+
+  document.getElementById('profile-edit-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newContent = document.getElementById('profile-content-input').value;
+    const tagsRaw = document.getElementById('profile-tags-input').value;
+    const newTags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
+    const status = document.getElementById('profile-edit-status');
+    const saveBtn = document.getElementById('profile-save-btn');
+    saveBtn.disabled = true;
+    status.textContent = '';
+
+    try {
+      const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newContent, tags: newTags }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 409) {
+        status.textContent = '⚠️ Профиль изменён параллельно — обновите страницу и повторите.';
+        status.style.color = 'var(--error, #c0392b)';
+        saveBtn.disabled = false;
+        return;
+      }
+      if (!response.ok || !data.success) {
+        status.textContent = '❌ ' + (data.error || `HTTP ${response.status}`);
+        status.style.color = 'var(--error, #c0392b)';
+        saveBtn.disabled = false;
+        return;
+      }
+      showToast('Профиль сохранён', 'success');
+      loadProfile();
+    } catch (err) {
+      status.textContent = '❌ Ошибка сети: ' + escapeHtml(err.message || '');
+      status.style.color = 'var(--error, #c0392b)';
+      saveBtn.disabled = false;
+    }
+  });
+}
 
 async function loadEvents() {
   const container = document.getElementById('events-container');
