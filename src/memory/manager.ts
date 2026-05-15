@@ -891,10 +891,10 @@ export class MemoryManager {
    * archive it first. Always pinned, always priority=high.
    *
    * Throws if content exceeds MAX_PROFILE_BYTES (64 KB UTF-8).
-   * The archive-then-write is two queries — concurrent setProfile calls
-   * may both archive the same existing row and race on the partial UNIQUE
-   * index; the loser gets a 23505. Caller should treat that as a conflict
-   * and retry. See profile-manager tests for the expected behaviour.
+   * Archive-then-write is atomic: a pg_advisory_xact_lock keyed on the
+   * project serialises concurrent setProfile calls so the partial UNIQUE
+   * idx_entries_one_active_profile is never violated. See
+   * setProfile-transaction.test.ts for the concurrency contract.
    */
   async setProfile(
     projectId: string,
