@@ -10,7 +10,7 @@ import { NoteMerger } from '../extraction/merger.js';
 import type { MemoryManager } from '../memory/manager.js';
 import type { EvidenceSource } from '../extraction/types.js';
 import type { EventsManager } from '../events/manager.js';
-import { buildEventsPrompt, parseEventsResponse } from '../events/extractor.js';
+import { buildEventsPrompt, parseEventsResponseStrict, EventsParseError } from '../events/extractor.js';
 import { chunkMessage } from './chunking.js';
 import logger from '../logger.js';
 
@@ -523,8 +523,29 @@ export class SessionManager {
       summary: session.summary,
       messages,
     });
-    const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
-    const candidates = parseEventsResponse(raw, { minConfidence: this.eventsMinConfidence });
+
+    // Two attempts: malformed JSON is sometimes a transient LLM glitch
+    // (rate-limit retry, truncated response). One retry after 2s backoff
+    // recovers most of those without burning resources on persistent
+    // failures.
+    let candidates: ReturnType<typeof parseEventsResponseStrict>;
+    try {
+      const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
+      candidates = parseEventsResponseStrict(raw, { minConfidence: this.eventsMinConfidence });
+    } catch (parseErr) {
+      if (!(parseErr instanceof EventsParseError)) throw parseErr;
+      logger.warn({ err: parseErr, sessionId: session.id },
+        'events extraction parse failed; retrying once after 2s backoff');
+      await new Promise((r) => setTimeout(r, 2000));
+      try {
+        const raw2 = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
+        candidates = parseEventsResponseStrict(raw2, { minConfidence: this.eventsMinConfidence });
+      } catch (retryErr) {
+        logger.warn({ err: retryErr, sessionId: session.id },
+          'events extraction parse failed on retry; skipping for this session');
+        return;
+      }
+    }
 
     if (candidates.length === 0) {
       logger.info({ sessionId: session.id }, 'events extraction yielded zero candidates');
