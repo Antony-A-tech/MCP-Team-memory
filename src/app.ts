@@ -91,17 +91,20 @@ async function main(): Promise<void> {
   // Trust proxy: required so `req.ip` resolves to the real client IP when
   // running behind a reverse proxy (nginx/Caddy/Cloud Run). Without this
   // the rate limiter (IP-keyed for anonymous + master tiers) degenerates to
-  // a single shared bucket = the proxy address. Set via env so production
-  // deploys can pin to a specific hop count when the proxy chain is known.
-  // Default `true` matches the prior behaviour of the test suite and is safe
-  // for single-proxy deployments; multi-hop chains should set
-  // TRUST_PROXY=2 (or however many).
+  // a single shared bucket = the proxy address.
+  //
+  // SECURITY: defaults to `false`. If trust proxy is enabled when the server
+  // is reachable directly (no proxy in front), any client can spoof
+  // X-Forwarded-For to dodge per-IP rate limits and to charge buckets to
+  // other clients' IPs. Operators behind a proxy MUST opt in via TRUST_PROXY
+  // env: `TRUST_PROXY=1` for single-hop, `TRUST_PROXY=2` for two hops, or a
+  // string for an IP/CIDR whitelist (passed through to Express).
   const trustProxyEnv = process.env.TRUST_PROXY;
   if (trustProxyEnv !== undefined && trustProxyEnv !== '') {
     const asNum = Number(trustProxyEnv);
     app.set('trust proxy', Number.isFinite(asNum) ? asNum : trustProxyEnv);
   } else {
-    app.set('trust proxy', true);
+    app.set('trust proxy', false);
   }
   // JSON body limits are split by route:
   //   - /mcp gets 50mb because session_import is a JSON-RPC `tools/call`
@@ -470,6 +473,14 @@ async function main(): Promise<void> {
     const from = parseInt(req.query.from as string) || 0;
     const to = req.query.to ? parseInt(req.query.to as string) : undefined;
     try {
+      // Scope-check FIRST: resolve session metadata, verify caller's
+      // X-Project-Id matches the session's projectId. Without this, an
+      // agent token bound to project A could pass any session UUID and
+      // read content owned by other projects (if the same agent imported
+      // sessions across multiple projects).
+      const meta = await sessionManager.getSessionMeta(req.params.id, agentTokenId || '');
+      if (!meta) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      if (!enforceProjectScope(req, res, meta.projectId ?? null)) return;
       const result = await sessionManager.readSession(req.params.id, agentTokenId || '', from, to);
       if (!result) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
       res.json({
@@ -490,8 +501,13 @@ async function main(): Promise<void> {
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     const query = req.query.q as string;
     if (!query) { res.status(400).json({ success: false, error: 'Query parameter "q" is required' }); return; }
-    const limit = parseInt(req.query.limit as string) || 20;
+    // M2 review fix: route through shared parsePagination instead of an
+    // ad-hoc parseInt without a cap.
+    const { limit } = parsePagination(req, { limit: 20 });
     try {
+      const meta = await sessionManager.getSessionMeta(req.params.id, agentTokenId || '');
+      if (!meta) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      if (!enforceProjectScope(req, res, meta.projectId ?? null)) return;
       const messages = await sessionManager.searchMessagesInSession(req.params.id, agentTokenId || '', query, limit);
       res.json({ success: true, messages });
     } catch (err: any) {
@@ -506,6 +522,9 @@ async function main(): Promise<void> {
     if (!sessionManager) { res.status(404).json({ success: false, error: 'Sessions not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     try {
+      const meta = await sessionManager.getSessionMeta(req.params.id, agentTokenId || '');
+      if (!meta) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      if (!enforceProjectScope(req, res, meta.projectId ?? null)) return;
       const deleted = await sessionManager.deleteSession(req.params.id, agentTokenId || '');
       if (!deleted) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
       res.json({ success: true });
@@ -518,6 +537,7 @@ async function main(): Promise<void> {
 
   // === Project Profile (v5) ===
   app.get('/api/projects/:id/profile', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     try {
       const profile = await memoryManager.getProfile(req.params.id);
       if (!profile) { res.status(404).json({ success: false, error: 'Profile not set for this project' }); return; }
@@ -529,6 +549,7 @@ async function main(): Promise<void> {
   });
 
   app.put('/api/projects/:id/profile', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     const { content, tags } = req.body ?? {};
     if (typeof content !== 'string' || content.trim() === '') {
       res.status(400).json({ success: false, error: 'content (non-empty string) is required' });
@@ -565,9 +586,15 @@ async function main(): Promise<void> {
 
   // === Project Events (v5) ===
   app.get('/api/projects/:id/events', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     const events = memoryManager.getEventsManager();
     if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
-    const limit = Math.min(parseInt(req.query.limit as string) || 10, 200);
+    // M2 review fix: route through shared parsePagination instead of the
+    // inline `Math.min(parseInt(limit)||10, 200)` — keeps the cap rule
+    // consistent across every list endpoint. Global cap (500) is wider
+    // than the old inline cap (200) but events payloads are small and
+    // the wider cap matches the rest of the API.
+    const { limit } = parsePagination(req, { limit: 10 });
     const eventType = req.query.event_type as string | undefined;
     const since = req.query.since as string | undefined;
     if (eventType && !EVENT_TYPES.includes(eventType as EventType)) {
@@ -588,6 +615,7 @@ async function main(): Promise<void> {
   });
 
   app.post('/api/projects/:id/events', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     const events = memoryManager.getEventsManager();
     if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
     const { event_type, occurred_at, title, description, actor, refs } = req.body ?? {};
@@ -617,6 +645,7 @@ async function main(): Promise<void> {
   });
 
   app.delete('/api/projects/:projectId/events/:eventId', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.projectId)) return;
     const events = memoryManager.getEventsManager();
     if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
     try {
@@ -672,6 +701,7 @@ async function main(): Promise<void> {
     try {
       const note = await notesManager.getById(req.params.id, agentTokenId || null);
       if (!note) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      if (!enforceProjectScope(req, res, note.projectId ?? null)) return;
       res.json({ success: true, note });
     } catch (err) {
       logger.error({ err }, 'GET /api/notes/:id failed');
@@ -729,6 +759,12 @@ async function main(): Promise<void> {
     if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     try {
+      // Pre-fetch for scope check. Adds one storage round-trip but prevents
+      // an agent token pinned to project A from mutating notes that live in
+      // project B (even if the same agent token owns them).
+      const existing = await notesManager.getById(req.params.id, agentTokenId || null);
+      if (!existing) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      if (!enforceProjectScope(req, res, existing.projectId ?? null)) return;
       const updates: Record<string, unknown> = {};
       if (req.body.title !== undefined) updates.title = req.body.title;
       if (req.body.content !== undefined) updates.content = req.body.content;
@@ -750,6 +786,9 @@ async function main(): Promise<void> {
     if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     try {
+      const existing = await notesManager.getById(req.params.id, agentTokenId || null);
+      if (!existing) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      if (!enforceProjectScope(req, res, existing.projectId ?? null)) return;
       const deleted = await notesManager.delete(req.params.id, agentTokenId || null, false);
       if (!deleted) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
       res.json({ success: true });
@@ -837,6 +876,17 @@ async function main(): Promise<void> {
     }
 
     try {
+      // Scope-check before share: an agent A pinned to project X must not
+      // be able to share a note (their own) that lives in project Y into
+      // project X's team memory. The share operation creates a memory
+      // entry — its projectId is derived from the note's projectId.
+      const noteForScope = await notesManager.getById(req.params.id, agentTokenId);
+      if (!noteForScope) {
+        res.status(404).json({ success: false, error: 'Note not found or not yours' });
+        return;
+      }
+      if (!enforceProjectScope(req, res, noteForScope.projectId ?? null)) return;
+
       const result = await notesManager.share({
         noteId: req.params.id,
         agentTokenId,

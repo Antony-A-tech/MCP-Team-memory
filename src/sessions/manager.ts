@@ -192,7 +192,32 @@ export class SessionManager {
     const summary = data.summary || 'Pending summarization...';
     const needsSummary = !data.summary;
 
-    const session = await this.storage.createSession({ agentTokenId, ...data, summary });
+    let session: Session;
+    try {
+      session = await this.storage.createSession({ agentTokenId, ...data, summary });
+    } catch (err: unknown) {
+      // Migration 027 added a partial unique index on the dedup tuple.
+      // A second concurrent caller racing the same (agent_token_id,
+      // project_id, name, started_at) tuple will hit 23505 here. Re-run
+      // findByTuple to grab the row the other caller created and return
+      // it like a normal dedup hit. This closes the TOCTOU window
+      // between findByTuple + createSession.
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === '23505') {
+        const dupe = await this.storage.findByTuple(
+          agentTokenId,
+          data.projectId,
+          data.name,
+          data.startedAt,
+        );
+        if (dupe) {
+          logger.info({ sessionId: dupe.id, agentTokenId },
+            'Session import: concurrent dedup race detected, returning existing row');
+          return dupe;
+        }
+      }
+      throw err;
+    }
 
     // Set status to 'queued' — background worker will process LLM + embedding
     await this.storage.updateEmbeddingStatus(session.id, needsSummary ? 'queued' : 'queued_embed');
@@ -677,6 +702,20 @@ export class SessionManager {
 
   async countByEmbeddingStatus(projectId?: string): Promise<Record<string, number>> {
     return this.storage.countByEmbeddingStatus(projectId);
+  }
+
+  /**
+   * Cheap metadata-only lookup used by REST handlers to scope-check a
+   * session ID against the caller's project before doing the full
+   * read/delete. Returns null if the session doesn't exist OR if the
+   * agent token doesn't own it — the caller can't distinguish, which is
+   * intentional (don't leak existence of other agents' sessions).
+   */
+  async getSessionMeta(sessionId: string, agentTokenId: string): Promise<Session | null> {
+    const session = await this.storage.getSession(sessionId);
+    if (!session) return null;
+    if (agentTokenId && session.agentTokenId !== agentTokenId) return null;
+    return session;
   }
 
   async readSession(sessionId: string, agentTokenId: string, from?: number, to?: number): Promise<{

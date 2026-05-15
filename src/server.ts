@@ -562,6 +562,12 @@ function setupHandlers(
     const isAgentToken = callerAgent && callerAgent !== 'master';
     const headerProjectId = (extra as any)?.authInfo?.projectId as string | undefined;
 
+    // Master tokens (scopes includes 'admin') have full cross-project
+    // access by design — same contract as the REST `enforceProjectScope`
+    // middleware. Agent tokens are pinned to the project in their
+    // X-Project-Id header.
+    const isMasterToken = Array.isArray(callerScopes) && callerScopes.includes('admin');
+
     // Resolve project_id: explicit param > X-Project-Id header. No fallback to default.
     const resolveProjectId = (paramProjectId: string | undefined): string | undefined => {
       return paramProjectId || headerProjectId;
@@ -578,7 +584,55 @@ function setupHandlers(
           },
         };
       }
+      // M1 review fix: agent tokens scoped via X-Project-Id MUST NOT be
+      // able to operate on a different project_id passed as an argument.
+      // Master tokens skip this check (admin scope = cross-project).
+      // Without this an agent token bound to project A could pass
+      // `project_id: <B>` to memory_read / event_add / etc. and bypass
+      // the project boundary the REST layer is enforcing.
+      if (!isMasterToken && headerProjectId && resolved !== headerProjectId) {
+        return {
+          error: true,
+          response: {
+            content: [{ type: 'text', text: `❌ Project scope mismatch: токен привязан к проекту ${headerProjectId}, но запрошен ${resolved}. Для cross-project операций используйте master-токен.` }],
+            isError: true,
+          },
+        };
+      }
       return resolved;
+    };
+
+    /**
+     * Scope-check an arbitrary entry_id against the caller's project.
+     * Used by memory_audit and memory_history when the caller supplies
+     * an explicit entry_id (rather than a project_id), so they can't
+     * read audit/history for entries in other projects.
+     */
+    const enforceEntryScope = async (
+      entryId: string,
+    ): Promise<true | { error: true; response: any }> => {
+      if (isMasterToken) return true;
+      if (!headerProjectId) return true; // no scope to enforce
+      const entry = await memoryManager.getById(entryId);
+      if (!entry) {
+        return {
+          error: true,
+          response: {
+            content: [{ type: 'text', text: `❌ Запись ${entryId} не найдена.` }],
+            isError: true,
+          },
+        };
+      }
+      if (entry.projectId !== headerProjectId) {
+        return {
+          error: true,
+          response: {
+            content: [{ type: 'text', text: `❌ Доступ запрещён: запись ${entryId} принадлежит другому проекту.` }],
+            isError: true,
+          },
+        };
+      }
+      return true;
     };
 
     try {
@@ -763,6 +817,13 @@ function setupHandlers(
 
           let auditEntries;
           if (auditEntryId) {
+            // B2 review fix: scope-check the entry before exposing its
+            // audit log. Without this, an agent token bound to project A
+            // could pass any entry UUID and read full audit history for
+            // entries in other projects — re-opens the global-audit leak
+            // Phase 0.A closed, just at entry granularity.
+            const scopeCheck = await enforceEntryScope(auditEntryId);
+            if (scopeCheck !== true) return scopeCheck.response;
             auditEntries = await auditLogger.getByEntry(auditEntryId, auditLimit);
           } else if (resolvedAuditProjectId) {
             auditEntries = await auditLogger.getByProject(resolvedAuditProjectId, auditLimit);
@@ -793,6 +854,11 @@ function setupHandlers(
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
           const { entry_id: histEntryId, version: histVersion } = parsed.data;
+
+          // B2 review fix: scope-check the entry before exposing its
+          // version history.
+          const histScope = await enforceEntryScope(histEntryId);
+          if (histScope !== true) return histScope.response;
 
           if (histVersion !== undefined) {
             const v = await vm.getVersion(histEntryId, histVersion);
