@@ -752,7 +752,7 @@ function setupHandlers(
           } else if (resolvedAuditProjectId) {
             auditEntries = await auditLogger.getByProject(resolvedAuditProjectId, auditLimit);
           } else {
-            auditEntries = await auditLogger.getRecent(auditLimit);
+            return { content: [{ type: 'text', text: '❌ Укажите `project_id` (или передайте `X-Project-Id` header) либо `entry_id`. Глобальный аудит-лог не возвращается из соображений изоляции проектов.' }], isError: true };
           }
 
           if (auditEntries.length === 0) {
