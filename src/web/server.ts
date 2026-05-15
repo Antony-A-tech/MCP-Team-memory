@@ -9,6 +9,7 @@ import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError
 import { exportEntries, type ExportFormat } from '../export/exporter.js';
 import type { AgentTokenStore } from '../auth/agent-tokens.js';
 import { buildAutoContext } from '../recall.js';
+import { enforceProjectScope } from '../middleware/project-scope.js';
 import logger from '../logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
@@ -283,6 +284,7 @@ export class WebServer {
         }
 
         const { project_id, category, domain, search, status, tags: parsedTags, limit, offset, pinned } = parsed.data;
+        if (!enforceProjectScope(req, res, project_id)) return;
         const entries = await this.memoryManager.read({
           projectId: project_id,
           category,
@@ -341,6 +343,7 @@ export class WebServer {
         }
 
         const { project_id, ...writeData } = parsed.data;
+        if (!enforceProjectScope(req, res, project_id)) return;
         // Override author if agent token was used
         if (req.agentName) writeData.author = req.agentName;
         const entry = await this.memoryManager.write({ ...writeData, projectId: project_id });
@@ -446,6 +449,7 @@ export class WebServer {
           res.status(400).json({ success: false, error: 'project_id is required (query or X-Project-Id header). Global audit log is not exposed for project isolation.' });
           return;
         }
+        if (!enforceProjectScope(req, res, projectId)) return;
 
         const entries = await auditLogger.getByProject(projectId, limit);
         res.json({ success: true, audit: entries });

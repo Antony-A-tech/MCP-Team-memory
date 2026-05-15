@@ -22,6 +22,7 @@ import { createHealthHandler } from './health.js';
 import { createLogger } from './logger.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
 import { parsePagination } from './middleware/pagination.js';
+import { enforceProjectScope } from './middleware/project-scope.js';
 import { AuditLogger } from './storage/audit.js';
 import { VersionManager } from './storage/versioning.js';
 import { AgentTokenStore } from './auth/agent-tokens.js';
@@ -368,6 +369,7 @@ async function main(): Promise<void> {
     if (!sessionManager) { res.json({ success: true, sessions: [], hasMore: false, offset: 0, limit: 20 }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     const projectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
+    if (!enforceProjectScope(req, res, projectId)) return;
     const { limit, offset } = parsePagination(req, { limit: 20 });
     try {
       const sessions = await sessionManager.listSessions(agentTokenId || '', {
@@ -568,10 +570,12 @@ async function main(): Promise<void> {
   app.get('/api/notes', async (req, res) => {
     if (!notesManager) { res.json({ success: true, notes: [], hasMore: false, offset: 0, limit: 20 }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
+    const notesProjectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
+    if (!enforceProjectScope(req, res, notesProjectId)) return;
     const { limit, offset } = parsePagination(req, { limit: 20 });
     try {
       const notes = await notesManager.read(agentTokenId || null, {
-        projectId: (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined,
+        projectId: notesProjectId,
         sessionId: (req.query.session_id as string) || undefined,
         search: (req.query.search as string) || undefined,
         status: 'active',
@@ -628,6 +632,7 @@ async function main(): Promise<void> {
       });
       return;
     }
+    if (!enforceProjectScope(req, res, projectId)) return;
     try {
       if (!agentTokenId) { res.status(400).json({ success: false, error: 'Agent token required to create notes. Use an agent token instead of master token.' }); return; }
       const note = await notesManager.write(agentTokenId, {
