@@ -102,17 +102,25 @@ export function createAuthMiddleware(
         // Empty header is allowed — caller may be hitting an endpoint that
         // doesn't require a project (e.g., /api/agent-tokens list).
         //
-        // Graceful degrade: when the store doesn't implement hasProjectAccess
-        // (test mocks predating migration 028), we skip the RBAC enforcement
-        // here. Production stores always implement the method, so prod
-        // semantics are unchanged.
-        if (projectId && typeof agentTokenStore.hasProjectAccess === 'function'
-            && !agentTokenStore.hasProjectAccess(agentInfo.id, projectId)) {
-          res.status(403).json({
-            error: 'Forbidden',
-            message: `Agent token has no access to project ${projectId}. Grant access from the Agents page.`,
-          });
-          return;
+        // Fail-closed: if hasProjectAccess is somehow missing from the
+        // store (broken mock or future refactor), we reject rather than
+        // silently allow. Tests must provide a working hasProjectAccess
+        // method on their mocks.
+        if (projectId) {
+          if (typeof agentTokenStore.hasProjectAccess !== 'function') {
+            res.status(500).json({
+              error: 'Server misconfigured',
+              message: 'Agent token store is missing hasProjectAccess (RBAC enforcement broken)',
+            });
+            return;
+          }
+          if (!agentTokenStore.hasProjectAccess(agentInfo.id, projectId)) {
+            res.status(403).json({
+              error: 'Forbidden',
+              message: `Agent token has no access to project ${projectId}. Grant access from the Agents page.`,
+            });
+            return;
+          }
         }
         (req as any).auth = {
           clientId: agentInfo.agentName,

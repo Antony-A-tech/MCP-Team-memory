@@ -90,15 +90,22 @@ export class WebServer {
 
     app.get('/api/projects', async (req: Request, res: Response) => {
       try {
-        // RBAC visibility: master tokens (admin scope) see every project;
-        // agent tokens see only the ones in their token_project_access
-        // allowlist. Unauthenticated readonly viewers (allowReadonly
-        // mode) also see every project — they have no token to filter
-        // against and the readonly contract is "everything in read mode".
+        // RBAC visibility:
+        //   - master tokens (admin scope): see every project
+        //   - agent tokens: see only projects in their token_project_access
+        //   - readonly viewers (allowReadonly + no token): see NOTHING.
+        //     Operator decision: personal projects must not leak to
+        //     anonymous browsers even when readonly mode is on. A future
+        //     `public: boolean` flag on projects could relax this.
         const auth = (req as any).auth as
           | { agentTokenId?: string; scopes?: string[] }
           | undefined;
         const isMaster = auth?.scopes?.includes('admin') ?? false;
+        const isReadonlyViewer = req.readOnly === true || auth?.scopes?.includes('readonly');
+        if (isReadonlyViewer && !isMaster && !auth?.agentTokenId) {
+          res.json({ success: true, projects: [] });
+          return;
+        }
         const filterTokenId =
           !isMaster && auth?.agentTokenId ? auth.agentTokenId : undefined;
         const projects = await this.memoryManager.listProjects(filterTokenId);

@@ -564,9 +564,23 @@ function setupHandlers(
 
     // Master tokens (scopes includes 'admin') have full cross-project
     // access by design — same contract as the REST `enforceProjectScope`
-    // middleware. Agent tokens are pinned to the project in their
-    // X-Project-Id header.
+    // middleware. Agent tokens are pinned to a project in their
+    // X-Project-Id header, but the read/write contract differs:
+    //
+    //   - READS (memory_read, memory_audit, memory_history, memory_export,
+    //     memory_onboard, memory_cross_search) — open across projects.
+    //     Agents can look into other teams' projects to find existing
+    //     solutions to problems they hit. Per user intent.
+    //   - WRITES (memory_write, memory_update, memory_delete, memory_pin,
+    //     memory_profile_set, memory_conventions add, event_add,
+    //     session_import, note_share) — RBAC enforced. An agent can only
+    //     write into projects in its token_project_access allowlist.
+    //
+    // This is why `requireProjectId` no longer rejects param != header
+    // (the old "M1" check) — that broke legit cross-project reads.
+    // Write tools enforce via `enforceWriteAccess` below.
     const isMasterToken = Array.isArray(callerScopes) && callerScopes.includes('admin');
+    const callerAgentTokenId = (extra as any)?.authInfo?.agentTokenId as string | undefined;
 
     // Resolve project_id: explicit param > X-Project-Id header. No fallback to default.
     const resolveProjectId = (paramProjectId: string | undefined): string | undefined => {
@@ -584,35 +598,58 @@ function setupHandlers(
           },
         };
       }
-      // M1 review fix: agent tokens scoped via X-Project-Id MUST NOT be
-      // able to operate on a different project_id passed as an argument.
-      // Master tokens skip this check (admin scope = cross-project).
-      // Without this an agent token bound to project A could pass
-      // `project_id: <B>` to memory_read / event_add / etc. and bypass
-      // the project boundary the REST layer is enforcing.
-      if (!isMasterToken && headerProjectId && resolved !== headerProjectId) {
-        return {
-          error: true,
-          response: {
-            content: [{ type: 'text', text: `❌ Project scope mismatch: токен привязан к проекту ${headerProjectId}, но запрошен ${resolved}. Для cross-project операций используйте master-токен.` }],
-            isError: true,
-          },
-        };
-      }
       return resolved;
     };
 
     /**
-     * Scope-check an arbitrary entry_id against the caller's project.
-     * Used by memory_audit and memory_history when the caller supplies
-     * an explicit entry_id (rather than a project_id), so they can't
-     * read audit/history for entries in other projects.
+     * Write-side RBAC gate. Call at the top of every write/mutate tool
+     * before the storage op. Master tokens bypass; agent tokens must
+     * have an active row in `token_project_access` for the target
+     * projectId. Returns true to proceed, or an error response to
+     * return to the caller verbatim.
      */
-    const enforceEntryScope = async (
+    const enforceWriteAccess = (
+      projectId: string,
+    ): true | { error: true; response: any } => {
+      if (isMasterToken) return true;
+      if (!callerAgentTokenId) {
+        // No agent token AND no master scope — this shouldn't happen
+        // (auth middleware rejects unauthenticated MCP requests) but
+        // fail-closed defensively.
+        return {
+          error: true,
+          response: {
+            content: [{ type: 'text', text: '❌ Запись запрещена: токен не идентифицирован.' }],
+            isError: true,
+          },
+        };
+      }
+      if (!agentTokenStore || !agentTokenStore.hasProjectAccess(callerAgentTokenId, projectId)) {
+        return {
+          error: true,
+          response: {
+            content: [{ type: 'text', text: `❌ Запись запрещена: токен не имеет доступа на изменение проекта ${projectId}. Запросите доступ у администратора через страницу /agents.` }],
+            isError: true,
+          },
+        };
+      }
+      return true;
+    };
+
+    // (Legacy enforceEntryScope removed: previously rejected read access
+    // to entries whose projectId differed from header X-Project-Id. Reads
+    // are now open across projects per the user's design — agents can
+    // look at audit/history from other teams to find solutions.)
+
+    /**
+     * Resolve an entry to its project, then gate by write access. Used
+     * by entry-based writes (memory_update / memory_delete / memory_pin)
+     * where the project comes from the existing entry, not from args.
+     */
+    const enforceEntryWriteAccess = async (
       entryId: string,
     ): Promise<true | { error: true; response: any }> => {
       if (isMasterToken) return true;
-      if (!headerProjectId) return true; // no scope to enforce
       const entry = await memoryManager.getById(entryId);
       if (!entry) {
         return {
@@ -623,16 +660,7 @@ function setupHandlers(
           },
         };
       }
-      if (entry.projectId !== headerProjectId) {
-        return {
-          error: true,
-          response: {
-            content: [{ type: 'text', text: `❌ Доступ запрещён: запись ${entryId} принадлежит другому проекту.` }],
-            isError: true,
-          },
-        };
-      }
-      return true;
+      return enforceWriteAccess(entry.projectId);
     };
 
     try {
@@ -701,6 +729,8 @@ function setupHandlers(
           if (!parsed.success) {
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
+          const writeGate = await enforceEntryWriteAccess(parsed.data.id);
+          if (writeGate !== true) return writeGate.response;
           const { expected_version, ...rest } = parsed.data;
           const params: UpdateParams = { ...rest, expectedVersion: expected_version };
           const result = await memoryManager.update(params);
@@ -728,6 +758,8 @@ function setupHandlers(
           if (!parsed.success) {
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
+          const writeGate = await enforceEntryWriteAccess(parsed.data.id);
+          if (writeGate !== true) return writeGate.response;
           const params = parsed.data;
           const deleteResult = await memoryManager.delete(params);
           if (typeof deleteResult === 'object' && deleteResult && 'conflict' in deleteResult) {
@@ -756,6 +788,8 @@ function setupHandlers(
         case 'memory_unarchive': {
           const id = args?.id as string;
           if (!id) return { content: [{ type: 'text', text: '❌ Укажите ID записи.' }], isError: true };
+          const writeGate = await enforceEntryWriteAccess(id);
+          if (writeGate !== true) return writeGate.response;
           const unarchiveResult = await memoryManager.update({ id, status: 'active' });
           if (!unarchiveResult || ('conflict' in unarchiveResult)) return { content: [{ type: 'text', text: `❌ Запись "${id}" не найдена.` }] };
           return { content: [{ type: 'text', text: `📤 Разархивировано!\n\n**ID**: ${unarchiveResult.id}\n**Заголовок**: ${unarchiveResult.title}` }] };
@@ -766,6 +800,8 @@ function setupHandlers(
           if (!parsed.success) {
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
+          const writeGate = await enforceEntryWriteAccess(parsed.data.id);
+          if (writeGate !== true) return writeGate.response;
           const { id, pinned } = parsed.data;
           const updated = await memoryManager.pin(id, pinned);
           if (!updated) return { content: [{ type: 'text', text: `❌ Запись "${id}" не найдена.` }] };
@@ -817,13 +853,9 @@ function setupHandlers(
 
           let auditEntries;
           if (auditEntryId) {
-            // B2 review fix: scope-check the entry before exposing its
-            // audit log. Without this, an agent token bound to project A
-            // could pass any entry UUID and read full audit history for
-            // entries in other projects — re-opens the global-audit leak
-            // Phase 0.A closed, just at entry granularity.
-            const scopeCheck = await enforceEntryScope(auditEntryId);
-            if (scopeCheck !== true) return scopeCheck.response;
+            // Reads are open across projects by design (see read/write
+            // split docs at top of CallToolRequest handler). The entry's
+            // audit log is metadata — same trust level as memory_read.
             auditEntries = await auditLogger.getByEntry(auditEntryId, auditLimit);
           } else if (resolvedAuditProjectId) {
             auditEntries = await auditLogger.getByProject(resolvedAuditProjectId, auditLimit);
@@ -854,11 +886,8 @@ function setupHandlers(
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
           const { entry_id: histEntryId, version: histVersion } = parsed.data;
-
-          // B2 review fix: scope-check the entry before exposing its
-          // version history.
-          const histScope = await enforceEntryScope(histEntryId);
-          if (histScope !== true) return histScope.response;
+          // Reads are open across projects by design — history is the
+          // entry's metadata, same trust level as memory_read content.
 
           if (histVersion !== undefined) {
             const v = await vm.getVersion(histEntryId, histVersion);
@@ -966,6 +995,8 @@ function setupHandlers(
             if (!args?.title || !args?.content) {
               return { content: [{ type: 'text', text: '❌ Для добавления конвенции укажите title и content.' }], isError: true };
             }
+            const writeGate = enforceWriteAccess(projectId);
+            if (writeGate !== true) return writeGate.response;
             // v5: write as category='knowledge' with kind tag 'convention'.
             const callerTags = (args?.tags as string[]) || [];
             const tags = callerTags.includes('convention') ? callerTags : ['convention', ...callerTags];
@@ -1011,6 +1042,8 @@ function setupHandlers(
         case 'memory_profile_set': {
           const profileSetProjectId = requireProjectId(args?.project_id as string | undefined, 'memory_profile_set');
           if (typeof profileSetProjectId !== 'string') return profileSetProjectId.response;
+          const writeGate = enforceWriteAccess(profileSetProjectId);
+          if (writeGate !== true) return writeGate.response;
           if (!args?.content || typeof args.content !== 'string') {
             return { content: [{ type: 'text', text: '❌ Параметр content (string) обязателен' }], isError: true };
           }
@@ -1028,6 +1061,8 @@ function setupHandlers(
           if (!eventsManager) return { content: [{ type: 'text', text: '❌ Events not configured' }], isError: true };
           const eventAddProjectId = requireProjectId(args?.project_id as string | undefined, 'event_add');
           if (typeof eventAddProjectId !== 'string') return eventAddProjectId.response;
+          const writeGate = enforceWriteAccess(eventAddProjectId);
+          if (writeGate !== true) return writeGate.response;
           const eventType = args?.event_type as string;
           const eventTitle = args?.title as string;
           if (!eventType || !eventTitle) {
@@ -1208,6 +1243,19 @@ function setupHandlers(
             };
           }
           try {
+            // Write-side RBAC: shared entries land in the note's project.
+            // Look up the note first so we can gate against its projectId
+            // instead of trusting the caller's header (an agent reading
+            // their own notes can also try to share into projects they
+            // don't have write rights on).
+            const noteForScope = await notesManager.getById(parsed.data.note_id, agentTokenId);
+            if (!noteForScope) {
+              return { content: [{ type: 'text', text: '❌ Note not found or not yours' }], isError: true };
+            }
+            if (noteForScope.projectId) {
+              const shareWriteGate = enforceWriteAccess(noteForScope.projectId);
+              if (shareWriteGate !== true) return shareWriteGate.response;
+            }
             // authInfo.clientId is set to agentInfo.agentName by the auth
             // middleware for agent-token requests, so it doubles as the
             // human-readable author for shared entries.
@@ -1266,6 +1314,8 @@ function setupHandlers(
           // Same rationale as note_write — orphaned rows are invisible in the UI.
           const sessionProjectIdResult = requireProjectId(parsed.data.project_id ?? undefined, 'session_import');
           if (typeof sessionProjectIdResult !== 'string') return sessionProjectIdResult.response;
+          const sessionWriteGate = enforceWriteAccess(sessionProjectIdResult);
+          if (sessionWriteGate !== true) return sessionWriteGate.response;
           const session = await sessionManager.importSession(agentTokenId, {
             externalId: parsed.data.external_id ?? undefined,
             name: parsed.data.name ?? undefined,
