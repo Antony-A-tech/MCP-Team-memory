@@ -232,6 +232,8 @@
     renderChatMessages();
   }
 
+  let _chatDeleteModalA11yDetach = null;
+
   function openDeleteChatModal(sessionId, ev) {
     if (ev) ev.stopPropagation();
     const session = state.sessions.find(s => s.id === sessionId);
@@ -239,11 +241,22 @@
     const titleEl = $('#chat-delete-title-text');
     if (titleEl) titleEl.textContent = session?.title ?? 'Новый чат';
     const modal = document.getElementById('chat-delete-modal');
-    if (modal) modal.classList.add('active');
+    if (!modal) return;
+    modal.classList.add('active');
+    if (typeof window.attachModalA11y === 'function') {
+      _chatDeleteModalA11yDetach = window.attachModalA11y(modal, {
+        onClose: closeDeleteChatModal,
+        initialFocusSelector: '#chat-delete-cancel, #chat-delete-modal-close',
+      });
+    }
   }
 
   function closeDeleteChatModal() {
     state.pendingDeleteId = null;
+    if (_chatDeleteModalA11yDetach) {
+      _chatDeleteModalA11yDetach();
+      _chatDeleteModalA11yDetach = null;
+    }
     const modal = document.getElementById('chat-delete-modal');
     if (modal) modal.classList.remove('active');
   }
