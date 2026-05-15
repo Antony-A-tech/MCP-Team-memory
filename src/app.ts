@@ -88,6 +88,21 @@ async function main(): Promise<void> {
 
   // Create Express app
   const app = express();
+  // Trust proxy: required so `req.ip` resolves to the real client IP when
+  // running behind a reverse proxy (nginx/Caddy/Cloud Run). Without this
+  // the rate limiter (IP-keyed for anonymous + master tiers) degenerates to
+  // a single shared bucket = the proxy address. Set via env so production
+  // deploys can pin to a specific hop count when the proxy chain is known.
+  // Default `true` matches the prior behaviour of the test suite and is safe
+  // for single-proxy deployments; multi-hop chains should set
+  // TRUST_PROXY=2 (or however many).
+  const trustProxyEnv = process.env.TRUST_PROXY;
+  if (trustProxyEnv !== undefined && trustProxyEnv !== '') {
+    const asNum = Number(trustProxyEnv);
+    app.set('trust proxy', Number.isFinite(asNum) ? asNum : trustProxyEnv);
+  } else {
+    app.set('trust proxy', true);
+  }
   // JSON body limits are split by route:
   //   - /mcp gets 50mb because session_import is a JSON-RPC `tools/call`
   //     payload that can carry a whole Claude Code transcript (10–50 MB
@@ -95,6 +110,14 @@ async function main(): Promise<void> {
   //   - Everything else (REST API) caps at 10mb. Notes are < 50 KB,
   //     entries < 1 MB; a 50 MB cap on /api/* was a DoS surface (a single
   //     malicious POST could pin event-loop memory).
+  //
+  // ORDER MATTERS: the path-mounted `/mcp` parser MUST be registered before
+  // the global one. Express runs middleware in registration order, and the
+  // first json() to actually consume the body wins (subsequent json() calls
+  // see `req._body === true` and skip). Swap these two lines and `/mcp`
+  // silently inherits the 10mb cap, breaking session_import for any
+  // transcript over 10 MB.
+  //
   // Body must be parsed BEFORE auth/rate-limit middleware run, so register
   // here.
   app.use('/mcp', express.json({ limit: '50mb' }));

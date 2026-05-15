@@ -5,10 +5,16 @@ import { createIdempotencyMiddleware, _resetIdempotencyCacheForTests } from '../
 
 function makeApp(opts?: Parameters<typeof createIdempotencyMiddleware>[0]) {
   const app = express();
+  app.set('trust proxy', true);
   app.use(express.json());
-  // Fake auth for token-scoping tests.
+  // Fake auth for token-scoping tests. Only set auth when header is present;
+  // otherwise leave req.auth unset so we exercise the anonymous IP-scoped
+  // fallback path.
   app.use((req, _res, next) => {
-    (req as any).auth = { agentTokenId: req.headers['x-test-agent'] as string | undefined };
+    const v = req.headers['x-test-agent'];
+    if (v !== undefined && v !== '') {
+      (req as any).auth = { agentTokenId: String(v) };
+    }
     next();
   });
   app.use(createIdempotencyMiddleware(opts));
@@ -16,6 +22,12 @@ function makeApp(opts?: Parameters<typeof createIdempotencyMiddleware>[0]) {
   let callCount = 0;
   app.post('/api/notes', (_req, res) => {
     callCount++;
+    res.status(201).json({ success: true, callCount });
+  });
+  // Slow handler used to exercise concurrent in-flight dedup.
+  app.post('/api/slow', async (_req, res) => {
+    callCount++;
+    await new Promise((r) => setTimeout(r, 50));
     res.status(201).json({ success: true, callCount });
   });
   app.post('/api/fail', (_req, res) => {
@@ -159,5 +171,71 @@ describe('Idempotency-Key middleware', () => {
       .set('Idempotency-Key', 'k-ttl')
       .send({});
     expect(getCallCount()).toBe(2);
+  });
+
+  it('concurrent requests with the same key dedup to a single handler run', async () => {
+    // Two parallel webhook redeliveries — the second arrives while the
+    // first is still mid-execution. Without in-flight dedup both reach
+    // the handler and create two rows.
+    const { app, getCallCount } = makeApp();
+    const [r1, r2] = await Promise.all([
+      request(app)
+        .post('/api/slow')
+        .set('x-test-agent', 't1')
+        .set('Idempotency-Key', 'race')
+        .send({}),
+      request(app)
+        .post('/api/slow')
+        .set('x-test-agent', 't1')
+        .set('Idempotency-Key', 'race')
+        .send({}),
+    ]);
+    expect(getCallCount()).toBe(1);
+    expect(r1.status).toBe(201);
+    expect(r2.status).toBe(201);
+    // Both responses must carry the same body — the dedup'd reply.
+    expect(r1.body).toEqual(r2.body);
+    // The replay leg should signal it was a concurrent replay (vs cache).
+    const replays = [r1, r2].filter((r) => r.headers['idempotency-replayed']);
+    expect(replays).toHaveLength(1);
+    expect(replays[0].headers['idempotency-replayed']).toBe('concurrent');
+  });
+
+  it('anonymous callers from different IPs do NOT share a cache row', async () => {
+    // Two unauthenticated clients with the same Idempotency-Key from
+    // different IPs must each get their own handler execution; otherwise
+    // caller B replays caller A's response (cache poisoning).
+    const { app, getCallCount } = makeApp();
+    const r1 = await request(app)
+      .post('/api/notes')
+      .set('X-Forwarded-For', '1.1.1.1')
+      .set('Idempotency-Key', 'anon-key')
+      .send({});
+    const r2 = await request(app)
+      .post('/api/notes')
+      .set('X-Forwarded-For', '2.2.2.2')
+      .set('Idempotency-Key', 'anon-key')
+      .send({});
+    expect(r1.status).toBe(201);
+    expect(r2.status).toBe(201);
+    expect(getCallCount()).toBe(2);
+    // Each caller saw their own callCount value.
+    expect((r1.body as any).callCount).toBe(1);
+    expect((r2.body as any).callCount).toBe(2);
+  });
+
+  it('anonymous callers from same IP still dedup on same key', async () => {
+    const { app, getCallCount } = makeApp();
+    await request(app)
+      .post('/api/notes')
+      .set('X-Forwarded-For', '3.3.3.3')
+      .set('Idempotency-Key', 'anon-same-ip')
+      .send({});
+    await request(app)
+      .post('/api/notes')
+      .set('X-Forwarded-For', '3.3.3.3')
+      .set('Idempotency-Key', 'anon-same-ip')
+      .send({});
+    expect(getCallCount()).toBe(1);
   });
 });
