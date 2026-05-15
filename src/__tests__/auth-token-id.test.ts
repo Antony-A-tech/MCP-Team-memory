@@ -23,10 +23,10 @@ describe('Auth middleware — agentTokenId propagation', () => {
       path: '/mcp',
       headers: {
         authorization: 'Bearer tm_agent_token_123',
-        'x-project-id': 'proj-1',
+        'x-project-id': '660e8400-e29b-41d4-a716-446655441111',
       },
     } as unknown as Request;
-    const res = {} as Response;
+    const res = { status: () => ({ json: () => undefined }) } as unknown as Response;
     const next: NextFunction = vi.fn();
 
     middleware(req, res, next);
