@@ -908,20 +908,73 @@ export class MemoryManager {
         `profile content exceeds ${MemoryManager.MAX_PROFILE_BYTES} bytes (got ${byteLen})`,
       );
     }
-    const existing = await this.getProfile(projectId);
-    if (existing) {
-      await this.delete({ id: existing.id, archive: true });
-    }
-    return this.write({
+
+    // Single transaction: archive existing active profile (if any) and
+    // insert the new one atomically. Without the row lock two concurrent
+    // setProfile calls could both pass getProfile/delete and then race on
+    // the partial UNIQUE idx_entries_one_active_profile, producing a 23505
+    // for the loser.
+    const resolvedAuthor = author ?? 'claude-agent';
+    const { entry, archivedEntryId } = await this.storage.setProfileAtomic({
       projectId,
-      category: 'profile',
       title: 'Project Profile',
       content,
       tags,
+      author: resolvedAuthor,
       priority: 'high',
       pinned: true,
-      author,
     });
+
+    // Post-transaction side-effects (audit + events + embedding). These run
+    // outside the transaction so a slow embedding call never holds a row
+    // lock; ordering matches the previous write()/delete() behaviour.
+    if (archivedEntryId) {
+      this.emit('memory:updated', { ...entry, id: archivedEntryId, status: 'archived' });
+      this.auditLogger?.log({
+        entryId: archivedEntryId,
+        projectId,
+        action: 'archive',
+        actor: resolvedAuthor,
+        changes: { reason: 'profile-rotation' },
+      }).catch(err => logger.error({ err }, 'Audit log failed (setProfile archive)'));
+    }
+
+    try {
+      entry.importanceScore = await this.recomputeImportanceScore(entry.id);
+    } catch (err) {
+      logger.warn({ err, entryId: entry.id }, 'Importance score recompute failed on setProfile');
+    }
+
+    this.emit('memory:created', entry);
+    this.auditLogger?.log({
+      entryId: entry.id,
+      projectId,
+      action: 'create',
+      actor: resolvedAuthor,
+      changes: { title: entry.title, category: entry.category },
+    }).catch(err => logger.error({ err }, 'Audit log failed (setProfile create)'));
+
+    if (this.embeddingProvider?.isReady()) {
+      this.embeddingProvider
+        .embed(`${entry.title} ${entry.content}`, 'document')
+        .then(async (emb) => {
+          if (this.vectorStore) {
+            await this.vectorStore.upsert('entries', entry.id, emb, {
+              entry_id: entry.id,
+              project_id: entry.projectId,
+              category: entry.category,
+              domain: entry.domain ?? '',
+              status: entry.status,
+              tags: entry.tags,
+              author: entry.author,
+            });
+          }
+          await this.storage.saveEmbedding(entry.id, emb);
+        })
+        .catch(err => logger.error({ err, entryId: entry.id }, 'Embedding generation failed (setProfile)'));
+    }
+
+    return entry;
   }
 
   async pin(id: string, pinned: boolean = true): Promise<MemoryEntry | null> {

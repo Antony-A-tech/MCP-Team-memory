@@ -586,6 +586,84 @@ export class PgStorage {
     return rowToEntry(rows[0]);
   }
 
+  /**
+   * Atomic profile swap. Locks the existing active profile (if any),
+   * archives it, and inserts the new profile in one transaction so two
+   * concurrent setProfile callers can't both pass the partial UNIQUE
+   * idx_entries_one_active_profile.
+   *
+   * Returns the new entry plus the id of the archived row (or null) so the
+   * caller can emit audit events / WebSocket notifications.
+   *
+   * Phase 1.B of docs/superpowers/plans/2026-05-15-v5-postwork-audit-fixes.md.
+   */
+  async setProfileAtomic(params: {
+    projectId: string;
+    title: string;
+    content: string;
+    tags: string[];
+    author: string;
+    priority: MemoryEntry['priority'];
+    pinned: boolean;
+  }): Promise<{ entry: MemoryEntry; archivedEntryId: string | null }> {
+    const client = await this.pool.connect();
+    try {
+      await client.query('BEGIN');
+
+      // pg_advisory_xact_lock serialises setProfile for the same project
+      // across concurrent transactions. SELECT … FOR UPDATE on the existing
+      // active row is not enough: the partial UNIQUE index excludes archived
+      // rows, so once the first transaction archives the old profile a
+      // second transaction sees no rows to lock and inserts an unrelated
+      // active row, leaving two active profiles and a 23505 for the loser.
+      // Advisory lock is keyed by a stable hash of the project UUID and is
+      // released automatically when the transaction commits or rolls back.
+      await client.query(
+        `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`,
+        [`setProfile:${params.projectId}`],
+      );
+
+      const { rows: existing } = await client.query(
+        `SELECT id FROM entries
+         WHERE project_id = $1 AND category = 'profile' AND status = 'active'`,
+        [params.projectId],
+      );
+
+      let archivedEntryId: string | null = null;
+      if (existing.length > 0) {
+        archivedEntryId = existing[0].id as string;
+        await client.query(
+          `UPDATE entries SET status = 'archived', updated_at = NOW() WHERE id = $1`,
+          [archivedEntryId],
+        );
+      }
+
+      const { rows: created } = await client.query(
+        `INSERT INTO entries
+           (project_id, category, domain, title, content, author, tags, priority, status, pinned, related_ids, created_at, updated_at)
+         VALUES ($1, 'profile', NULL, $2, $3, $4, $5, $6, 'active', $7, ARRAY[]::uuid[], NOW(), NOW())
+         RETURNING ${ENTRY_COLUMNS}`,
+        [
+          params.projectId,
+          params.title,
+          params.content,
+          params.author,
+          params.tags,
+          params.priority,
+          params.pinned,
+        ],
+      );
+
+      await client.query('COMMIT');
+      return { entry: rowToEntry(created[0]), archivedEntryId };
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => undefined);
+      throw err;
+    } finally {
+      client.release();
+    }
+  }
+
   async update(id: string, updates: Partial<MemoryEntry>, expectedVersion?: number): Promise<MemoryEntry | ConflictError | undefined> {
     const setClauses: string[] = [];
     const values: unknown[] = [];
