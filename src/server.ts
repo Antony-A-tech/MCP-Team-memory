@@ -663,8 +663,11 @@ function setupHandlers(
             return { content: [{ type: 'text', text: `❌ Ошибка валидации: ${formatZodError(parsed.error)}` }], isError: true };
           }
           const params = parsed.data;
-          const success = await memoryManager.delete(params);
-          if (!success) return { content: [{ type: 'text', text: `❌ Запись с ID "${params.id}" не найдена.` }] };
+          const deleteResult = await memoryManager.delete(params);
+          if (typeof deleteResult === 'object' && deleteResult && 'conflict' in deleteResult) {
+            return { content: [{ type: 'text', text: `⚠️ Конфликт версий: ${deleteResult.message}. Перечитайте запись и повторите.` }], isError: true };
+          }
+          if (!deleteResult) return { content: [{ type: 'text', text: `❌ Запись с ID "${params.id}" не найдена.` }] };
           return { content: [{ type: 'text', text: params.archive ? `📦 Запись архивирована (ID: ${params.id})` : `🗑️ Запись удалена (ID: ${params.id})` }] };
         }
 
@@ -906,8 +909,12 @@ function setupHandlers(
             if (!args?.id) {
               return { content: [{ type: 'text', text: '❌ Для удаления конвенции укажите id.' }], isError: true };
             }
-            const success = await memoryManager.delete({ id: args.id as string, archive: true });
-            return { content: [{ type: 'text', text: success ? `📦 Конвенция архивирована` : `❌ Не найдена` }] };
+            const convResult = await memoryManager.delete({ id: args.id as string, archive: true });
+            // memory_conventions never passes expectedVersion, but narrow for type safety.
+            if (typeof convResult === 'object' && convResult && 'conflict' in convResult) {
+              return { content: [{ type: 'text', text: `⚠️ Конфликт версий при архивации конвенции.` }], isError: true };
+            }
+            return { content: [{ type: 'text', text: convResult ? `📦 Конвенция архивирована` : `❌ Не найдена` }] };
           }
 
           return { content: [{ type: 'text', text: '❌ Неизвестное действие. Используйте: list, add, remove' }], isError: true };

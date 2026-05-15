@@ -328,7 +328,16 @@ export class NotesManager {
       // Concurrent share won the race. Roll back our duplicate entry so the
       // user sees only one auto-entry per note. archive=true keeps the row
       // for forensics; flip to false if hard-delete is preferred.
-      await p.memoryManager.delete({ id: entryId, archive: true });
+      const rollback = await p.memoryManager.delete({ id: entryId, archive: true });
+      if (typeof rollback === 'object' && rollback && 'conflict' in rollback) {
+        // The orphan entry was modified out from under us — log loudly so the
+        // operator can investigate, but still surface the original "already shared"
+        // error to the caller.
+        logger.error(
+          { noteId: note.id, orphanEntryId: entryId },
+          'share race-loss rollback hit a version conflict; orphan entry may remain',
+        );
+      }
       logger.warn(
         { noteId: note.id, orphanEntryId: entryId },
         'share lost race — archived duplicate entry',
