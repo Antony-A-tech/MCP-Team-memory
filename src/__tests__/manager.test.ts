@@ -214,7 +214,8 @@ describe('MemoryManager', () => {
   describe('delete', () => {
     it('archives by default', async () => {
       await manager.delete({ id: 'some-id' });
-      expect(storage.archive).toHaveBeenCalledWith('some-id');
+      // Second arg is expectedVersion (added in Phase 1.C, undefined when caller doesn't opt-in to optimistic locking).
+      expect(storage.archive).toHaveBeenCalledWith('some-id', undefined);
     });
 
     it('hard deletes when archive=false', async () => {
