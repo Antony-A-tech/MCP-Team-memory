@@ -298,7 +298,19 @@ export class WebServer {
           mode: 'full',
         });
 
-        res.json({ success: true, entries, offset, limit, hasMore: entries.length === limit });
+        // Strip decay-scoring internals before exposing to clients. readCount
+        // and lastReadAt are signals used by the decay/importance pipeline;
+        // they're not part of the public contract and shouldn't be relied on
+        // by UI/agent code (the values are tracked best-effort and not
+        // promised for any specific consumer).
+        const sanitised = entries.map((e) => {
+          const copy = { ...e } as Record<string, unknown>;
+          delete copy.readCount;
+          delete copy.lastReadAt;
+          return copy;
+        });
+
+        res.json({ success: true, entries: sanitised, offset, limit, hasMore: entries.length === limit });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
