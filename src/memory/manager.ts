@@ -840,7 +840,9 @@ export class MemoryManager {
     const existing = await this.storage.getById(id);
     const deleted = await this.storage.delete(id);
     if (deleted) {
-      this.emit('memory:deleted', { id });
+      // projectId attached so WS layer can scope the delete event to clients
+      // connected to that project (see SyncWebSocketServer.broadcast filter).
+      this.emit('memory:deleted', { id, projectId: existing?.projectId });
       this.auditLogger?.log({
         entryId: id,
         projectId: existing?.projectId,
