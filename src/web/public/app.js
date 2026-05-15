@@ -1116,6 +1116,16 @@ function renderMarkdown(text) {
   html = html.replace(/(<\/h[234]>)<br>/g, '$1');
   html = html.replace(/(<\/ul>)<br>/g, '$1');
   html = html.replace(/(<\/li>)<br>/g, '$1');
+  // Final defense-in-depth pass through DOMPurify. escapeHtml() above already
+  // blocks any literal <script>/event handlers from the raw input, but a
+  // future regex bug could re-introduce them; whitelist the tags we
+  // actually use so anything unexpected gets stripped instead of executed.
+  if (typeof window.DOMPurify !== 'undefined') {
+    html = window.DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: ['strong', 'em', 'u', 'code', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'br', 'p', 'a'],
+      ALLOWED_ATTR: ['href'],
+    });
+  }
   return html;
 }
 
