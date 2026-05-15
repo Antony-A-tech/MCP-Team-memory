@@ -283,4 +283,14 @@
   window.showAlertModal = showAlertModal;
   window.showPromptModal = showPromptModal;
   window.AppModalPreemptedError = AppModalPreemptedError;
+
+  // Silence preempt rejections from default `unhandledrejection` console
+  // noise. Callers can still `.catch(err => { if (err.name === 'AppModal…')
+  // … })` explicitly. The rejection-on-preempt design exists so destructive
+  // actions don't proceed silently; the actual console.error is just noise.
+  window.addEventListener('unhandledrejection', (e) => {
+    if (e.reason && e.reason.name === 'AppModalPreemptedError') {
+      e.preventDefault();
+    }
+  });
 })();
