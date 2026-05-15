@@ -20,6 +20,84 @@ function chunkPointId(messageId: string, chunkIndex: number): string {
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
 }
 
+/**
+ * Parse the "Title: ...\nTags: a, b\nSummary: ..." block emitted by the
+ * summarisation prompt. The old regex implementation was fragile: missing a
+ * section, an extra blank line, or a multi-line summary all confused it.
+ *
+ * Strategy: line-based scan. Header lines are recognised by their literal
+ * prefix; everything after a `Summary:` line is collected into the summary
+ * body. Title/tags validation is permissive — anything that doesn't pass
+ * just gets dropped, letting the caller fall back to defaults.
+ *
+ * Exported for unit tests.
+ */
+export interface ParsedLlmSummary {
+  title?: string;
+  summary: string;
+  tags: string[];
+}
+
+const SUMMARY_MIN_LENGTH = 20;
+const TITLE_MIN_LENGTH = 3;
+const TITLE_MAX_LENGTH = 120;
+
+export function parseLlmSummary(raw: string): ParsedLlmSummary | null {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+
+  const lines = raw.split('\n');
+  let title: string | undefined;
+  const tags: string[] = [];
+  const summaryLines: string[] = [];
+  let inSummary = false;
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!inSummary) {
+      const titleMatch = /^Title:\s*(.*)$/i.exec(trimmed);
+      if (titleMatch) {
+        const value = titleMatch[1].trim();
+        if (value.length >= TITLE_MIN_LENGTH && value.length <= TITLE_MAX_LENGTH) {
+          title = value;
+        }
+        continue;
+      }
+      const tagsMatch = /^Tags:\s*(.*)$/i.exec(trimmed);
+      if (tagsMatch) {
+        const list = tagsMatch[1]
+          .split(',')
+          .map((t) => t.trim().toLowerCase())
+          .filter(Boolean);
+        tags.push(...list);
+        continue;
+      }
+      const summaryMatch = /^Summary:\s*(.*)$/i.exec(trimmed);
+      if (summaryMatch) {
+        inSummary = true;
+        if (summaryMatch[1].trim()) summaryLines.push(summaryMatch[1]);
+        continue;
+      }
+      // Line outside any known section — ignored before Summary: appears.
+    } else {
+      // Inside the Summary body: keep original line (preserves indentation
+      // and blank-line spacing the LLM emitted).
+      summaryLines.push(rawLine);
+    }
+  }
+
+  const explicitSummary = summaryLines.join('\n').trim();
+  // If we got nothing labelled `Summary:`, fall back to using the whole raw
+  // text — the LLM may have ignored the prompt template. If we got something
+  // too short to be useful, also fall back (caller may decide to discard).
+  const summaryCandidate = explicitSummary.length >= SUMMARY_MIN_LENGTH
+    ? explicitSummary
+    : raw.trim();
+
+  if (summaryCandidate.length === 0) return null;
+
+  return { title, summary: summaryCandidate, tags };
+}
+
 export class SessionManager {
   private processing = false;
   private workerInterval: ReturnType<typeof setInterval> | null = null;
@@ -152,28 +230,29 @@ export class SessionManager {
               messages.map(m => ({ role: m.role, content: m.content })),
             );
 
-            // Parse "Title: ...\nTags: ...\nSummary: ..." format from LLM
-            const titleMatch = llmResult.match(/^(.+?)(?:\n|Tags:)/s);
-            const tagsMatch = llmResult.match(/Tags:\s*(.+?)(?:\n|Summary:)/s);
-            const summaryMatch = llmResult.match(/Summary:\s*(.+)/s);
-            const title = titleMatch?.[1]?.replace(/^Title:\s*/i, '').trim();
-            const summary = summaryMatch?.[1]?.trim() || llmResult.trim();
-            const llmTags = tagsMatch?.[1]?.split(',').map(t => t.trim().toLowerCase()).filter(Boolean) || [];
-
-            await this.storage.updateSummary(session.id, summary);
-            const meta: { name?: string; tags?: string[] } = {};
-            if (title) meta.name = title;
-            if (llmTags.length > 0) {
-              // Merge LLM tags with existing import tags (auto-sync, mass-import)
-              const existingTags = session.tags || [];
-              meta.tags = [...new Set([...existingTags, ...llmTags])];
+            const parsed = parseLlmSummary(llmResult);
+            if (!parsed) {
+              // 5.H — empty / unparseable LLM output. Don't overwrite the
+              // placeholder with empty string. Skip and let the fallback
+              // path below populate from the first user message.
+              logger.warn({ sessionId: session.id, rawLength: llmResult?.length ?? 0 },
+                'LLM returned empty or unparseable summary; using fallback');
+            } else {
+              await this.storage.updateSummary(session.id, parsed.summary);
+              const meta: { name?: string; tags?: string[] } = {};
+              if (parsed.title) meta.name = parsed.title;
+              if (parsed.tags.length > 0) {
+                // Merge LLM tags with existing import tags (auto-sync, mass-import)
+                const existingTags = session.tags || [];
+                meta.tags = [...new Set([...existingTags, ...parsed.tags])];
+              }
+              if (Object.keys(meta).length > 0) {
+                await this.storage.updateSessionMeta(session.id, meta);
+              }
+              const updated = await this.storage.getSession(session.id);
+              if (updated) Object.assign(session, updated);
+              logger.info({ sessionId: session.id, title: parsed.title }, 'Session summary generated by LLM');
             }
-            if (Object.keys(meta).length > 0) {
-              await this.storage.updateSessionMeta(session.id, meta);
-            }
-            const updated = await this.storage.getSession(session.id);
-            if (updated) Object.assign(session, updated);
-            logger.info({ sessionId: session.id, title }, 'Session summary generated by LLM');
           } catch (err) {
             logger.warn({ err, sessionId: session.id }, 'LLM summarization failed, using fallback');
           }
