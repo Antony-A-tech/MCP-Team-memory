@@ -91,6 +91,37 @@ export class SessionStorage {
     return rows.length > 0 ? this.rowToSession(rows[0]) : null;
   }
 
+  /**
+   * Fallback dedup lookup for session_import calls that don't carry an
+   * external_id. Matches on (agent_token_id, project_id, name, started_at)
+   * — the four fields a client-side caller can plausibly stabilise across
+   * retries. Returns the first match.
+   *
+   * Used by importSession when externalId is undefined: webhooks that
+   * predate the external_id contract, or manual UI imports.
+   */
+  async findByTuple(
+    agentTokenId: string,
+    projectId: string | undefined,
+    name: string | undefined,
+    startedAt: string | undefined,
+  ): Promise<Session | null> {
+    // All four parts must be present to make a stable tuple. Missing any
+    // one means the caller hasn't given us enough to dedup against, so we
+    // return null and let importSession create a new row.
+    if (!projectId || !name || !startedAt) return null;
+    const { rows } = await this.pool.query(
+      `SELECT * FROM sessions
+       WHERE agent_token_id = $1
+         AND project_id = $2
+         AND name = $3
+         AND started_at = $4
+       LIMIT 1`,
+      [agentTokenId, projectId, name, startedAt],
+    );
+    return rows.length > 0 ? this.rowToSession(rows[0]) : null;
+  }
+
   async listSessions(agentTokenId: string, filters: SessionFilters): Promise<Session[]> {
     const conditions: string[] = [];
     const params: unknown[] = [];

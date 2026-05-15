@@ -14,6 +14,7 @@ function createMockSessionStorage() {
       endedAt: null, importedAt: '2026-01-01',
     }),
     findByExternalId: vi.fn().mockResolvedValue(null),
+    findByTuple: vi.fn().mockResolvedValue(null),
     listSessions: vi.fn().mockResolvedValue([]),
     getSession: vi.fn().mockResolvedValue({
       id: 'sess-1', agentTokenId: 'tok-1', summary: 'Test', messageCount: 2,
@@ -165,6 +166,46 @@ describe('SessionManager', () => {
       expect(storage.updateEmbeddingStatus).toHaveBeenCalledWith('existing-sess', 'queued');
       expect(vectorStore.delete).toHaveBeenCalledWith('sessions', ['existing-sess']);
       expect(result.messageCount).toBe(4);
+    });
+
+    it('falls back to tuple dedup when external_id is absent', async () => {
+      // External id missing → manager should consult findByTuple. We seed
+      // findByTuple to return an existing session — caller should reuse it
+      // instead of creating a new one.
+      storage.findByTuple.mockResolvedValue({
+        id: 'tuple-sess', summary: 'Already here', messageCount: 1, embeddingStatus: 'complete',
+      });
+
+      const result = await manager.importSession('tok-1', {
+        name: 'My session',
+        projectId: '45c8f3bc-af69-404a-8fa2-897b53748e12',
+        startedAt: '2026-05-01T10:00:00Z',
+        messages: [{ role: 'user', content: 'x', toolNames: [] }],
+      });
+
+      expect(storage.findByExternalId).not.toHaveBeenCalled();
+      expect(storage.findByTuple).toHaveBeenCalledWith(
+        'tok-1',
+        '45c8f3bc-af69-404a-8fa2-897b53748e12',
+        'My session',
+        '2026-05-01T10:00:00Z',
+      );
+      expect(result.id).toBe('tuple-sess');
+      expect(storage.createSession).not.toHaveBeenCalled();
+    });
+
+    it('creates a new session when tuple dedup finds no match', async () => {
+      storage.findByTuple.mockResolvedValue(null);
+
+      await manager.importSession('tok-1', {
+        name: 'New session',
+        projectId: '45c8f3bc-af69-404a-8fa2-897b53748e12',
+        startedAt: '2026-05-01T10:00:00Z',
+        messages: [{ role: 'user', content: 'x', toolNames: [] }],
+      });
+
+      expect(storage.findByTuple).toHaveBeenCalled();
+      expect(storage.createSession).toHaveBeenCalled();
     });
 
     it('skips upsert when worker is actively processing session', async () => {
