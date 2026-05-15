@@ -808,11 +808,14 @@ export class MemoryManager {
     return null;
   }
 
-  async delete(params: DeleteParams): Promise<boolean> {
-    const { id, archive = true } = params;
+  async delete(params: DeleteParams): Promise<boolean | ConflictError> {
+    const { id, archive = true, expectedVersion } = params;
 
     if (archive) {
-      const archived = await this.storage.archive(id);
+      const archived = await this.storage.archive(id, expectedVersion);
+      if (archived && 'conflict' in archived) {
+        return archived;
+      }
       if (archived) {
         this.emit('memory:updated', archived);
         this.auditLogger?.log({

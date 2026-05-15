@@ -773,15 +773,18 @@ export class PgStorage {
     return (result.rowCount ?? 0) > 0;
   }
 
-  async archive(id: string): Promise<MemoryEntry | undefined> {
-    const result = await this.update(id, { status: 'archived' });
-    // archive() never uses expectedVersion, so ConflictError is impossible
-    return result as MemoryEntry | undefined;
+  async archive(
+    id: string,
+    expectedVersion?: number,
+  ): Promise<MemoryEntry | ConflictError | undefined> {
+    return this.update(id, { status: 'archived' }, expectedVersion);
   }
 
-  async unarchive(id: string): Promise<MemoryEntry | undefined> {
-    const result = await this.update(id, { status: 'active' });
-    return result as MemoryEntry | undefined;
+  async unarchive(
+    id: string,
+    expectedVersion?: number,
+  ): Promise<MemoryEntry | ConflictError | undefined> {
+    return this.update(id, { status: 'active' }, expectedVersion);
   }
 
   async getChangesSince(projectId: string, since: string): Promise<MemoryEntry[]> {

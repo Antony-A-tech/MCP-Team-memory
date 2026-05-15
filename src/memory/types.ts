@@ -241,6 +241,14 @@ export interface ConflictError {
 export interface DeleteParams {
   id: string;
   archive?: boolean;
+  /**
+   * Optimistic-lock guard. When provided, archive=true delegates to
+   * archive(id, expectedVersion) which returns a ConflictError instead of
+   * silently succeeding if the entry was modified between the caller's
+   * read and the archive call. Ignored when archive=false (hard delete is
+   * unconditional).
+   */
+  expectedVersion?: number;
 }
 
 // Параметры синхронизации
