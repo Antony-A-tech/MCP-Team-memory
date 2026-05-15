@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { PgStorage } from '../storage/pg-storage.js';
 import { AuditLogger } from '../storage/audit.js';
 import { VersionManager } from '../storage/versioning.js';
-import { DEFAULT_PROJECT_ID } from './types.js';
+import { DEFAULT_PROJECT_ID, stripDecayInternals } from './types.js';
 import logger from '../logger.js';
 import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
 import { archiveSingletonAutoEntries } from './decay.js';
@@ -115,7 +115,14 @@ export class MemoryManager {
   private emit(type: WSEventType, payload: unknown): void {
     const event: WSEvent = {
       type,
-      payload,
+      // memory:* events broadcast over WS to client tabs / agents. Strip
+      // decay-internal fields (readCount, lastReadAt) so they don't leak
+      // through the WebSocket the same way Phase 4.I closed the REST leak.
+      // Other event types (agent:*, memory:sync) aren't entries, pass
+      // through untouched.
+      payload: (type === 'memory:created' || type === 'memory:updated')
+        ? stripDecayInternals(payload)
+        : payload,
       timestamp: new Date().toISOString()
     };
     this.listeners.forEach(listener => listener(event));

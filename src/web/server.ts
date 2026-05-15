@@ -3,7 +3,7 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import type { MemoryManager } from '../memory/manager.js';
 import type { SyncWebSocketServer } from '../sync/websocket.js';
-import { PROJECT_ROLES } from '../memory/types.js';
+import { PROJECT_ROLES, stripDecayInternals } from '../memory/types.js';
 import type { MemoryEntry } from '../memory/types.js';
 import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError } from '../memory/validation.js';
 import { exportEntries, type ExportFormat } from '../export/exporter.js';
@@ -298,19 +298,11 @@ export class WebServer {
           mode: 'full',
         });
 
-        // Strip decay-scoring internals before exposing to clients. readCount
-        // and lastReadAt are signals used by the decay/importance pipeline;
-        // they're not part of the public contract and shouldn't be relied on
-        // by UI/agent code (the values are tracked best-effort and not
-        // promised for any specific consumer).
-        const sanitised = entries.map((e) => {
-          const copy = { ...e } as Record<string, unknown>;
-          delete copy.readCount;
-          delete copy.lastReadAt;
-          return copy;
-        });
-
-        res.json({ success: true, entries: sanitised, offset, limit, hasMore: entries.length === limit });
+        // Strip decay-scoring internals (readCount, lastReadAt) before
+        // exposing entries to clients. Shared helper — applied at every REST
+        // boundary AND inside MemoryManager.emit() for WS broadcasts (see
+        // src/memory/types.ts stripDecayInternals).
+        res.json({ success: true, entries: stripDecayInternals(entries), offset, limit, hasMore: entries.length === limit });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -359,7 +351,7 @@ export class WebServer {
         // Override author if agent token was used
         if (req.agentName) writeData.author = req.agentName;
         const entry = await this.memoryManager.write({ ...writeData, projectId: project_id });
-        res.json({ success: true, entry });
+        res.json({ success: true, entry: stripDecayInternals(entry) });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -381,7 +373,7 @@ export class WebServer {
           return;
         }
 
-        res.json({ success: true, entry: updated });
+        res.json({ success: true, entry: stripDecayInternals(updated) });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -423,7 +415,7 @@ export class WebServer {
           return;
         }
 
-        res.json({ success: true, entry: updated });
+        res.json({ success: true, entry: stripDecayInternals(updated) });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
