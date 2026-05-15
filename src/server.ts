@@ -590,6 +590,15 @@ function setupHandlers(
           }
           const readProjectId = requireProjectId(parsed.data.project_id, 'memory_read');
           if (typeof readProjectId !== 'string') return readProjectId.response;
+          // Detect silent cap: ReadParamsSchema transforms limit via
+          // Math.min(v, 500). Clients asking for 10000 get 500 with no
+          // indication they were truncated. We compare requested vs
+          // resolved and surface a hint in the response so paging is
+          // possible.
+          const requestedLimit = typeof (args as { limit?: unknown })?.limit === 'number'
+            ? (args as { limit: number }).limit
+            : undefined;
+          const limitWasCapped = requestedLimit !== undefined && requestedLimit > parsed.data.limit;
           const params: ReadParams = {
             projectId: readProjectId,
             category: parsed.data.category,
@@ -606,6 +615,9 @@ function setupHandlers(
           if (entries.length === 0) {
             return { content: [{ type: 'text', text: 'Записи не найдены по заданным критериям.' }] };
           }
+          const capWarning = limitWasCapped
+            ? `\n\n⚠️ Запрошенный limit=${requestedLimit} был ограничен до ${parsed.data.limit}. Для пагинации используйте offset.`
+            : '';
 
           const isCompact = !params.ids && params.mode !== 'full';
 
@@ -617,7 +629,7 @@ function setupHandlers(
               const tags = e.tags.length > 0 ? ` | 🏷️ ${e.tags.join(', ')}` : '';
               return `${pin}${pi} **${e.title}**\n  ID: ${e.id} | ${e.category}${dom} | ${e.status}${tags} | 🕐 ${new Date(e.updatedAt).toLocaleDateString()}`;
             }).join('\n\n');
-            return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей, compact)\n\n${formatted}` }] };
+            return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей, compact)\n\n${formatted}${capWarning}` }] };
           }
 
           const formatted = (entries as MemoryEntry[]).map(e => {
@@ -627,7 +639,7 @@ function setupHandlers(
             const rel = e.relatedIds && e.relatedIds.length > 0 ? `\n**Связи**: ${e.relatedIds.join(', ')}` : '';
             return `## ${pin}${pi} ${e.title}\n**ID**: ${e.id}\n**Категория**: ${e.category}${dom} | **Статус**: ${e.status} | **Автор**: ${e.author}${e.pinned ? ' | 📌' : ''}\n**Теги**: ${e.tags.join(', ') || 'нет'}${rel}\n**Обновлено**: ${new Date(e.updatedAt).toLocaleString()}\n\n${e.content}\n\n---`;
           }).join('\n\n');
-          return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей)\n\n${formatted}` }] };
+          return { content: [{ type: 'text', text: `# Командная память (${entries.length} записей)\n\n${formatted}${capWarning}` }] };
         }
 
         case 'memory_update': {

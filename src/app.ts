@@ -925,11 +925,18 @@ async function main(): Promise<void> {
     // 2. Close WebSocket connections
     wsServer.stop();
 
-    // 3. Hard-kill safety net — if graceful shutdown hangs, force exit after 10s
+    // 3. Hard-kill safety net — if graceful shutdown hangs, force exit.
+    // 10s default; override via SHUTDOWN_TIMEOUT_MS for slow databases or
+    // larger Qdrant collections. Bound at [1s, 120s] so misconfiguration
+    // can't break shutdown semantics entirely.
+    const rawTimeout = Number(process.env.SHUTDOWN_TIMEOUT_MS);
+    const shutdownTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(Math.max(rawTimeout, 1000), 120_000)
+      : 10_000;
     setTimeout(() => {
-      logger.error('Shutdown timed out, forcing exit');
+      logger.error({ shutdownTimeoutMs }, 'Shutdown timed out, forcing exit');
       process.exit(1);
-    }, 10_000).unref();
+    }, shutdownTimeoutMs).unref();
 
     // 4. Wait briefly for in-flight requests to complete
     await new Promise(resolve => setTimeout(resolve, 2000));
