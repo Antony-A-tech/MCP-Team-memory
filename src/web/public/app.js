@@ -543,6 +543,8 @@ function transliterate(text) {
   }).join('');
 }
 
+let _domainModalA11yDetach = null;
+
 function openDomainModal(domain = null) {
   const modal = document.getElementById('domain-modal');
   const title = document.getElementById('domain-modal-title');
@@ -568,10 +570,14 @@ function openDomainModal(domain = null) {
   }
 
   modal.classList.add('active');
-  nameInput.focus();
+  _domainModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeDomainModal,
+    initialFocusSelector: '#domain-name',
+  });
 }
 
 function closeDomainModal() {
+  if (_domainModalA11yDetach) { _domainModalA11yDetach(); _domainModalA11yDetach = null; }
   document.getElementById('domain-modal').classList.remove('active');
 }
 
@@ -1178,18 +1184,28 @@ function openReadModal(id) {
   readModal.classList.add('active');
   readModal.dataset.entryId = id;
 
-  document.getElementById('read-modal-close').onclick = () => readModal.classList.remove('active');
+  let detach = null;
+  const close = () => {
+    if (detach) { detach(); detach = null; }
+    readModal.classList.remove('active');
+  };
+
+  document.getElementById('read-modal-close').onclick = close;
   const readEditBtn = document.getElementById('read-modal-edit');
   if (isReadOnly) {
     readEditBtn.style.display = 'none';
   } else {
     readEditBtn.style.display = '';
     readEditBtn.onclick = () => {
-      readModal.classList.remove('active');
+      close();
       editEntry(id);
     };
   }
-  readModal.onclick = (e) => { if (e.target === readModal) readModal.classList.remove('active'); };
+  readModal.onclick = (e) => { if (e.target === readModal) close(); };
+  detach = window.attachModalA11y(readModal, {
+    onClose: close,
+    initialFocusSelector: '#read-modal-close',
+  });
   lucide.createIcons();
 }
 
@@ -1205,6 +1221,8 @@ function initModal() {
 
   entryForm.addEventListener('submit', handleFormSubmit);
 }
+
+let _entryModalA11yDetach = null;
 
 function openModal(entry = null) {
   populateEntryDomainSelect();
@@ -1240,9 +1258,14 @@ function openModal(entry = null) {
   }
 
   modal.classList.add('active');
+  _entryModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeModal,
+    initialFocusSelector: '#entry-title',
+  });
 }
 
 function closeModal() {
+  if (_entryModalA11yDetach) { _entryModalA11yDetach(); _entryModalA11yDetach = null; }
   modal.classList.remove('active');
 }
 
@@ -1308,13 +1331,20 @@ function initProjectsModal() {
   document.getElementById('btn-create-project').addEventListener('click', createProject);
 }
 
+let _projectsModalA11yDetach = null;
+
 function openProjectsModal() {
   projectsModal.classList.add('active');
   renderProjectsList();
   lucide.createIcons();
+  _projectsModalA11yDetach = window.attachModalA11y(projectsModal, {
+    onClose: closeProjectsModal,
+    initialFocusSelector: '#projects-modal-close',
+  });
 }
 
 function closeProjectsModal() {
+  if (_projectsModalA11yDetach) { _projectsModalA11yDetach(); _projectsModalA11yDetach = null; }
   projectsModal.classList.remove('active');
 }
 
@@ -2417,9 +2447,16 @@ function openThemeModal() {
   themeModal.onclick = (e) => {
     if (e.target === themeModal) handleClose();
   };
+
+  _themeModalA11yDetach = window.attachModalA11y(themeModal, {
+    onClose: handleClose,
+    initialFocusSelector: '#theme-modal-close',
+  });
 }
 
+let _themeModalA11yDetach = null;
 function closeThemeModal() {
+  if (_themeModalA11yDetach) { _themeModalA11yDetach(); _themeModalA11yDetach = null; }
   document.getElementById('theme-modal').classList.remove('active');
 }
 
@@ -2428,23 +2465,8 @@ function initThemeSwitcher() {
   if (btn) {
     btn.addEventListener('click', openThemeModal);
   }
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      const themeModal = document.getElementById('theme-modal');
-      if (themeModal && themeModal.classList.contains('active')) {
-        closeThemeModal();
-      }
-      const noteModal = document.getElementById('note-modal');
-      if (noteModal && noteModal.classList.contains('active')) {
-        closeNoteModal();
-      }
-      const noteReadModal = document.getElementById('note-read-modal');
-      if (noteReadModal && noteReadModal.classList.contains('active')) {
-        noteReadModal.classList.remove('active');
-      }
-    }
-  });
+  // ESC handling for theme/note/note-read modals now lives inside
+  // attachModalA11y(), which scopes per-modal and respects modal stacking.
 }
 
 // ===== Sessions UI =====
@@ -3041,9 +3063,16 @@ async function openShareNoteModal(noteId) {
   modal.querySelector('#share-note-status').innerHTML = '';
   modal.querySelector('#share-note-submit').disabled = false;
   modal.style.display = 'flex';
+  _shareModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeShareNoteModal,
+    initialFocusSelector: '#share-note-title',
+  });
 }
 
+let _shareModalA11yDetach = null;
+
 function closeShareNoteModal() {
+  if (_shareModalA11yDetach) { _shareModalA11yDetach(); _shareModalA11yDetach = null; }
   const modal = document.getElementById('share-note-modal');
   if (modal) modal.style.display = 'none';
 }
@@ -3142,20 +3171,32 @@ function openNoteReadModal(noteId) {
   modal.classList.add('active');
   modal.dataset.noteId = noteId;
 
-  document.getElementById('note-read-close').onclick = () => modal.classList.remove('active');
+  let detach = null;
+  const close = () => {
+    if (detach) { detach(); detach = null; }
+    modal.classList.remove('active');
+  };
+
+  document.getElementById('note-read-close').onclick = close;
   const noteEditBtn = document.getElementById('note-read-edit');
   if (isReadOnly) {
     noteEditBtn.style.display = 'none';
   } else {
     noteEditBtn.style.display = '';
     noteEditBtn.onclick = () => {
-      modal.classList.remove('active');
+      close();
       openNoteModal(noteId);
     };
   }
-  modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('active'); };
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  detach = window.attachModalA11y(modal, {
+    onClose: close,
+    initialFocusSelector: '#note-read-close',
+  });
   lucide.createIcons();
 }
+
+let _noteModalA11yDetach = null;
 
 function openNoteModal(noteId = null) {
   const modal = document.getElementById('note-modal');
@@ -3180,6 +3221,10 @@ function openNoteModal(noteId = null) {
 
   populateNoteSessionSelect();
   modal.classList.add('active');
+  _noteModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeNoteModal,
+    initialFocusSelector: '#note-title-input',
+  });
 }
 
 async function populateNoteSessionSelect() {
@@ -3204,6 +3249,7 @@ async function populateNoteSessionSelect() {
 }
 
 function closeNoteModal() {
+  if (_noteModalA11yDetach) { _noteModalA11yDetach(); _noteModalA11yDetach = null; }
   document.getElementById('note-modal').classList.remove('active');
 }
 

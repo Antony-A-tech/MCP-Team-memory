@@ -278,10 +278,125 @@
     });
   }
 
+  // ---------------------------------------------------------------------------
+  // Legacy modal a11y wrapper
+  //
+  // `openModal()` above creates a *new* backdrop with generated HTML. Legacy
+  // modals (entry / read / note / chat-delete / projects / domain / theme,
+  // declared in index.html) already exist in the DOM and have their own
+  // structure — they can't use `openModal()` directly. `attachModalA11y()`
+  // adds focus trap + ESC + role/aria + previous-focus restore to an
+  // already-rendered `.modal` element, and returns a cleanup function the
+  // caller invokes when closing the modal.
+  //
+  // Stacking: confirm/prompt/alert (`activeModal`) always wins ESC handling.
+  // Among legacy modals, only the top of `legacyA11yStack` responds — opening
+  // a legacy modal while another is open pushes onto the stack; closing pops.
+  // In practice legacy modals don't stack on top of each other in this app,
+  // but the discipline keeps multi-handler firing safe.
+  // ---------------------------------------------------------------------------
+
+  const legacyA11yStack = [];
+
+  function isLegacyTop(modalEl) {
+    return legacyA11yStack.length > 0 &&
+      legacyA11yStack[legacyA11yStack.length - 1].modalEl === modalEl;
+  }
+
+  function detachLegacyA11y(entry, { restoreFocus }) {
+    document.removeEventListener('keydown', entry.focusTrapHandler);
+    document.removeEventListener('keydown', entry.escHandler);
+    const idx = legacyA11yStack.indexOf(entry);
+    if (idx !== -1) legacyA11yStack.splice(idx, 1);
+    if (restoreFocus && entry.previousFocus &&
+        typeof entry.previousFocus.focus === 'function' &&
+        document.contains(entry.previousFocus)) {
+      setTimeout(() => entry.previousFocus.focus(), 0);
+    }
+  }
+
+  /**
+   * Attach a11y plumbing to an existing modal element. Returns a cleanup
+   * function that must be called when the modal is hidden (clicks on close
+   * button, backdrop, programmatic close — all paths).
+   *
+   * @param {HTMLElement} modalEl  The `.modal` backdrop element.
+   * @param {{
+   *   onClose: () => void,            // invoked on ESC if dismissable
+   *   dismissable?: boolean,          // default true
+   *   initialFocusSelector?: string,  // CSS selector inside modalEl, else first focusable
+   * }} opts
+   * @returns {() => void} cleanup (idempotent)
+   */
+  function attachModalA11y(modalEl, opts) {
+    if (!modalEl) return () => {};
+    const { onClose, dismissable = true, initialFocusSelector } = opts || {};
+
+    // Re-entrancy: if open() called twice without close() in between, detach
+    // the stale entry to avoid duplicate listeners.
+    const existingIdx = legacyA11yStack.findIndex((m) => m.modalEl === modalEl);
+    if (existingIdx !== -1) {
+      detachLegacyA11y(legacyA11yStack[existingIdx], { restoreFocus: false });
+    }
+
+    if (!modalEl.hasAttribute('role')) modalEl.setAttribute('role', 'dialog');
+    modalEl.setAttribute('aria-modal', 'true');
+
+    const previousFocus = document.activeElement;
+
+    const focusTrapHandler = (e) => {
+      if (e.key !== 'Tab') return;
+      // If a confirm/alert/prompt modal is open, let it trap.
+      if (activeModal) return;
+      if (!isLegacyTop(modalEl)) return;
+      const focusables = modalEl.querySelectorAll(FOCUSABLE_SELECTOR);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    const escHandler = (e) => {
+      if (e.key !== 'Escape' || !dismissable) return;
+      if (activeModal) return; // confirm modal on top — its ESC wins
+      if (!isLegacyTop(modalEl)) return;
+      e.preventDefault();
+      if (typeof onClose === 'function') onClose();
+    };
+
+    document.addEventListener('keydown', focusTrapHandler);
+    document.addEventListener('keydown', escHandler);
+
+    const entry = { modalEl, focusTrapHandler, escHandler, previousFocus, onClose };
+    legacyA11yStack.push(entry);
+
+    // Defer initial focus so DOM updates from open() settle first.
+    setTimeout(() => {
+      let el = null;
+      if (initialFocusSelector) el = modalEl.querySelector(initialFocusSelector);
+      if (!el) el = modalEl.querySelector(FOCUSABLE_SELECTOR);
+      if (el && typeof el.focus === 'function') el.focus();
+    }, 0);
+
+    let detached = false;
+    return function cleanup() {
+      if (detached) return;
+      detached = true;
+      detachLegacyA11y(entry, { restoreFocus: true });
+    };
+  }
+
   // Export to global scope so app.js can call them like the native dialogs.
   window.showConfirmModal = showConfirmModal;
   window.showAlertModal = showAlertModal;
   window.showPromptModal = showPromptModal;
+  window.attachModalA11y = attachModalA11y;
   window.AppModalPreemptedError = AppModalPreemptedError;
 
   // Silence preempt rejections from default `unhandledrejection` console
