@@ -6,6 +6,50 @@
 **Базовая ветка:** `main` (HEAD = `5d0985d`)
 **Целевая ветка:** `feat/v5-postwork-bugfixes` (создаётся в Phase 0)
 
+## Status (по состоянию на 2026-05-15)
+
+✅ **Завершено в эту сессию** (24 коммита, 496/496 тестов зелёных, +~72 новых теста):
+
+| Phase | Что | Коммит |
+|---|---|---|
+| Pre-flight | План + ветка | `774b949` |
+| 0.A | `memory_audit` global leak (MCP + REST) | `116c44b` |
+| 0.B | Pagination offset DoS cap | `a2a95ac` |
+| 0.C | `pg_dump` password в argv | `7bc2a42` |
+| 0.D | `X-Project-Id` UUID validation | `6a37781` |
+| 0.E | Project scope enforcement | `000bd2d` |
+| 1.A | Migration 026 — FK CASCADE/SET NULL + comments | `aaab02a` |
+| 1.B | `setProfile` atomic (advisory lock) | `e56a47d` + `52c9b3f` |
+| 1.C | `archive()` поддержка `expectedVersion` | `30dacfd` |
+| 1.D | JSONB Zod schemas (`external_refs`, `evidence_sources`, event refs) | `044cb01` |
+| 1.E | Session batch insert count assertion | `3ae95d2` |
+| 1.F | `getStats()` 5 queries → single GROUPING SETS | `537f921` |
+| review fix | ConflictError handling at 4 manager.delete callers | `19181e9` |
+| 2.A | `showConfirmModal/showAlertModal/showPromptModal` + 12 native dialogs replaced | `5b30c46` |
+| 2.B | Profile tab `loadProfile()` + edit form | `92f9324` |
+| 2.C | Optimistic update + badge refresh notes | `16906c5` |
+| 2.D | Share-modal native `<select>` → `.custom-select` | `3d7d255` |
+| review fix | Modal preempt rejects + `loadProfile` awaited | `81519de` |
+| 3.A/B | `switchProject` race + active-tab reload | `3910230` |
+| 3.D | DOMPurify pass on `renderMarkdown` | `dc56bd4` |
+| 3.E | WebSocket reload debounce (150ms coalesce) | `910d1b0` |
+| 5.A | Events extractor confidence 0.7 → 0.55, configurable | `89bf3df` |
+| 5.F | `session-sync.cjs` explicit failure stderr + exit 1 | `fd7f4f8` |
+
+⏭ **Перенесено в follow-up** (требуют отдельной сессии):
+
+- 3.C полный (modal a11y для legacy модалок — основной компонент готов, осталось обернуть entry/read/note/chat-config модалки в helper)
+- 3.F (server-side WebSocket broadcast per-project filter) — REST код-pass агента нашёл, но реализация не сделана
+- 3.G (UI schema validation `external_refs`)
+- Phase 4 (API MAJOR: idempotency, LRU rate limiter, fail-fast DB, tool descriptions) — full phase
+- 5.B–E, G, H (LLM summary parser rewrite, zero-vector embedding, NoteMerger fallback, share dedup cleanup) — full sub-phase
+- Phase 6 MINOR (большинство уже решено в Phase 2 inline; m1 badges done, m3 toast icons уже были, m4 sidebar collapse — design call, не баг)
+
+⏸ **Парковка (отдельный Azure phase):**
+- B4–B8 (Azure dedup key, PAT encryption, webhook auth, user mapping) — Azure-specific
+- RBAC (note `30bb4de4`)
+- Profile auto-bootstrap из репо (note `7e448e67`)
+
 ## Контекст
 
 V5 (Profile + Events + Knowledge unification) уже смерджен в main и задеплоен. Перед Azure DevOps integration нужно:
