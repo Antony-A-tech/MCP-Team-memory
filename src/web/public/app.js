@@ -434,20 +434,38 @@ function selectDomain(domain) {
 }
 
 async function switchProject(projectId) {
+  // Step 1: tear down the WebSocket *before* swapping currentProjectId so any
+  // in-flight onmessage handlers don't apply old-project updates to the new
+  // project's entries array (race that produced stale data on quick switches).
+  if (ws) {
+    ws.onclose = null;
+    try { ws.close(); } catch (_e) {}
+    ws = null;
+  }
+
+  // Step 2: swap the working set.
   currentProjectId = projectId;
   localStorage.setItem('selected-project', projectId);
   currentDomain = '';
+
+  // Step 3: await all data fetches so the UI reaches a consistent state
+  // before the new WebSocket starts pushing updates.
   await loadProjectDomains();
   renderDomainFilters();
   populateEntryDomainSelect();
-  loadEntries();
-  loadStats();
-  updateSessionNotesCounts();
-  // Reconnect WebSocket with new project_id
-  if (ws) {
-    ws.onclose = null; // prevent auto-reconnect with old project_id
-    ws.close();
-  }
+  await Promise.all([
+    loadEntries(),
+    loadStats(),
+    updateSessionNotesCounts(),
+    // Reload whichever alt-view tab is currently active so it doesn't show
+    // stale data from the previous project (scope-note M3 et al).
+    currentCategory === 'profile' ? loadProfile() : Promise.resolve(),
+    currentCategory === 'events' ? loadEvents() : Promise.resolve(),
+    currentCategory === 'notes' ? loadNotes() : Promise.resolve(),
+    currentCategory === 'sessions' ? loadSessions() : Promise.resolve(),
+  ]);
+
+  // Step 4: now safe to bring the WebSocket back up.
   initWebSocket();
 }
 
