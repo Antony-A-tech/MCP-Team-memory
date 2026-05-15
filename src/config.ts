@@ -37,6 +37,10 @@ export interface AppConfig {
   extractNotesEnabled: boolean;
   extractLlmProvider: 'gemini' | 'ollama';
   extractMinConfidence: number;
+  // Events extractor (v5) — separate threshold because event-mentions in
+  // routine sessions yield lower confidence than WHY-facts. See
+  // scope-note 0593646d for the calibration story.
+  eventsMinConfidence: number;
   extractMinMarkerStrength: number;
   extractMinFactLen: number;
   extractMaxFactLen: number;
@@ -102,6 +106,9 @@ export function loadConfig(): AppConfig {
     extractLlmProvider:
       (process.env.EXTRACT_LLM_PROVIDER as 'gemini' | 'ollama') ?? 'gemini',
     extractMinConfidence: parseFloatSafe(process.env.EXTRACT_MIN_CONFIDENCE || '0.6', 0.6),
+    // 0.55 default — calibrated against the 1000-session backfill of
+    // 0593646d. EVENTS_MIN_CONFIDENCE env override available.
+    eventsMinConfidence: parseFloatSafe(process.env.EVENTS_MIN_CONFIDENCE || '0.55', 0.55),
     extractMinMarkerStrength: parseFloatSafe(
       process.env.EXTRACT_MIN_MARKER_STRENGTH || '0.3',
       0.3,
