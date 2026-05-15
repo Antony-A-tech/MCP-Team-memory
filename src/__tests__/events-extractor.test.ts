@@ -28,16 +28,21 @@ describe('Events extractor', () => {
     expect(parsed[1].refs?.version_tag).toBe('v4.5.0');
   });
 
-  it('filters out low-confidence events (default threshold 0.7)', () => {
+  it('filters out low-confidence events (default threshold 0.55)', () => {
+    // Phase 5.A: threshold lowered from 0.7 → 0.55 to capture routine
+    // events (refactor/bugfix mentions) that LLM scores 0.55-0.68.
+    // confidence=0.4 is below, 0.6 above, 0.9 well above — only the
+    // first should be filtered.
     const json = JSON.stringify({
       events: [
-        { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'might', confidence: 0.3 },
+        { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'maybe', confidence: 0.4 },
+        { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'likely', confidence: 0.6 },
         { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'sure', confidence: 0.9 },
       ],
     });
     const parsed = parseEventsResponse(json);
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].title).toBe('sure');
+    expect(parsed).toHaveLength(2);
+    expect(parsed.map(p => p.title)).toEqual(['likely', 'sure']);
   });
 
   it('respects custom minConfidence', () => {

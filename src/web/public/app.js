@@ -442,6 +442,15 @@ async function switchProject(projectId) {
     try { ws.close(); } catch (_e) {}
     ws = null;
   }
+  // Also drop any pending WS-reload (memory:* events from the old project
+  // that have queued up inside the 150ms debounce window). Otherwise the
+  // first new-project loadEntries() can be immediately overwritten by a
+  // stale reload triggered by the late-arriving old event.
+  if (_wsReloadTimer) {
+    clearTimeout(_wsReloadTimer);
+    _wsReloadTimer = null;
+  }
+  _wsReloadFlags = { entries: false, stats: false };
 
   // Step 2: swap the working set.
   currentProjectId = projectId;
