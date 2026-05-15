@@ -6,9 +6,37 @@
 **Базовая ветка:** `main` (HEAD = `5d0985d`)
 **Целевая ветка:** `feat/v5-postwork-bugfixes` (создаётся в Phase 0)
 
-## Status (по состоянию на 2026-05-15)
+## Status (обновлено 2026-05-15, session 2)
 
-✅ **Завершено в эту сессию** (24 коммита, 496/496 тестов зелёных, +~72 новых теста):
+✅ **Завершено** (45 коммитов на ветке, 559/559 тестов зелёных):
+
+### Session 2 progress (Phases 3-tail → 6)
+
+| Phase | Что | Коммит |
+|---|---|---|
+| 3.C | a11y wrap legacy modals via attachModalA11y() | `016f49d` |
+| 3.F | WS broadcast per-project filter (leak fix) | `5de054d` |
+| 3.G | UI Zod whitelist for event.refs | `ee7fcb6` |
+| 3 review | ARIA target / TDZ / focus / warn fixes | `644a380` |
+| 4.A | POST /api/notes Zod schema | `2c57af4` |
+| 4.B | Idempotency-Key middleware (+ in-flight dedup in review fix) | `9e3c7a3` |
+| 4.C+D | LRU rate limiter + token-scoped tiers | `bcf95ab` |
+| 4.E+G | JSON body cap split + DB fail-fast probe | `1bff035` |
+| 4.H | MCP tool description corrections | `a659b7a` |
+| 4.I+J | Strip decay internals (helper) + WS query-param deprecation | `be63ae6` |
+| 4.F | session_import tuple dedup | `f21df2d` |
+| 4 review | In-flight idempotency, decay strip on every boundary, trust proxy | `71a7a95` |
+| 5.B+H | LLM summary parser rewrite + empty-output guard | `3336109` |
+| 5.C | Remove zero-vector embedding fallback | `364abb6` (+ test update `ae0a5ca`) |
+| 5.D | NoteMerger throws on malformed JSON | `6c8d332` |
+| 5.G | Note share rollback error propagation | `78d27cc` |
+| 5.E | Events extraction retry on malformed JSON | `de3ef59` |
+| 5 review | Sanitised error msg, log levels, parser edge tests | `61c7f4b` |
+| 6 | memory_read cap warning + configurable shutdown timeout | `da494d7` |
+
+### Session 1 progress (preserved)
+
+✅ **Session 1** (24 коммитов, 496/496 тестов зелёных, +~72 новых теста):
 
 | Phase | Что | Коммит |
 |---|---|---|
@@ -36,14 +64,21 @@
 | 5.A | Events extractor confidence 0.7 → 0.55, configurable | `89bf3df` |
 | 5.F | `session-sync.cjs` explicit failure stderr + exit 1 | `fd7f4f8` |
 
-⏭ **Перенесено в follow-up** (требуют отдельной сессии):
+⏭ **Перенесено в follow-up** (после Session 2):
 
-- 3.C полный (modal a11y для legacy модалок — основной компонент готов, осталось обернуть entry/read/note/chat-config модалки в helper)
-- 3.F (server-side WebSocket broadcast per-project filter) — REST код-pass агента нашёл, но реализация не сделана
-- 3.G (UI schema validation `external_refs`)
-- Phase 4 (API MAJOR: idempotency, LRU rate limiter, fail-fast DB, tool descriptions) — full phase
-- 5.B–E, G, H (LLM summary parser rewrite, zero-vector embedding, NoteMerger fallback, share dedup cleanup) — full sub-phase
-- Phase 6 MINOR (большинство уже решено в Phase 2 inline; m1 badges done, m3 toast icons уже были, m4 sidebar collapse — design call, не баг)
+- Phase 6 хвосты (низкий приоритет, не correctness/security):
+  - DocumentFragment вместо innerHTML на append в `renderEntries` (perf)
+  - addEventListener cleanup на re-render (memory leak risk — низкий, innerHTML re-render автоматически освобождает listeners на dropped DOM)
+  - ARIA labels на icon buttons (a11y, batchable с другим polish-passом)
+  - WCAG AA contrast на disabled states (visual)
+  - getReads/trackReads Promise.race с 1s timeout
+  - Error message language uniformity (ru/en) — большой scope
+  - Chat session lock TTL cleanup
+  - Export streaming — значительный рефактор
+- Session tuple TOCTOU partial unique index (4.F follow-up) — требует миграции
+- WS deprecation log sampling by IP (4.J follow-up) — nice-to-have
+
+✅ **Все BLOCKER + большинство MAJOR закрыты** — готово к Azure phase.
 
 ⏸ **Парковка (отдельный Azure phase):**
 - B4–B8 (Azure dedup key, PAT encryption, webhook auth, user mapping) — Azure-specific
