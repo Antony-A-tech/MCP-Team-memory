@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { ExternalRefsSchema } from '../memory/jsonb-schemas.js';
 
 const UuidSchema = z.string().uuid('Invalid UUID format');
 const PriorityEnum = z.enum(['low', 'medium', 'high', 'critical']);
@@ -58,7 +59,7 @@ export const NoteShareSchema = z.object({
       title: z.string().min(1).max(500).optional(),
       content: z.string().min(1).max(50000).optional(),
       tags: z.array(z.string().max(50)).max(20).optional(),
-      external_refs: z.record(z.string(), z.unknown()).optional(),
+      external_refs: ExternalRefsSchema.optional(),
     })
     .optional(),
   on_match: z
