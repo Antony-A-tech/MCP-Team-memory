@@ -21,9 +21,28 @@
 
   let activeModal = null; // { backdrop, focusTrapHandler, escHandler, previousFocus, onClose }
 
-  function closeActiveModal(returnValue) {
+  /**
+   * Preempt marker. When openModal() is called while another modal is open,
+   * the previous one's promise is rejected with this error so callers that
+   * `await showConfirmModal()` get a clear unhandled rejection / catch path
+   * instead of either of the wrong behaviours:
+   *   - resolve(false) → "if (!await confirm)" treats preempt as user-cancel,
+   *     so a destructive flow may be silently dropped.
+   *   - resolve(symbol) → truthy → destructive flow PROCEEDS without user
+   *     consent.
+   * Rejection is the only safe default. Callers that explicitly want to
+   * survive preempts can wrap in try/catch and check `err.name === 'AppModalPreemptedError'`.
+   */
+  class AppModalPreemptedError extends Error {
+    constructor() {
+      super('app-modal: preempted by a newer openModal() call');
+      this.name = 'AppModalPreemptedError';
+    }
+  }
+
+  function closeActiveModal(returnValue, { preempted = false } = {}) {
     if (!activeModal) return;
-    const { backdrop, focusTrapHandler, escHandler, previousFocus, resolve } = activeModal;
+    const { backdrop, focusTrapHandler, escHandler, previousFocus, resolve, reject } = activeModal;
     document.removeEventListener('keydown', escHandler);
     document.removeEventListener('keydown', focusTrapHandler);
     backdrop.remove();
@@ -33,7 +52,11 @@
       // recalculation.
       setTimeout(() => previousFocus.focus(), 0);
     }
-    resolve(returnValue);
+    if (preempted) {
+      reject(new AppModalPreemptedError());
+    } else {
+      resolve(returnValue);
+    }
   }
 
   function buildFocusTrap(backdrop) {
@@ -74,9 +97,9 @@
     initialFocusSelector,
     onMount, // (root) => void  — called after DOM insert, before show
   }) {
-    // If another modal is open, close it first (rare but possible from quick
-    // double-trigger flows).
-    if (activeModal) closeActiveModal(activeModal.cancelValue);
+    // If another modal is open, preempt it via rejection — see
+    // AppModalPreemptedError docstring for rationale.
+    if (activeModal) closeActiveModal(undefined, { preempted: true });
 
     const previousFocus = document.activeElement;
     const backdrop = document.createElement('div');
@@ -108,7 +131,7 @@
     `;
     document.body.appendChild(backdrop);
 
-    const resolved = new Promise((resolve) => {
+    const resolved = new Promise((resolve, reject) => {
       const focusTrapHandler = buildFocusTrap(backdrop);
       const escHandler = (e) => {
         if (e.key === 'Escape' && dismissable) {
@@ -117,7 +140,7 @@
         }
       };
 
-      activeModal = { backdrop, focusTrapHandler, escHandler, previousFocus, resolve, cancelValue };
+      activeModal = { backdrop, focusTrapHandler, escHandler, previousFocus, resolve, reject, cancelValue };
 
       document.addEventListener('keydown', focusTrapHandler);
       document.addEventListener('keydown', escHandler);
@@ -259,4 +282,5 @@
   window.showConfirmModal = showConfirmModal;
   window.showAlertModal = showAlertModal;
   window.showPromptModal = showPromptModal;
+  window.AppModalPreemptedError = AppModalPreemptedError;
 })();
