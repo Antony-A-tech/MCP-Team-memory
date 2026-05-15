@@ -21,6 +21,7 @@ import { createAuthMiddleware } from './middleware/auth.js';
 import { createHealthHandler } from './health.js';
 import { createLogger } from './logger.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
+import { createIdempotencyMiddleware } from './middleware/idempotency.js';
 import { parsePagination } from './middleware/pagination.js';
 import { enforceProjectScope } from './middleware/project-scope.js';
 import { NoteWriteSchema } from './notes/validation.js';
@@ -134,6 +135,12 @@ async function main(): Promise<void> {
 
   // Rate limiting
   app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
+
+  // Idempotency-Key support for POST endpoints — clients that retry the
+  // same logical operation (e.g., Azure DevOps webhook redelivery) get the
+  // cached response back instead of executing the handler twice. Scoped by
+  // (tokenId, path, key); only 2xx responses are cached for 24h.
+  app.use(createIdempotencyMiddleware());
 
   // MCP transport is mounted later, after optional managers are created
   // (see below: mountMcpTransport call after Qdrant + NotesManager setup)
