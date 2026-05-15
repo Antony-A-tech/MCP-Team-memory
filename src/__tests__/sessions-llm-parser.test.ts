@@ -100,4 +100,34 @@ describe('parseLlmSummary', () => {
     const result = parseLlmSummary(raw);
     expect(result!.title).toBe('After preamble');
   });
+
+  it('treats a duplicate Title: line inside Summary body as plain text', () => {
+    // A verbose LLM that echoes the structure twice — once as header,
+    // once embedded in the body — must NOT overwrite the parsed title or
+    // strip the body line. The parser flips to summary mode on the first
+    // `Summary:` and stays there until end of input.
+    const raw = [
+      'Title: Real title',
+      'Summary: Body starts here.',
+      'Title: Should NOT clobber the real title.',
+      'More body text follows.',
+    ].join('\n');
+    const result = parseLlmSummary(raw);
+    expect(result!.title).toBe('Real title');
+    expect(result!.summary).toContain('Title: Should NOT clobber');
+    expect(result!.summary).toContain('More body text');
+  });
+
+  it('unions multiple Tags lines without dropping any', () => {
+    // LLMs sometimes split tag lists across two `Tags:` headers (e.g.,
+    // "Tags: a, b\nTags: c, d"). The parser must accumulate, not replace.
+    const raw = [
+      'Title: Two tag lines',
+      'Tags: alpha, beta',
+      'Tags: gamma',
+      'Summary: This summary has enough characters to pass validation.',
+    ].join('\n');
+    const result = parseLlmSummary(raw);
+    expect(result!.tags).toEqual(['alpha', 'beta', 'gamma']);
+  });
 });

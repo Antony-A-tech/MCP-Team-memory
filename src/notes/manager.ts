@@ -357,15 +357,18 @@ export class NotesManager {
         rollbackFailed = err instanceof Error ? err.message : String(err);
       }
       if (rollbackFailed) {
+        // Full failure detail (including any storage error text) is in the
+        // logs, where it's visible to ops. The client gets a stable,
+        // sanitised message that includes the orphan ID (so the user can
+        // request manual cleanup) but no raw error strings (which could
+        // contain SQL fragments, internal paths, or transient stack
+        // traces that aren't useful to API consumers).
         logger.error(
           { noteId: note.id, orphanEntryId: entryId, rollbackError: rollbackFailed },
           'share race-loss rollback failed; orphan entry remains in the DB',
         );
-        // Propagate so the caller's status reflects the rollback failure,
-        // not just the original race-loss. Operators triaging the share
-        // endpoint will see this in logs AND the response.
         throw new Error(
-          `Note already shared, but orphan entry ${entryId} could not be cleaned up: ${rollbackFailed}`,
+          `Note already shared; orphan entry ${entryId} requires manual cleanup (see server logs).`,
         );
       }
       logger.warn(

@@ -59,8 +59,10 @@ export class DedupResolver {
       // fall back to zero vectors (they corrupt cosine similarity); instead
       // skip dedup entirely and treat every candidate as CREATE_NEW. Worst
       // case is a duplicate row, which is recoverable; corrupting the dedup
-      // graph is not.
-      logger.warn({ err, candidateCount: candidates.length, projectId },
+      // graph is not. Logged at error level because the fallback creates
+      // entries that would otherwise have been merged — operators need to
+      // see this in alerting rather than as a routine warn.
+      logger.error({ err, candidateCount: candidates.length, projectId },
         'Dedup embed failed — falling back to CREATE_NEW for all candidates');
       return { decisions: candidates.map((c) => ({ type: 'CREATE_NEW', candidate: c })) };
     }
