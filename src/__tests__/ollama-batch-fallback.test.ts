@@ -49,21 +49,16 @@ describe('OllamaEmbeddingProvider.embedBatch — HTTP 400 fallback', () => {
     expect(fetchMock).toHaveBeenCalledTimes(3);
   });
 
-  it('substitutes a zero-vector for an individual text that still fails in fallback', async () => {
+  it('throws when an individual text still fails in per-item fallback (5.C: no zero-vector)', async () => {
     const vec = (fill: number) => new Array(4).fill(fill);
 
     fetchMock
       .mockResolvedValueOnce(mockResponse({ status: 400, text: 'input length exceeds context length' }))
       .mockResolvedValueOnce(mockResponse({ body: { embeddings: [vec(0.3)] } }))
-      // Second per-text call fails even with truncate:true
+      // Second per-text call fails even with truncate:true → must throw, not zero-vector
       .mockResolvedValueOnce(mockResponse({ status: 400, text: 'still too long somehow' }));
 
-    const result = await provider.embedBatch(['ok text', 'broken text']);
-
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual(vec(0.3));
-    // Zero-vector placeholder, matches provider.dimensions
-    expect(result[1]).toEqual(new Array(4).fill(0));
+    await expect(provider.embedBatch(['ok text', 'broken text'])).rejects.toThrow(/Ollama embed failed for batch index 1/);
   });
 
   it('propagates non-400 errors (does NOT trigger fallback on 500)', async () => {
@@ -73,33 +68,24 @@ describe('OllamaEmbeddingProvider.embedBatch — HTTP 400 fallback', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('substitutes zero-vectors for every text when fallback fails for all of them', async () => {
+  it('throws when fallback fails for every text (5.C: no zero-vector substitution)', async () => {
     fetchMock
       .mockResolvedValueOnce(mockResponse({ status: 400, text: 'too long' }))
       .mockResolvedValueOnce(mockResponse({ status: 400, text: 'still too long' }))
       .mockResolvedValueOnce(mockResponse({ status: 400, text: 'still too long' }));
 
-    const result = await provider.embedBatch(['a', 'b']);
-
-    // Length must match input to preserve the index-zip contract used by callers.
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual(new Array(4).fill(0));
-    expect(result[1]).toEqual(new Array(4).fill(0));
+    // First per-item failure (index 0) aborts the batch; caller treats the
+    // whole input as un-embeddable and decides what to do (e.g., CREATE_NEW
+    // for dedup candidates) rather than silently corrupting comparisons.
+    await expect(provider.embedBatch(['a', 'b'])).rejects.toThrow(/Ollama embed failed for batch index 0/);
   });
 
-  it('substitutes a zero-vector when a thrown (non-abort) fetch error occurs in fallback', async () => {
-    const vec = (fill: number) => new Array(4).fill(fill);
-
+  it('throws on a non-timeout fetch error in fallback (5.C: no zero-vector)', async () => {
     fetchMock
       .mockResolvedValueOnce(mockResponse({ status: 400, text: 'too long' }))
-      .mockRejectedValueOnce(new Error('network blip'))
-      .mockResolvedValueOnce(mockResponse({ body: { embeddings: [vec(0.7)] } }));
+      .mockRejectedValueOnce(new Error('network blip'));
 
-    const result = await provider.embedBatch(['bad', 'good']);
-
-    expect(result).toHaveLength(2);
-    expect(result[0]).toEqual(new Array(4).fill(0));
-    expect(result[1]).toEqual(vec(0.7));
+    await expect(provider.embedBatch(['bad', 'good'])).rejects.toThrow(/network blip/);
   });
 
   it('rethrows TimeoutError / AbortError from fallback rather than masking it as zero-vector', async () => {
