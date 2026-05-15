@@ -409,13 +409,19 @@ export class WebServer {
           res.status(501).json({ success: false, error: 'Audit logging not enabled' });
           return;
         }
-        const projectId = req.query.project_id as string | undefined;
+        const queryProjectId = req.query.project_id as string | undefined;
+        const headerProjectId =
+          ((req as any).auth?.projectId as string | undefined) ??
+          (req.headers['x-project-id'] as string | undefined);
+        const projectId = queryProjectId || headerProjectId;
         const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10), 200) : 50;
 
-        const entries = projectId
-          ? await auditLogger.getByProject(projectId, limit)
-          : await auditLogger.getRecent(limit);
+        if (!projectId) {
+          res.status(400).json({ success: false, error: 'project_id is required (query or X-Project-Id header). Global audit log is not exposed for project isolation.' });
+          return;
+        }
 
+        const entries = await auditLogger.getByProject(projectId, limit);
         res.json({ success: true, audit: entries });
       } catch (error) {
         logger.error({ err: error }, 'API error');
