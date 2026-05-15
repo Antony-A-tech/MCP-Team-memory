@@ -341,14 +341,31 @@ export class NotesManager {
       // Concurrent share won the race. Roll back our duplicate entry so the
       // user sees only one auto-entry per note. archive=true keeps the row
       // for forensics; flip to false if hard-delete is preferred.
-      const rollback = await p.memoryManager.delete({ id: entryId, archive: true });
-      if (typeof rollback === 'object' && rollback && 'conflict' in rollback) {
-        // The orphan entry was modified out from under us — log loudly so the
-        // operator can investigate, but still surface the original "already shared"
-        // error to the caller.
+      let rollbackFailed: unknown = null;
+      try {
+        const rollback = await p.memoryManager.delete({ id: entryId, archive: true });
+        if (typeof rollback === 'object' && rollback && 'conflict' in rollback) {
+          rollbackFailed = `version conflict (currentVersion=${(rollback as { currentVersion?: number }).currentVersion ?? '?'})`;
+        } else if (rollback === false) {
+          rollbackFailed = 'delete returned false (entry not found)';
+        }
+      } catch (err) {
+        // delete() can throw on storage errors. Surface the failure to the
+        // caller — leaving an orphan entry in place with no shared_to_entry
+        // link is the kind of inconsistency that ops needs to know about,
+        // not hide behind a generic "Note already shared" error.
+        rollbackFailed = err instanceof Error ? err.message : String(err);
+      }
+      if (rollbackFailed) {
         logger.error(
-          { noteId: note.id, orphanEntryId: entryId },
-          'share race-loss rollback hit a version conflict; orphan entry may remain',
+          { noteId: note.id, orphanEntryId: entryId, rollbackError: rollbackFailed },
+          'share race-loss rollback failed; orphan entry remains in the DB',
+        );
+        // Propagate so the caller's status reflects the rollback failure,
+        // not just the original race-loss. Operators triaging the share
+        // endpoint will see this in logs AND the response.
+        throw new Error(
+          `Note already shared, but orphan entry ${entryId} could not be cleaned up: ${rollbackFailed}`,
         );
       }
       logger.warn(
