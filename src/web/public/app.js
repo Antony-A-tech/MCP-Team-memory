@@ -2431,6 +2431,17 @@ function closeAgentAccessModal() {
   if (_agentAccessModalA11yDetach) { _agentAccessModalA11yDetach(); _agentAccessModalA11yDetach = null; }
   modal.classList.remove('active');
   _agentAccessCurrentTokenId = null;
+  // Reset transient state so the next open() starts clean. saveAgentAccess
+  // sets disabled=true at the start of its request; on the success path it
+  // closes the modal without re-enabling, so a second "Доступ" click for
+  // another agent would land on a frozen Save button.
+  const saveBtn = document.getElementById('agent-access-save');
+  if (saveBtn) saveBtn.disabled = false;
+  const status = document.getElementById('agent-access-status');
+  if (status) {
+    status.textContent = '';
+    status.style.color = '';
+  }
 }
 
 function initAgentAccessModal() {
