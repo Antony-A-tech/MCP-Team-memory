@@ -88,9 +88,20 @@ export class WebServer {
 
     // === Projects API ===
 
-    app.get('/api/projects', async (_req: Request, res: Response) => {
+    app.get('/api/projects', async (req: Request, res: Response) => {
       try {
-        const projects = await this.memoryManager.listProjects();
+        // RBAC visibility: master tokens (admin scope) see every project;
+        // agent tokens see only the ones in their token_project_access
+        // allowlist. Unauthenticated readonly viewers (allowReadonly
+        // mode) also see every project — they have no token to filter
+        // against and the readonly contract is "everything in read mode".
+        const auth = (req as any).auth as
+          | { agentTokenId?: string; scopes?: string[] }
+          | undefined;
+        const isMaster = auth?.scopes?.includes('admin') ?? false;
+        const filterTokenId =
+          !isMaster && auth?.agentTokenId ? auth.agentTokenId : undefined;
+        const projects = await this.memoryManager.listProjects(filterTokenId);
         res.json({ success: true, projects });
       } catch (error) {
         logger.error({ err: error }, 'API error');
@@ -106,6 +117,32 @@ export class WebServer {
           return;
         }
         const project = await this.memoryManager.createProject({ name, description, domains });
+        // Auto-grant access to the creator's token (RBAC, migration 028).
+        // Agent-token holders get an "owned" project: they see it
+        // immediately, but no other agent does until master grants them.
+        // Master-token requests skip the grant — they bypass RBAC anyway
+        // and don't have an agent_tokens row to grant against.
+        const auth = (req as any).auth as
+          | { agentTokenId?: string; clientId?: string; scopes?: string[] }
+          | undefined;
+        const isMaster = auth?.scopes?.includes('admin') ?? false;
+        if (!isMaster && auth?.agentTokenId && this.agentTokenStore) {
+          try {
+            await this.agentTokenStore.grantProjectAccess(
+              auth.agentTokenId,
+              project.id,
+              auth.clientId ?? auth.agentTokenId,
+            );
+          } catch (grantErr) {
+            // Don't fail the whole POST if the grant write hiccups — the
+            // project exists, the operator can grant access from the
+            // Agents page. Just log loudly so the inconsistency is visible.
+            logger.error(
+              { err: grantErr, projectId: project.id, agentTokenId: auth.agentTokenId },
+              'Project created but auto-grant to creator failed',
+            );
+          }
+        }
         res.json({ success: true, project });
       } catch (error) {
         logger.error({ err: error }, 'API error');

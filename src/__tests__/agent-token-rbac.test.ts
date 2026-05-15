@@ -145,6 +145,25 @@ describe('AgentTokenStore RBAC (migration 028)', () => {
     expect(rows[0].c).toBe(0);
   });
 
+  it('grantProjectAccess adds one project idempotently and updates cache', async () => {
+    const { tokenId, rawToken, projectIds } = await fresh();
+
+    // First grant — cache flips to true synchronously.
+    await store.grantProjectAccess(tokenId, projectIds[0], 'test-master');
+    expect(store.hasProjectAccess(tokenId, projectIds[0])).toBe(true);
+    expect(store.resolve(rawToken)?.allowedProjects.has(projectIds[0])).toBe(true);
+
+    // Second grant for the same pair — idempotent (ON CONFLICT DO NOTHING).
+    await store.grantProjectAccess(tokenId, projectIds[0], 'test-master');
+    const persisted = await store.getAllowedProjects(tokenId);
+    expect(persisted).toHaveLength(1);
+
+    // Granting a second project doesn't clobber the first.
+    await store.grantProjectAccess(tokenId, projectIds[1], 'test-master');
+    expect(store.hasProjectAccess(tokenId, projectIds[0])).toBe(true);
+    expect(store.hasProjectAccess(tokenId, projectIds[1])).toBe(true);
+  });
+
   it('activate() rehydrates allowedProjects from DB', async () => {
     const { tokenId, projectIds } = await fresh();
     await store.setAllowedProjects(tokenId, [projectIds[1]]);

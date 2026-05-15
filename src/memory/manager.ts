@@ -134,8 +134,14 @@ export class MemoryManager {
     return this.storage.createProject(params);
   }
 
-  async listProjects(): Promise<Project[]> {
-    return this.storage.listProjects();
+  /**
+   * List projects. When `filterByTokenId` is supplied, returns only the
+   * projects that token has access to via token_project_access (RBAC).
+   * Master tokens pass undefined and get the full list — they're
+   * cross-project by design.
+   */
+  async listProjects(filterByTokenId?: string): Promise<Project[]> {
+    return this.storage.listProjects(filterByTokenId);
   }
 
   async getProject(id: string): Promise<Project | undefined> {
