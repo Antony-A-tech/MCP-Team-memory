@@ -21,6 +21,7 @@ import { createAuthMiddleware } from './middleware/auth.js';
 import { createHealthHandler } from './health.js';
 import { createLogger } from './logger.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
+import { parsePagination } from './middleware/pagination.js';
 import { AuditLogger } from './storage/audit.js';
 import { VersionManager } from './storage/versioning.js';
 import { AgentTokenStore } from './auth/agent-tokens.js';
@@ -367,8 +368,7 @@ async function main(): Promise<void> {
     if (!sessionManager) { res.json({ success: true, sessions: [], hasMore: false, offset: 0, limit: 20 }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     const projectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req, { limit: 20 });
     try {
       const sessions = await sessionManager.listSessions(agentTokenId || '', {
         projectId,
@@ -568,8 +568,7 @@ async function main(): Promise<void> {
   app.get('/api/notes', async (req, res) => {
     if (!notesManager) { res.json({ success: true, notes: [], hasMore: false, offset: 0, limit: 20 }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const { limit, offset } = parsePagination(req, { limit: 20 });
     try {
       const notes = await notesManager.read(agentTokenId || null, {
         projectId: (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined,
@@ -937,10 +936,11 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
     const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     try {
+      const { limit, offset } = parsePagination(req, { limit: 50 });
       const sessions = await chatManager.list(agentTokenId, {
         projectId: req.query.project_id as string | undefined,
-        limit: req.query.limit ? Number(req.query.limit) : 50,
-        offset: req.query.offset ? Number(req.query.offset) : 0,
+        limit,
+        offset,
       });
       res.json(sessions);
     } catch {
