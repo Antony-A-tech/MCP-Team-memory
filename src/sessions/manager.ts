@@ -525,18 +525,19 @@ export class SessionManager {
     });
 
     // Two attempts: malformed JSON is sometimes a transient LLM glitch
-    // (rate-limit retry, truncated response). One retry after 2s backoff
-    // recovers most of those without burning resources on persistent
-    // failures.
+    // (rate-limit retry, truncated response). One retry after a brief
+    // backoff recovers most of those without burning resources on
+    // persistent failures.
+    const EVENTS_RETRY_BACKOFF_MS = 2000;
     let candidates: ReturnType<typeof parseEventsResponseStrict>;
     try {
       const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
       candidates = parseEventsResponseStrict(raw, { minConfidence: this.eventsMinConfidence });
     } catch (parseErr) {
       if (!(parseErr instanceof EventsParseError)) throw parseErr;
-      logger.warn({ err: parseErr, sessionId: session.id },
-        'events extraction parse failed; retrying once after 2s backoff');
-      await new Promise((r) => setTimeout(r, 2000));
+      logger.warn({ err: parseErr, sessionId: session.id, backoffMs: EVENTS_RETRY_BACKOFF_MS },
+        'events extraction parse failed; retrying once after backoff');
+      await new Promise((r) => setTimeout(r, EVENTS_RETRY_BACKOFF_MS));
       try {
         const raw2 = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
         candidates = parseEventsResponseStrict(raw2, { minConfidence: this.eventsMinConfidence });
