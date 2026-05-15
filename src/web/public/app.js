@@ -3520,7 +3520,7 @@ function openProfileEdit(currentProfile) {
         return;
       }
       showToast('Профиль сохранён', 'success');
-      loadProfile();
+      await loadProfile();
     } catch (err) {
       status.textContent = '❌ Ошибка сети: ' + escapeHtml(err.message || '');
       status.style.color = 'var(--error, #c0392b)';
