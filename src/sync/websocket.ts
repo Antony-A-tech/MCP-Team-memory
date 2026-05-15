@@ -61,16 +61,26 @@ export class SyncWebSocketServer {
         // SECURITY NOTE: query param tokens leak to access logs, reverse
         // proxies, browser history, and referrer headers. Prefer
         // Authorization: Bearer or the Sec-WebSocket-Protocol sub-protocol
-        // mechanism. The query param is DEPRECATED and kept only for
-        // backward compatibility — log a warning each time it's used so
-        // operators can spot the dependency.
+        // mechanism. The query param is DEPRECATED — operators can flip
+        // WS_ALLOW_QUERY_TOKEN=false in env to HARD-disable it and force
+        // every client to migrate. Default keeps the legacy path for
+        // backward compatibility but every use is logged at warn level.
+        const allowQueryToken = process.env.WS_ALLOW_QUERY_TOKEN !== 'false';
         const headerToken = req.headers.authorization?.replace(/^Bearer\s+/i, '');
-        const queryToken = url.searchParams.get('token') || undefined;
-        if (queryToken && !headerToken) {
-          logger.warn(
-            { ip: req.socket.remoteAddress, host: req.headers.host },
-            'WS auth: token passed via query param `?token=` is DEPRECATED — switch the client to Authorization: Bearer header. Query-param token will be removed in a future release.',
-          );
+        const rawQueryToken = url.searchParams.get('token') || undefined;
+        const queryToken = allowQueryToken ? rawQueryToken : undefined;
+        if (rawQueryToken && !headerToken) {
+          if (allowQueryToken) {
+            logger.warn(
+              { ip: req.socket.remoteAddress, host: req.headers.host },
+              'WS auth: token passed via query param `?token=` is DEPRECATED — switch the client to Authorization: Bearer header. Set WS_ALLOW_QUERY_TOKEN=false to hard-disable.',
+            );
+          } else {
+            logger.warn(
+              { ip: req.socket.remoteAddress, host: req.headers.host },
+              'WS auth: query-param token rejected (WS_ALLOW_QUERY_TOKEN=false). Client must use Authorization: Bearer header.',
+            );
+          }
         }
         const token = headerToken || queryToken;
         if (!token) {

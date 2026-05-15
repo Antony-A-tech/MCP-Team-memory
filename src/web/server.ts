@@ -431,6 +431,14 @@ export class WebServer {
           res.status(501).json({ success: false, error: 'Audit logging not enabled' });
           return;
         }
+        // Resolve the entry's projectId for scope check. Without this, an
+        // agent token bound to project A could supply any entry UUID and
+        // read full audit history (title/body/category/actor) for entries
+        // it has no project access to — exactly the leak class Phase 0.A
+        // closed for global audit, just at entry granularity.
+        const targetEntry = await this.memoryManager.getById(req.params.entryId);
+        if (!targetEntry) { res.status(404).json({ success: false, error: 'Entry not found' }); return; }
+        if (!enforceProjectScope(req, res, targetEntry.projectId)) return;
         const entries = await auditLogger.getByEntry(req.params.entryId);
         res.json({ success: true, audit: entries });
       } catch (error) {
@@ -476,6 +484,11 @@ export class WebServer {
           res.status(501).json({ success: false, error: 'Versioning not enabled' });
           return;
         }
+        // Scope check before exposing version history — same reasoning as
+        // the audit endpoint above.
+        const targetEntry = await this.memoryManager.getById(req.params.id);
+        if (!targetEntry) { res.status(404).json({ success: false, error: 'Entry not found' }); return; }
+        if (!enforceProjectScope(req, res, targetEntry.projectId)) return;
         const versions = await vm.getVersions(req.params.id);
         res.json({ success: true, versions });
       } catch (error) {
