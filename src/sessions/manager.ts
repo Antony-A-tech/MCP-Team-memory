@@ -36,6 +36,9 @@ export class SessionManager {
     private extractionEnabled: boolean = true,
     private maxMergesPerSession: number = 3,
     private eventsManager?: EventsManager,
+    // Per-instance override for events confidence threshold; falls back to
+    // the EVENTS_MIN_CONFIDENCE_DEFAULT inside parseEventsResponse if absent.
+    private eventsMinConfidence?: number,
   ) {}
 
   setEventsManager(em: EventsManager): void {
@@ -435,7 +438,7 @@ export class SessionManager {
       messages,
     });
     const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
-    const candidates = parseEventsResponse(raw);
+    const candidates = parseEventsResponse(raw, { minConfidence: this.eventsMinConfidence });
 
     if (candidates.length === 0) {
       logger.info({ sessionId: session.id }, 'events extraction yielded zero candidates');

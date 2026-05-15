@@ -50,11 +50,20 @@ Session transcript:
 ${conversation}`;
 }
 
+// Default confidence threshold for accepting an LLM-extracted event.
+// Lowered from 0.7 → 0.55 after backfill of ~1000 sessions yielded only
+// 2 events: confidence below 0.7 happens often on routine sessions (bug
+// fix / refactor) where the model is uncertain whether the work is "an
+// event" — recall trade-off documented in scope-note 0593646d.
+// Can be overridden per-call (e.g. an admin tool that wants strict 0.7).
+// Env override: TM_EVENTS_MIN_CONFIDENCE (read by caller and passed in).
+export const EVENTS_MIN_CONFIDENCE_DEFAULT = 0.55;
+
 export function parseEventsResponse(
   raw: string,
   opts: { minConfidence?: number } = {},
 ): InsertEventParams[] {
-  const minConf = opts.minConfidence ?? 0.7;
+  const minConf = opts.minConfidence ?? EVENTS_MIN_CONFIDENCE_DEFAULT;
   let obj: unknown;
   try {
     obj = JSON.parse(raw);
