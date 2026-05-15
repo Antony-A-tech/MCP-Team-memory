@@ -81,7 +81,7 @@ function setupHandlers(
     const tools: Tool[] = [
       {
         name: 'memory_read',
-        description: '► КОГДА ВЫЗЫВАТЬ:\n• В НАЧАЛЕ сессии — проверь память проекта (memory_read() или memory_onboard).\n• ПЕРЕД началом новой задачи — поищи существующие решения (memory_read(search="...")).\n• Когда нужны детали записи — получи полное содержимое по ID.\n\nЧитает командную память. По умолчанию возвращает компактный список (без content). Два сценария получения полного содержимого:\n1. Обзор → детали: memory_read() → получить ID → memory_read(ids=[...])\n2. Поиск: memory_read(search="ключевые слова") → memory_read(ids=[...])\nДля малых выборок: memory_read(search="...", mode="full", limit=5)',
+        description: '► КОГДА ВЫЗЫВАТЬ:\n• В НАЧАЛЕ сессии — проверь память проекта (memory_read() или memory_onboard).\n• ПЕРЕД началом новой задачи — поищи существующие решения (memory_read(search="...")).\n• Когда нужны детали записи — получи полное содержимое по ID.\n\nЧитает командную память. По умолчанию возвращает компактный список (без content). Два сценария получения полного содержимого:\n1. Обзор → детали: memory_read() → получить ID → memory_read(ids=[...])\n2. Поиск: memory_read(search="ключевые слова") → memory_read(ids=[...])\nДля малых выборок: memory_read(search="...", mode="full", limit=5)\n\n⚠️ Когда передан `ids`, все остальные фильтры (category, domain, search, status, tags) ИГНОРИРУЮТСЯ — учитывается только project_id. Это batch-режим: «дай мне эти конкретные записи».',
         inputSchema: {
           type: 'object',
           properties: {
@@ -279,7 +279,7 @@ function setupHandlers(
       },
       {
         name: 'event_add',
-        description: '► КОГДА ВЫЗЫВАТЬ:\n• Произошло событие в проекте, достойное timeline: merge, release, deploy, incident, milestone\n• Пользователь явно сказал об этом ("смержил X", "выпустили v2.1", "задеплоил", "milestone закрыт")\n\nДобавляет событие в project_events timeline. Для ручных вызовов auto_generated=false.',
+        description: '► КОГДА ВЫЗЫВАТЬ:\n• Произошло событие в проекте, достойное timeline: merge, release, deploy, incident, milestone\n• Пользователь явно сказал об этом ("смержил X", "выпустили v2.1", "задеплоил", "milestone закрыт")\n\nДобавляет событие в project_events timeline. Ручные вызовы помечаются auto_generated=false автоматически (флаг не настраивается извне — авто-экстрактор управляет им сам).',
         inputSchema: {
           type: 'object',
           properties: {
