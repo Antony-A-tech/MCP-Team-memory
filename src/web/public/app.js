@@ -3692,12 +3692,37 @@ function renderEventsTimeline(events) {
   return `<div class="events-timeline">${items}</div>`;
 }
 
+// Whitelist mirrors ExternalRefsSchema in src/memory/jsonb-schemas.ts. Backend
+// strips unknown keys on write, so DB-side data is clean — this filter is
+// defence-in-depth for legacy rows that predate the schema and for any
+// future channel that bypasses NoteShareSchema/POST validation.
+//
+// Labels are humanised — "pr_number" → "PR", "commit_sha" → "Commit" — and
+// values pass through escapeHtml regardless of inferred type.
+const KNOWN_EXTERNAL_REF_KEYS = {
+  pr_number: { label: 'PR', format: (v) => `#${v}` },
+  commit_sha: { label: 'Commit', format: (v) => String(v).slice(0, 8) },
+  version_tag: { label: 'Version', format: (v) => String(v) },
+  deployment_url: { label: 'Deployment', format: (v) => String(v) },
+  incident_id: { label: 'Incident', format: (v) => String(v) },
+  pipeline_id: { label: 'Pipeline', format: (v) => String(v) },
+  work_item_id: { label: 'Work item', format: (v) => `#${v}` },
+  azure_pr_url: { label: 'Azure PR', format: (v) => String(v) },
+  azure_event_id: { label: 'Azure event', format: (v) => String(v) },
+};
+
 function renderEventRefs(refs) {
   if (!refs || typeof refs !== 'object' || Object.keys(refs).length === 0) return '';
-  const parts = Object.entries(refs).map(([k, v]) => {
-    const value = typeof v === 'object' ? JSON.stringify(v) : String(v);
-    return `<span class="event-ref"><strong>${escapeHtml(k)}</strong>: ${escapeHtml(value)}</span>`;
-  });
+  const parts = [];
+  for (const [k, v] of Object.entries(refs)) {
+    if (!Object.prototype.hasOwnProperty.call(KNOWN_EXTERNAL_REF_KEYS, k)) continue;
+    if (v === null || v === undefined || v === '') continue;
+    // Reject obvious garbage: arrays/nested objects aren't part of the schema.
+    if (typeof v === 'object') continue;
+    const meta = KNOWN_EXTERNAL_REF_KEYS[k];
+    parts.push(`<span class="event-ref"><strong>${escapeHtml(meta.label)}</strong>: ${escapeHtml(meta.format(v))}</span>`);
+  }
+  if (parts.length === 0) return '';
   return `<div class="event-refs">${parts.join(' · ')}</div>`;
 }
 
