@@ -23,6 +23,7 @@ import { createLogger } from './logger.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
 import { parsePagination } from './middleware/pagination.js';
 import { enforceProjectScope } from './middleware/project-scope.js';
+import { NoteWriteSchema } from './notes/validation.js';
 import { AuditLogger } from './storage/audit.js';
 import { VersionManager } from './storage/versioning.js';
 import { AgentTokenStore } from './auth/agent-tokens.js';
@@ -620,12 +621,24 @@ async function main(): Promise<void> {
   app.post('/api/notes', async (req, res) => {
     if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
-    const { title, content, tags, session_id } = req.body;
-    if (!title || !content) { res.status(400).json({ success: false, error: 'title and content are required' }); return; }
+
+    // Validate request body against NoteWriteSchema instead of manual extract —
+    // gives length/type/uuid checks and rejects unknown fields silently.
+    const parsed = NoteWriteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid request body',
+        details: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      });
+      return;
+    }
+    const body = parsed.data;
+
     // v5 invariant: project_id required (param or X-Project-Id header). Enforced
     // in DB by migration 025 NOT NULL constraint — reject early with 400 so the
     // caller gets a clear message instead of a 500.
-    const projectId = (req.body.project_id as string) || (req.headers['x-project-id'] as string) || null;
+    const projectId = body.project_id || (req.headers['x-project-id'] as string | undefined) || null;
     if (!projectId) {
       res.status(400).json({
         success: false,
@@ -637,12 +650,12 @@ async function main(): Promise<void> {
     try {
       if (!agentTokenId) { res.status(400).json({ success: false, error: 'Agent token required to create notes. Use an agent token instead of master token.' }); return; }
       const note = await notesManager.write(agentTokenId, {
-        title,
-        content,
-        tags: Array.isArray(tags) ? tags : (tags ? String(tags).split(',').map((t: string) => t.trim()).filter(Boolean) : []),
-        priority: req.body.priority || 'medium',
+        title: body.title,
+        content: body.content,
+        tags: body.tags,
+        priority: body.priority,
         projectId,
-        sessionId: session_id || null,
+        sessionId: body.session_id || null,
       });
       res.json({ success: true, note });
     } catch (err) {
