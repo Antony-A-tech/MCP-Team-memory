@@ -44,8 +44,29 @@ async function main(): Promise<void> {
 
   logger.info({ transport: 'http', database: config.databaseUrl.replace(/\/\/.*:.*@/, '//***:***@'), port: config.port }, 'Team Memory MCP Server v2 starting');
 
+  if (!process.env.DATABASE_URL) {
+    logger.warn('DATABASE_URL is not set — using built-in default. Set it explicitly in production.');
+  }
+
   // Initialize storage
   const storage = new PgStorage(config.databaseUrl, config.ftsLanguage);
+
+  // Fail-fast connectivity probe. PgStorage uses lazy connections, so a wrong
+  // DATABASE_URL or down Postgres only surfaces when the first query runs —
+  // which can be deep in migration logic with a confusing error. A simple
+  // `SELECT 1` here turns "database is unreachable" into a clean startup
+  // failure with a redacted DSN logged.
+  try {
+    await storage.getPool().query('SELECT 1');
+    logger.info('Database connectivity OK');
+  } catch (err) {
+    logger.fatal(
+      { err, database: config.databaseUrl.replace(/\/\/.*:.*@/, '//***:***@') },
+      'Cannot reach the database — check DATABASE_URL and Postgres availability',
+    );
+    process.exit(1);
+  }
+
   const auditLogger = new AuditLogger(storage.getPool());
   const versionManager = new VersionManager(storage.getPool());
   const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
@@ -67,7 +88,17 @@ async function main(): Promise<void> {
 
   // Create Express app
   const app = express();
-  app.use(express.json({ limit: '50mb' }));  // Large limit for session_import (sessions can be 10-50MB)
+  // JSON body limits are split by route:
+  //   - /mcp gets 50mb because session_import is a JSON-RPC `tools/call`
+  //     payload that can carry a whole Claude Code transcript (10–50 MB
+  //     when sessions are long).
+  //   - Everything else (REST API) caps at 10mb. Notes are < 50 KB,
+  //     entries < 1 MB; a 50 MB cap on /api/* was a DoS surface (a single
+  //     malicious POST could pin event-loop memory).
+  // Body must be parsed BEFORE auth/rate-limit middleware run, so register
+  // here.
+  app.use('/mcp', express.json({ limit: '50mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   // CORS — allow configurable origins
   const allowedOrigin = process.env.MEMORY_CORS_ORIGIN || '*';
