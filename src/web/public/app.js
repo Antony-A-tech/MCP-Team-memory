@@ -3151,7 +3151,13 @@ document.getElementById('note-form').addEventListener('submit', async (e) => {
       if (result.success) {
         showToast('Заметка обновлена', 'success');
         closeNoteModal();
-        loadNotes();
+        // Optimistic replace in notesData; reconcile via loadNotes after.
+        if (result.note && Array.isArray(notesData)) {
+          const idx = notesData.findIndex(n => n.id === result.note.id);
+          if (idx !== -1) notesData[idx] = result.note;
+          renderNotes();
+        }
+        await loadNotes();
       } else {
         showToast(result.error || 'Ошибка обновления', 'error');
       }
@@ -3169,7 +3175,16 @@ document.getElementById('note-form').addEventListener('submit', async (e) => {
       if (result.success) {
         showToast('Заметка создана', 'success');
         closeNoteModal();
-        loadNotes();
+        // Optimistic insert — note returned by API already has id/timestamps;
+        // user sees it instantly without waiting for the GET round-trip.
+        // The await below reconciles in case server-side rules changed the
+        // order or other fields.
+        if (result.note && Array.isArray(notesData)) {
+          notesData.unshift(result.note);
+          renderNotes();
+          if (typeof updateSessionNotesCounts === 'function') updateSessionNotesCounts();
+        }
+        await loadNotes();
       } else {
         showToast(result.error || 'Ошибка создания', 'error');
       }
@@ -3194,6 +3209,7 @@ async function deleteNote(noteId) {
       showToast('Заметка удалена', 'success');
       notesData = notesData.filter(n => n.id !== noteId);
       renderNotes();
+      if (typeof updateSessionNotesCounts === 'function') updateSessionNotesCounts();
     } else {
       showToast(result.error || 'Ошибка удаления', 'error');
     }
