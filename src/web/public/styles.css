@@ -1323,6 +1323,30 @@ select:focus {
   border-top: 1px solid var(--border-color);
 }
 
+/* App-modal — themed confirm/prompt/alert dialogs */
+/* (replaces native window.confirm/prompt/alert) */
+.app-modal .app-modal-content {
+  max-width: 480px;
+}
+
+.app-modal .app-modal-body {
+  padding: 24px 32px;
+}
+
+.app-modal-message {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app-modal .app-modal-prompt-input {
+  width: 100%;
+  margin-top: 12px;
+}
+
 #entry-form {
   padding: 28px 32px;
 }
