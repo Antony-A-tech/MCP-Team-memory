@@ -231,6 +231,34 @@ export class AgentTokenStore {
   }
 
   /**
+   * Single-row grant: add ONE project to a token's allowlist atomically.
+   * Used by POST /api/projects auto-grant — when an agent creates a
+   * project we want it visible to that agent immediately without a
+   * full setAllowedProjects() (which would also clobber any existing
+   * grants for that token).
+   *
+   * Idempotent: ON CONFLICT DO NOTHING. Updates the in-memory cache so
+   * the very next auth check sees the new project.
+   */
+  async grantProjectAccess(tokenId: string, projectId: string, granter?: string): Promise<void> {
+    if (!this.accessTableExists) {
+      throw new Error('token_project_access table is not available — apply migration 028');
+    }
+    await this.pool.query(
+      `INSERT INTO token_project_access (token_id, project_id, granted_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (token_id, project_id) DO NOTHING`,
+      [tokenId, projectId, granter ?? null],
+    );
+    for (const entry of this.cache.values()) {
+      if (entry.id === tokenId) {
+        entry.allowedProjects.add(projectId);
+        break;
+      }
+    }
+  }
+
+  /**
    * Replace the allowlist for a token. Diffs new vs old, applies INSERTs
    * and DELETEs in a single transaction so the row state is consistent.
    * `granter` is the agent name / 'master' attribution for audit (NULL ok).

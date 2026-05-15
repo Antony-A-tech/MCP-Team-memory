@@ -240,7 +240,20 @@ export class PgStorage {
     return rows.length > 0 ? rowToProject(rows[0]) : undefined;
   }
 
-  async listProjects(): Promise<Project[]> {
+  async listProjects(filterByTokenId?: string): Promise<Project[]> {
+    if (filterByTokenId) {
+      // RBAC-filtered listing: only projects the token has a row for in
+      // token_project_access. Master callers pass undefined and skip this
+      // branch — they're cross-project by design.
+      const { rows } = await this.pool.query(
+        `SELECT p.* FROM projects p
+         INNER JOIN token_project_access tpa ON tpa.project_id = p.id
+         WHERE tpa.token_id = $1
+         ORDER BY p.created_at`,
+        [filterByTokenId],
+      );
+      return rows.map(rowToProject);
+    }
     const { rows } = await this.pool.query('SELECT * FROM projects ORDER BY created_at');
     return rows.map(rowToProject);
   }
