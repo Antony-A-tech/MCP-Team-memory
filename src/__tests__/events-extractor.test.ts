@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildEventsPrompt, parseEventsResponse } from '../events/extractor.js';
+import {
+  buildEventsPrompt,
+  parseEventsResponse,
+  parseEventsResponseStrict,
+  EventsParseError,
+} from '../events/extractor.js';
 
 describe('Events extractor', () => {
   it('builds prompt mentioning all 5 event types', () => {
@@ -91,5 +96,36 @@ describe('Events extractor', () => {
     });
     const parsed = parseEventsResponse(json);
     expect(parsed[0].title).toBe('foo');
+  });
+
+  describe('parseEventsResponseStrict (5.E retry support)', () => {
+    it('throws EventsParseError on invalid JSON', () => {
+      expect(() => parseEventsResponseStrict('not json')).toThrow(EventsParseError);
+      expect(() => parseEventsResponseStrict('not json')).toThrow(/not valid JSON/);
+    });
+
+    it('throws EventsParseError when payload is not an object', () => {
+      expect(() => parseEventsResponseStrict('"a string"')).toThrow(EventsParseError);
+    });
+
+    it('throws EventsParseError when `events` is missing or not an array', () => {
+      expect(() => parseEventsResponseStrict('{}')).toThrow(/missing `events` array/);
+      expect(() => parseEventsResponseStrict('{"events":42}')).toThrow(/missing `events` array/);
+    });
+
+    it('returns the same parsed events as the non-strict variant on success', () => {
+      const json = JSON.stringify({
+        events: [
+          { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'feat/x merged', confidence: 0.9 },
+        ],
+      });
+      expect(parseEventsResponseStrict(json)).toEqual(parseEventsResponse(json));
+    });
+
+    it('returns [] when events array is empty (legitimate empty response)', () => {
+      // Empty array is a valid LLM response (no events in this session) and
+      // must NOT throw — only malformed/missing structure throws.
+      expect(parseEventsResponseStrict('{"events":[]}')).toEqual([]);
+    });
   });
 });

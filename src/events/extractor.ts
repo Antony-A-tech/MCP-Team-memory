@@ -59,6 +59,43 @@ ${conversation}`;
 // Env override: TM_EVENTS_MIN_CONFIDENCE (read by caller and passed in).
 export const EVENTS_MIN_CONFIDENCE_DEFAULT = 0.55;
 
+export class EventsParseError extends Error {
+  constructor(message: string, public readonly cause?: unknown) {
+    super(message);
+    this.name = 'EventsParseError';
+  }
+}
+
+/**
+ * Strict variant of parseEventsResponse: throws EventsParseError when the
+ * input can't be parsed as JSON or doesn't have the expected shape.
+ *
+ * Used by the extraction pipeline so it can retry once with backoff
+ * before giving up. The non-strict parseEventsResponse() wraps this and
+ * returns [] on any failure, preserving backwards compatibility with
+ * callers that don't care about the distinction.
+ */
+export function parseEventsResponseStrict(
+  raw: string,
+  opts: { minConfidence?: number } = {},
+): InsertEventParams[] {
+  const minConf = opts.minConfidence ?? EVENTS_MIN_CONFIDENCE_DEFAULT;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch (err) {
+    throw new EventsParseError('events response is not valid JSON', err);
+  }
+  if (!obj || typeof obj !== 'object') {
+    throw new EventsParseError('events response is not a JSON object');
+  }
+  const eventsField = (obj as { events?: unknown }).events;
+  if (!Array.isArray(eventsField)) {
+    throw new EventsParseError('events response missing `events` array');
+  }
+  return filterValidEvents(eventsField, minConf);
+}
+
 export function parseEventsResponse(
   raw: string,
   opts: { minConfidence?: number } = {},
@@ -73,7 +110,10 @@ export function parseEventsResponse(
   if (!obj || typeof obj !== 'object') return [];
   const eventsField = (obj as { events?: unknown }).events;
   if (!Array.isArray(eventsField)) return [];
+  return filterValidEvents(eventsField, minConf);
+}
 
+function filterValidEvents(eventsField: unknown[], minConf: number): InsertEventParams[] {
   const result: InsertEventParams[] = [];
   for (const ev of eventsField) {
     if (!ev || typeof ev !== 'object') continue;
