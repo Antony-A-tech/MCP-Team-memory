@@ -61,46 +61,53 @@ export class SessionManager {
     endedAt?: string;
     messages: Array<{ role: string; content: string; timestamp?: string; toolNames: string[] }>;
   }): Promise<Session> {
-    // Check duplicate — upsert if session grew (new messages added)
-    if (data.externalId) {
-      const existing = await this.storage.findByExternalId(agentTokenId, data.externalId);
-      if (existing) {
-        // If new data has more messages, update the session
-        if (data.messages.length > existing.messageCount) {
-          // Skip upsert if worker is actively processing this session
-          if (existing.embeddingStatus === 'summarizing' || existing.embeddingStatus === 'embedding') {
-            logger.info({ sessionId: existing.id, status: existing.embeddingStatus },
-              'Session upsert skipped — worker is processing, will retry next sync');
-            return existing;
-          }
-
-          await this.storage.replaceMessages(existing.id, data.messages);
-          await this.storage.updateSessionMeta(existing.id, {
-            messageCount: data.messages.length,
-            endedAt: data.endedAt,
-          });
-
-          // Re-queue for LLM summary + embedding (content changed)
-          const needsSummary = !data.summary;
-          await this.storage.updateEmbeddingStatus(existing.id, needsSummary ? 'queued' : 'queued_embed');
-
-          // Clean old vectors — worker will regenerate
-          if (this.vectorStore) {
-            this.vectorStore.delete('sessions', [existing.id]).catch(err =>
-              logger.warn({ err, sessionId: existing.id }, 'Failed to clean old session vector during upsert'));
-            this.vectorStore.deleteByFilter('session_messages', {
-              must: [{ key: 'session_id', match: { value: existing.id } }],
-            }).catch(err =>
-              logger.warn({ err, sessionId: existing.id }, 'Failed to clean old message vectors during upsert'));
-          }
-
-          logger.info({ sessionId: existing.id, oldCount: existing.messageCount, newCount: data.messages.length },
-            'Session updated with new messages, re-queued');
-          return { ...existing, messageCount: data.messages.length, endedAt: data.endedAt ?? existing.endedAt };
+    // Resolve a possible duplicate via two paths:
+    //   1. external_id — strongest signal, used when the caller controls a
+    //      stable identifier (Claude Code session UUID, Azure event id).
+    //   2. (project_id, name, started_at) tuple — fallback for callers that
+    //      can't supply external_id (legacy webhooks, manual UI imports).
+    //      All three parts must be set to form a stable key; otherwise we
+    //      fall through and create a new row.
+    // The "if grew, upsert" logic below applies to either match.
+    const existing = data.externalId
+      ? await this.storage.findByExternalId(agentTokenId, data.externalId)
+      : await this.storage.findByTuple(agentTokenId, data.projectId, data.name, data.startedAt);
+    if (existing) {
+      // If new data has more messages, update the session
+      if (data.messages.length > existing.messageCount) {
+        // Skip upsert if worker is actively processing this session
+        if (existing.embeddingStatus === 'summarizing' || existing.embeddingStatus === 'embedding') {
+          logger.info({ sessionId: existing.id, status: existing.embeddingStatus },
+            'Session upsert skipped — worker is processing, will retry next sync');
+          return existing;
         }
-        // Same or fewer messages — no update needed
-        return existing;
+
+        await this.storage.replaceMessages(existing.id, data.messages);
+        await this.storage.updateSessionMeta(existing.id, {
+          messageCount: data.messages.length,
+          endedAt: data.endedAt,
+        });
+
+        // Re-queue for LLM summary + embedding (content changed)
+        const needsSummary = !data.summary;
+        await this.storage.updateEmbeddingStatus(existing.id, needsSummary ? 'queued' : 'queued_embed');
+
+        // Clean old vectors — worker will regenerate
+        if (this.vectorStore) {
+          this.vectorStore.delete('sessions', [existing.id]).catch(err =>
+            logger.warn({ err, sessionId: existing.id }, 'Failed to clean old session vector during upsert'));
+          this.vectorStore.deleteByFilter('session_messages', {
+            must: [{ key: 'session_id', match: { value: existing.id } }],
+          }).catch(err =>
+            logger.warn({ err, sessionId: existing.id }, 'Failed to clean old message vectors during upsert'));
+        }
+
+        logger.info({ sessionId: existing.id, oldCount: existing.messageCount, newCount: data.messages.length },
+          'Session updated with new messages, re-queued');
+        return { ...existing, messageCount: data.messages.length, endedAt: data.endedAt ?? existing.endedAt };
       }
+      // Same or fewer messages — no update needed
+      return existing;
     }
 
     // New session
