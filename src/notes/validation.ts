@@ -5,10 +5,20 @@ const UuidSchema = z.string().uuid('Invalid UUID format');
 const PriorityEnum = z.enum(['low', 'medium', 'high', 'critical']);
 const StatusEnum = z.enum(['active', 'archived']);
 
+// Accepts either an array of strings or a comma-separated string from form
+// inputs / legacy clients. Returned shape is always string[].
+const TagsCoerce = z
+  .preprocess((v) => {
+    if (Array.isArray(v)) return v;
+    if (typeof v === 'string') return v.split(',').map((t) => t.trim()).filter(Boolean);
+    return v;
+  }, z.array(z.string().max(50)).max(20))
+  .default([]);
+
 export const NoteWriteSchema = z.object({
   title: z.string().min(1).max(500),
   content: z.string().min(1).max(50000),
-  tags: z.array(z.string().max(50)).max(20).default([]),
+  tags: TagsCoerce,
   priority: PriorityEnum.default('medium'),
   project_id: UuidSchema.optional(),
   session_id: UuidSchema.optional(),
