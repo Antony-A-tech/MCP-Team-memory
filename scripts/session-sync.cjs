@@ -69,7 +69,17 @@ async function main() {
   }
 
   const { session_id, cwd, hook_event_name } = hookData;
-  if (!session_id || !TOKEN) process.exit(0);
+  // Distinguish "nothing to do" (clean exit 0) from "tried but failed"
+  // (exit 1 + stderr). Silent exit(0) hid two weeks of unsynced sessions
+  // earlier this month — see scope-note diagnosis. Phase 5.F.
+  if (!session_id) {
+    console.error('TM-SYNC: missing session_id in hook payload — skipping');
+    process.exit(0);
+  }
+  if (!TOKEN) {
+    console.error('TM-SYNC: MEMORY_API_TOKEN env var not set — cannot import');
+    process.exit(1);
+  }
 
   const isSessionEnd = hook_event_name === 'SessionEnd';
 
@@ -78,16 +88,31 @@ async function main() {
     process.exit(0);
   }
 
-  // Resolve project — skip if no .mcp.json found (project not configured)
+  // Resolve project — fail loudly if no .mcp.json found. Silent skip here
+  // is the bug that produced two weeks of unimported sessions when the
+  // user edited .mcp.json and accidentally cleared X-Project-Id.
   const projectId = resolveProjectId(cwd);
-  if (!projectId) process.exit(0);
+  if (!projectId) {
+    console.error(
+      `TM-SYNC: project_id not resolved from .mcp.json at cwd=${cwd}. ` +
+      'Check that mcpServers["team-memory"].headers["X-Project-Id"] is set. ' +
+      'Skipping import — session will NOT appear in team-memory until fixed.',
+    );
+    process.exit(1);
+  }
 
   // Find and parse session file
   const sessionFile = findSessionFile(session_id, cwd);
-  if (!sessionFile) process.exit(0);
+  if (!sessionFile) {
+    console.error(`TM-SYNC: session file for ${session_id} not found under cwd=${cwd}`);
+    process.exit(1);
+  }
 
   const messages = parseSessionFile(sessionFile);
-  if (messages.length < MIN_MESSAGES) process.exit(0);
+  if (messages.length < MIN_MESSAGES) {
+    // Legitimately nothing to import yet — silent skip is correct here.
+    process.exit(0);
+  }
 
   const gitBranch = detectGitBranch(cwd);
 
@@ -106,8 +131,10 @@ async function main() {
     markSynced(session_id);
     // Silent success — don't pollute Claude's output
   } catch (err) {
-    // Silent failure — don't block Claude Code
-    process.exit(0);
+    // Loud failure — operator needs to see HTTP errors / network issues
+    // instead of discovering them weeks later via missing sessions.
+    console.error(`TM-SYNC: import failed for session ${session_id}: ${err.message || err}`);
+    process.exit(1);
   }
 }
 
