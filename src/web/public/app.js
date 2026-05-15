@@ -668,7 +668,7 @@ async function deleteDomain(domain) {
       msg += `\n\nУ ${count} записей установлен этот домен. Домен у них будет сброшен.`;
     }
 
-    if (!confirm(msg)) return;
+    if (!await showConfirmModal({ title: 'Удалить домен', message: msg, confirmText: 'Удалить', danger: true })) return;
 
     const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains/${encodeURIComponent(domain.slug)}`, {
       method: 'DELETE'
@@ -1391,7 +1391,12 @@ window.deleteProject = async function(id) {
   const project = projects.find(p => p.id === id);
   if (!project) return;
 
-  if (!confirm(`Удалить проект "${project.name}" и все его записи?`)) return;
+  if (!await showConfirmModal({
+    title: 'Удалить проект',
+    message: `Удалить проект "${project.name}" и все его записи?`,
+    confirmText: 'Удалить',
+    danger: true,
+  })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' });
@@ -1418,7 +1423,12 @@ window.deleteProject = async function(id) {
 };
 
 async function renameProject(id, currentName) {
-  const newName = prompt('Новое название проекта:', currentName);
+  const newName = await showPromptModal({
+    title: 'Переименовать проект',
+    label: 'Новое название',
+    defaultValue: currentName,
+    submitText: 'Сохранить',
+  });
   if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
 
   try {
@@ -1650,7 +1660,7 @@ window.editEntry = function(id) {
 };
 
 window.archiveEntry = async function(id) {
-  if (!confirm('Архивировать эту запись?')) return;
+  if (!await showConfirmModal({ title: 'Архивировать запись', message: 'Архивировать эту запись?', confirmText: 'Архивировать' })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/memory/${id}`, {
@@ -1673,7 +1683,7 @@ window.archiveEntry = async function(id) {
 };
 
 window.deleteEntry = async function(id) {
-  if (!confirm('Удалить эту запись навсегда?')) return;
+  if (!await showConfirmModal({ title: 'Удалить запись', message: 'Удалить эту запись навсегда?', confirmText: 'Удалить', danger: true })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/memory/${id}?archive=false`, {
@@ -1740,7 +1750,7 @@ window.showHistory = async function(id) {
       `v${v.version} [${new Date(v.createdAt).toLocaleString()}]\n  ${v.title} (${v.status})`
     ).join('\n\n');
 
-    alert(`История версий:\n\n${text}`);
+    await showAlertModal({ title: 'История версий', message: text });
   } catch (error) {
     showToast('Ошибка загрузки истории', 'error');
     console.error(error);
@@ -2192,7 +2202,12 @@ async function createAgent() {
 }
 
 async function revokeAgent(id, name) {
-  if (!confirm(`Отключить токен для "${name}"?`)) return;
+  if (!await showConfirmModal({
+    title: 'Отключить токен',
+    message: `Отключить токен для "${name}"?`,
+    confirmText: 'Отключить',
+    danger: true,
+  })) return;
   try {
     const res = await authFetch(`${API_BASE}/agent-tokens/${id}/revoke`, { method: 'POST' });
     const data = await res.json();
@@ -2223,7 +2238,12 @@ async function activateAgent(id, name) {
 }
 
 async function deleteAgent(id, name) {
-  if (!confirm(`Удалить токен "${name}" навсегда? Это действие нельзя отменить.`)) return;
+  if (!await showConfirmModal({
+    title: 'Удалить токен',
+    message: `Удалить токен "${name}" навсегда? Это действие нельзя отменить.`,
+    confirmText: 'Удалить навсегда',
+    danger: true,
+  })) return;
   try {
     const res = await authFetch(`${API_BASE}/agent-tokens/${id}`, { method: 'DELETE' });
     const data = await res.json();
@@ -2625,7 +2645,12 @@ document.getElementById('session-back-btn').addEventListener('click', () => {
 
 // Delete session
 async function deleteSession(id) {
-  if (!confirm('Удалить сессию навсегда?')) return;
+  if (!await showConfirmModal({
+    title: 'Удалить сессию',
+    message: 'Удалить сессию навсегда?',
+    confirmText: 'Удалить',
+    danger: true,
+  })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/sessions/${id}`, {
@@ -2847,7 +2872,10 @@ async function openShareNoteModal(noteId) {
   const note = notesData.find(n => n.id === noteId);
   if (!note) return;
   if (note.sharedToEntryId) {
-    alert('Эта заметка уже расшарена. Открой связанную запись через иконку ссылки.');
+    await showAlertModal({
+      title: 'Заметка уже расшарена',
+      message: 'Открой связанную запись через иконку ссылки.',
+    });
     return;
   }
 
@@ -2974,11 +3002,14 @@ async function submitShareNote() {
 
     if (data.action === 'match_found_pending_user_decision' && data.existingEntry) {
       const score = (data.matchScore ?? 0).toFixed(2);
-      const proceed = confirm(
-        `Найдена похожая запись (cosine ${score}):\n\n` +
-        `${data.existingEntry.title}\n\n` +
-        `Подтвердить связь с существующей записью?`,
-      );
+      const proceed = await showConfirmModal({
+        title: 'Найдена похожая запись',
+        message:
+          `cosine ${score}\n\n` +
+          `${data.existingEntry.title}\n\n` +
+          `Подтвердить связь с существующей записью?`,
+        confirmText: 'Подтвердить связь',
+      });
       if (proceed) {
         modal.querySelector('#share-note-on-match').value = 'confirm_existing';
         await submitShareNote();
@@ -3150,7 +3181,12 @@ document.getElementById('note-form').addEventListener('submit', async (e) => {
 });
 
 async function deleteNote(noteId) {
-  if (!confirm('Удалить заметку?')) return;
+  if (!await showConfirmModal({
+    title: 'Удалить заметку',
+    message: 'Удалить заметку?',
+    confirmText: 'Удалить',
+    danger: true,
+  })) return;
   try {
     const response = await authFetch(`${API_BASE}/notes/${noteId}`, { method: 'DELETE' });
     const result = await response.json();

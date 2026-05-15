@@ -1,0 +1,262 @@
+// src/web/public/components/modal.js
+//
+// Themed confirm/prompt/alert modals — replacement for native browser
+// dialogs (window.confirm/prompt/alert) which look unstyled, don't follow
+// the project theme, can't be focus-trapped or keyboard-tested, and break
+// the UX of a polished UI.
+//
+// Promise-based API for drop-in replacement of native dialogs:
+//
+//   if (!await showConfirmModal({ message: 'Delete X?' })) return;
+//   const name = await showPromptModal({ message: 'New name:' });
+//   await showAlertModal({ message: 'Done!' });
+//
+// Phase 2.A of docs/superpowers/plans/2026-05-15-v5-postwork-audit-fixes.md.
+
+(function () {
+  'use strict';
+
+  const FOCUSABLE_SELECTOR =
+    'a[href], button:not([disabled]), input:not([disabled]), textarea:not([disabled]), select:not([disabled]), [tabindex]:not([tabindex="-1"])';
+
+  let activeModal = null; // { backdrop, focusTrapHandler, escHandler, previousFocus, onClose }
+
+  function closeActiveModal(returnValue) {
+    if (!activeModal) return;
+    const { backdrop, focusTrapHandler, escHandler, previousFocus, resolve } = activeModal;
+    document.removeEventListener('keydown', escHandler);
+    document.removeEventListener('keydown', focusTrapHandler);
+    backdrop.remove();
+    activeModal = null;
+    if (previousFocus && typeof previousFocus.focus === 'function') {
+      // Defer focus restore so the unmount doesn't fight the browser's focus
+      // recalculation.
+      setTimeout(() => previousFocus.focus(), 0);
+    }
+    resolve(returnValue);
+  }
+
+  function buildFocusTrap(backdrop) {
+    return (e) => {
+      if (e.key !== 'Tab') return;
+      const focusables = backdrop.querySelectorAll(FOCUSABLE_SELECTOR);
+      if (focusables.length === 0) return;
+      const first = focusables[0];
+      const last = focusables[focusables.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+  }
+
+  function escapeHtml(s) {
+    return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => ({
+      '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;',
+    }[c]));
+  }
+
+  /**
+   * Opens a modal with the given inner HTML and a buttons configuration.
+   * Returns a Promise that resolves with the value passed to the button's
+   * `value` once it's clicked (or with `cancelValue` on ESC / backdrop click
+   * if `dismissable !== false`).
+   */
+  function openModal({
+    title,
+    bodyHtml,
+    buttons, // array of { label, value, kind?: 'primary'|'danger'|'secondary' }
+    cancelValue = null,
+    dismissable = true,
+    initialFocusSelector,
+    onMount, // (root) => void  — called after DOM insert, before show
+  }) {
+    // If another modal is open, close it first (rare but possible from quick
+    // double-trigger flows).
+    if (activeModal) closeActiveModal(activeModal.cancelValue);
+
+    const previousFocus = document.activeElement;
+    const backdrop = document.createElement('div');
+    backdrop.className = 'modal app-modal active';
+    backdrop.setAttribute('role', 'dialog');
+    backdrop.setAttribute('aria-modal', 'true');
+    backdrop.setAttribute('aria-labelledby', 'app-modal-title');
+
+    const titleHtml = title ? `
+      <div class="modal-header">
+        <h2 id="app-modal-title">${escapeHtml(title)}</h2>
+      </div>` : '';
+
+    const buttonsHtml = buttons.map((b, i) => {
+      const cls = b.kind === 'danger'
+        ? 'btn-danger'
+        : b.kind === 'primary'
+          ? 'btn-primary'
+          : 'btn-secondary';
+      return `<button type="button" class="btn ${cls}" data-modal-button="${i}">${escapeHtml(b.label)}</button>`;
+    }).join('');
+
+    backdrop.innerHTML = `
+      <div class="modal-content app-modal-content" role="document">
+        ${titleHtml}
+        <div class="modal-body app-modal-body">${bodyHtml}</div>
+        <div class="modal-footer">${buttonsHtml}</div>
+      </div>
+    `;
+    document.body.appendChild(backdrop);
+
+    const resolved = new Promise((resolve) => {
+      const focusTrapHandler = buildFocusTrap(backdrop);
+      const escHandler = (e) => {
+        if (e.key === 'Escape' && dismissable) {
+          e.preventDefault();
+          closeActiveModal(cancelValue);
+        }
+      };
+
+      activeModal = { backdrop, focusTrapHandler, escHandler, previousFocus, resolve, cancelValue };
+
+      document.addEventListener('keydown', focusTrapHandler);
+      document.addEventListener('keydown', escHandler);
+
+      // Button wiring
+      buttons.forEach((b, i) => {
+        const btn = backdrop.querySelector(`[data-modal-button="${i}"]`);
+        if (btn) btn.addEventListener('click', () => closeActiveModal(b.value));
+      });
+
+      // Backdrop click dismisses (only if click is on backdrop itself, not on
+      // the modal content).
+      if (dismissable) {
+        backdrop.addEventListener('click', (e) => {
+          if (e.target === backdrop) closeActiveModal(cancelValue);
+        });
+      }
+
+      if (typeof onMount === 'function') onMount(backdrop);
+
+      // Initial focus: first focusable element, or a specific one.
+      const initial = initialFocusSelector
+        ? backdrop.querySelector(initialFocusSelector)
+        : backdrop.querySelector(FOCUSABLE_SELECTOR);
+      if (initial) initial.focus();
+    });
+
+    return resolved;
+  }
+
+  /**
+   * Themed replacement for window.confirm(). Resolves to true on confirm,
+   * false on cancel/ESC/backdrop.
+   *
+   * @param {{ title?: string, message: string, confirmText?: string, cancelText?: string, danger?: boolean }} opts
+   * @returns {Promise<boolean>}
+   */
+  function showConfirmModal(opts) {
+    const {
+      title = 'Подтверждение',
+      message,
+      confirmText = 'Подтвердить',
+      cancelText = 'Отмена',
+      danger = false,
+    } = opts || {};
+    return openModal({
+      title,
+      bodyHtml: `<p class="app-modal-message">${escapeHtml(message)}</p>`,
+      buttons: [
+        { label: cancelText, value: false, kind: 'secondary' },
+        { label: confirmText, value: true, kind: danger ? 'danger' : 'primary' },
+      ],
+      cancelValue: false,
+    });
+  }
+
+  /**
+   * Themed replacement for window.alert(). Resolves to undefined when
+   * acknowledged (OK button, ESC, or backdrop).
+   *
+   * @param {{ title?: string, message: string, okText?: string }} opts
+   * @returns {Promise<void>}
+   */
+  function showAlertModal(opts) {
+    const { title = 'Информация', message, okText = 'ОК' } = opts || {};
+    return openModal({
+      title,
+      bodyHtml: `<p class="app-modal-message">${escapeHtml(message)}</p>`,
+      buttons: [{ label: okText, value: undefined, kind: 'primary' }],
+      cancelValue: undefined,
+    });
+  }
+
+  /**
+   * Themed replacement for window.prompt(). Resolves to the entered string
+   * on submit, or null on cancel/ESC.
+   *
+   * @param {{ title?: string, message?: string, label?: string, defaultValue?: string, placeholder?: string, submitText?: string, cancelText?: string }} opts
+   * @returns {Promise<string|null>}
+   */
+  function showPromptModal(opts) {
+    const {
+      title = 'Ввод',
+      message,
+      label,
+      defaultValue = '',
+      placeholder = '',
+      submitText = 'Сохранить',
+      cancelText = 'Отмена',
+    } = opts || {};
+    const labelHtml = label
+      ? `<label class="form-label" for="app-modal-prompt-input">${escapeHtml(label)}</label>`
+      : '';
+    const messageHtml = message
+      ? `<p class="app-modal-message">${escapeHtml(message)}</p>`
+      : '';
+    return openModal({
+      title,
+      bodyHtml: `
+        ${messageHtml}
+        ${labelHtml}
+        <input type="text" id="app-modal-prompt-input"
+               class="form-input app-modal-prompt-input"
+               value="${escapeHtml(defaultValue)}"
+               placeholder="${escapeHtml(placeholder)}">
+      `,
+      // Submit button's value is set dynamically in onMount so it captures
+      // the current input value at the moment of click (avoids reading after
+      // backdrop is removed from DOM).
+      buttons: [
+        { label: cancelText, value: null, kind: 'secondary' },
+        { label: submitText, value: null /* overridden in onMount */, kind: 'primary' },
+      ],
+      cancelValue: null,
+      initialFocusSelector: '#app-modal-prompt-input',
+      onMount: (root) => {
+        const input = root.querySelector('#app-modal-prompt-input');
+        const submitBtn = root.querySelector('[data-modal-button="1"]');
+        if (!input || !submitBtn) return;
+        // Pre-select text so the user can type-over the default immediately.
+        setTimeout(() => input.select(), 0);
+        // Replace the default click handler — we need to read input.value at
+        // click time, not at modal-construction time.
+        const newHandler = () => closeActiveModal(input.value);
+        submitBtn.replaceWith(submitBtn.cloneNode(true));
+        const fresh = root.querySelector('[data-modal-button="1"]');
+        fresh.addEventListener('click', newHandler);
+        input.addEventListener('keydown', (e) => {
+          if (e.key === 'Enter') {
+            e.preventDefault();
+            closeActiveModal(input.value);
+          }
+        });
+      },
+    });
+  }
+
+  // Export to global scope so app.js can call them like the native dialogs.
+  window.showConfirmModal = showConfirmModal;
+  window.showAlertModal = showAlertModal;
+  window.showPromptModal = showPromptModal;
+})();
