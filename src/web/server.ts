@@ -382,8 +382,12 @@ export class WebServer {
         const { id } = req.params;
         const archive = req.query.archive !== 'false';
 
-        const success = await this.memoryManager.delete({ id, archive });
-        if (!success) {
+        const deleteResult = await this.memoryManager.delete({ id, archive });
+        if (typeof deleteResult === 'object' && deleteResult && 'conflict' in deleteResult) {
+          res.status(409).json({ success: false, error: deleteResult.message, conflict: true, currentVersion: deleteResult.currentVersion });
+          return;
+        }
+        if (!deleteResult) {
           res.status(404).json({ success: false, error: 'Entry not found' });
           return;
         }

@@ -880,7 +880,10 @@ export class PgStorage {
           last24h = row.last24h;
           last7d = row.last7d;
           break;
-        // ignore other grp values (shouldn't occur with our GROUPING SETS)
+        default:
+          // Should not happen with our GROUPING SETS clause; logging helps
+          // catch a PG version drift or accidental query mutation.
+          logger.warn({ grp, row }, 'getStats: unexpected GROUPING bitmask');
       }
     }
 
