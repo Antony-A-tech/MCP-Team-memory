@@ -8,6 +8,7 @@
 
 import type { ExtractionLlmProvider } from './llm-provider.js';
 import type { CandidateNote } from './types.js';
+import { stripLlmJsonWrapper } from './json-cleanup.js';
 import logger from '../logger.js';
 
 export interface ExistingForMerge {
@@ -142,13 +143,8 @@ interface MergeJson {
 }
 
 function tryParseMergeJson(text: string): MergeJson | null {
-  const trimmed = text
-    .trim()
-    .replace(/^```(?:json)?/i, '')
-    .replace(/```$/i, '')
-    .trim();
   try {
-    const parsed = JSON.parse(trimmed);
+    const parsed = JSON.parse(stripLlmJsonWrapper(text));
     if (parsed && typeof parsed === 'object') return parsed as MergeJson;
     return null;
   } catch {

@@ -7,6 +7,7 @@
 import type { ExtractionLlmProvider } from './llm-provider.js';
 import type { CandidateNote, ExtractionResult } from './types.js';
 import { buildExtractionPrompt, type BuildExtractionPromptInput } from './prompt.js';
+import { stripLlmJsonWrapper } from './json-cleanup.js';
 import logger from '../logger.js';
 
 export interface ExtractorConfig {
@@ -176,13 +177,8 @@ function collectCandidates(parsed: unknown): CandidateNote[] {
 }
 
 function tryParseJson(text: string): unknown | null {
-  const trimmed = text
-    .trim()
-    .replace(/^```(?:json)?/i, '')
-    .replace(/```$/i, '')
-    .trim();
   try {
-    return JSON.parse(trimmed);
+    return JSON.parse(stripLlmJsonWrapper(text));
   } catch {
     return null;
   }

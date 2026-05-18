@@ -1,6 +1,7 @@
 import type { InsertEventParams, EventType } from './types.js';
 import { EVENT_TYPES } from './types.js';
 import { sampleMessagesForPrompt, detectLang } from '../extraction/prompt.js';
+import { stripLlmJsonWrapper } from '../extraction/json-cleanup.js';
 
 export interface BuildEventsPromptInput {
   summary: string;
@@ -82,7 +83,10 @@ export function parseEventsResponseStrict(
   const minConf = opts.minConfidence ?? EVENTS_MIN_CONFIDENCE_DEFAULT;
   let obj: unknown;
   try {
-    obj = JSON.parse(raw);
+    // qwen3.5:4b ignores the "no markdown" prompt rule and wraps the reply
+    // in a ```json fence; strip it (and any <think> blocks) before parsing.
+    // Garbage without valid JSON still throws below — strictness preserved.
+    obj = JSON.parse(stripLlmJsonWrapper(raw));
   } catch (err) {
     throw new EventsParseError('events response is not valid JSON', err);
   }
