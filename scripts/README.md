@@ -18,11 +18,13 @@ Add to your `~/.claude/settings.json` in the `"env"` section:
 {
   "env": {
     "TM_SERVER_URL": "http://localhost:3846",
-    "TM_TOKEN": "tm_your_agent_token_here",
-    "TM_PROJECT_ID": "your-project-uuid"
+    "TM_TOKEN": "tm_your_agent_token_here"
   }
 }
 ```
+
+> The project is resolved automatically from `mcpServers["team-memory"].headers["X-Project-Id"]`
+> in the nearest `.mcp.json`. There is no `TM_PROJECT_ID` env var.
 
 ### 2. Register hooks
 
@@ -105,7 +107,10 @@ This ensures each user's sync cadence is offset naturally — no clock-aligned s
 |----------|---------|-------------|
 | `TM_SERVER_URL` | `http://localhost:3846` | Team Memory server URL |
 | `TM_TOKEN` | — | Agent bearer token (required) |
-| `TM_PROJECT_ID` | — | Project UUID (optional) |
+
+Project UUID is **not** an env var — it is read from `.mcp.json` (`X-Project-Id`
+header). If no `.mcp.json` with that header is found, the hook fails loudly and
+the session is not sent (prevents importing into the wrong project).
 
 ## For Cline / RooCode users
 
