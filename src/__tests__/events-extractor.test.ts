@@ -127,5 +127,40 @@ describe('Events extractor', () => {
       // must NOT throw — only malformed/missing structure throws.
       expect(parseEventsResponseStrict('{"events":[]}')).toEqual([]);
     });
+
+    it('strips a ```json markdown fence before parsing (prod log signature)', () => {
+      // qwen3.5:4b wraps its reply in a fence despite the prompt; the strict
+      // parser must normalize before JSON.parse. Signature from prod log:
+      // EventsParseError at dist/events/extractor.js — Unexpected token '`'.
+      const fenced = '```json\n{"events":[]}\n```';
+      expect(parseEventsResponseStrict(fenced)).toEqual([]);
+    });
+
+    it('strips a bare ``` fence and returns the contained event', () => {
+      const event = {
+        event_type: 'merge',
+        occurred_at: '2026-05-12T14:00:00Z',
+        title: 'feat/x merged into main',
+        confidence: 0.9,
+      };
+      const fenced = '```\n' + JSON.stringify({ events: [event] }) + '\n```';
+      const parsed = parseEventsResponseStrict(fenced);
+      expect(parsed).toHaveLength(1);
+      expect(parsed[0].eventType).toBe('merge');
+    });
+
+    it('strips a <think> reasoning block followed by a fenced payload', () => {
+      const raw = '<think>no events here</think>\n```json\n{"events":[]}\n```';
+      expect(parseEventsResponseStrict(raw)).toEqual([]);
+    });
+
+    it('still parses plain unwrapped JSON (no regression)', () => {
+      const json = JSON.stringify({
+        events: [
+          { event_type: 'release', occurred_at: '2026-05-12T14:00:00Z', title: 'v5 shipped', confidence: 0.8 },
+        ],
+      });
+      expect(parseEventsResponseStrict(json)).toHaveLength(1);
+    });
   });
 });
