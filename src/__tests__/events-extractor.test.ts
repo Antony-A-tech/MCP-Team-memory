@@ -1,5 +1,10 @@
 import { describe, it, expect } from 'vitest';
-import { buildEventsPrompt, parseEventsResponse } from '../events/extractor.js';
+import {
+  buildEventsPrompt,
+  parseEventsResponse,
+  parseEventsResponseStrict,
+  EventsParseError,
+} from '../events/extractor.js';
 
 describe('Events extractor', () => {
   it('builds prompt mentioning all 5 event types', () => {
@@ -28,16 +33,21 @@ describe('Events extractor', () => {
     expect(parsed[1].refs?.version_tag).toBe('v4.5.0');
   });
 
-  it('filters out low-confidence events (default threshold 0.7)', () => {
+  it('filters out low-confidence events (default threshold 0.55)', () => {
+    // Phase 5.A: threshold lowered from 0.7 → 0.55 to capture routine
+    // events (refactor/bugfix mentions) that LLM scores 0.55-0.68.
+    // confidence=0.4 is below, 0.6 above, 0.9 well above — only the
+    // first should be filtered.
     const json = JSON.stringify({
       events: [
-        { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'might', confidence: 0.3 },
+        { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'maybe', confidence: 0.4 },
+        { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'likely', confidence: 0.6 },
         { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'sure', confidence: 0.9 },
       ],
     });
     const parsed = parseEventsResponse(json);
-    expect(parsed).toHaveLength(1);
-    expect(parsed[0].title).toBe('sure');
+    expect(parsed).toHaveLength(2);
+    expect(parsed.map(p => p.title)).toEqual(['likely', 'sure']);
   });
 
   it('respects custom minConfidence', () => {
@@ -86,5 +96,36 @@ describe('Events extractor', () => {
     });
     const parsed = parseEventsResponse(json);
     expect(parsed[0].title).toBe('foo');
+  });
+
+  describe('parseEventsResponseStrict (5.E retry support)', () => {
+    it('throws EventsParseError on invalid JSON', () => {
+      expect(() => parseEventsResponseStrict('not json')).toThrow(EventsParseError);
+      expect(() => parseEventsResponseStrict('not json')).toThrow(/not valid JSON/);
+    });
+
+    it('throws EventsParseError when payload is not an object', () => {
+      expect(() => parseEventsResponseStrict('"a string"')).toThrow(EventsParseError);
+    });
+
+    it('throws EventsParseError when `events` is missing or not an array', () => {
+      expect(() => parseEventsResponseStrict('{}')).toThrow(/missing `events` array/);
+      expect(() => parseEventsResponseStrict('{"events":42}')).toThrow(/missing `events` array/);
+    });
+
+    it('returns the same parsed events as the non-strict variant on success', () => {
+      const json = JSON.stringify({
+        events: [
+          { event_type: 'merge', occurred_at: '2026-05-12T14:00:00Z', title: 'feat/x merged', confidence: 0.9 },
+        ],
+      });
+      expect(parseEventsResponseStrict(json)).toEqual(parseEventsResponse(json));
+    });
+
+    it('returns [] when events array is empty (legitimate empty response)', () => {
+      // Empty array is a valid LLM response (no events in this session) and
+      // must NOT throw — only malformed/missing structure throws.
+      expect(parseEventsResponseStrict('{"events":[]}')).toEqual([]);
+    });
   });
 });

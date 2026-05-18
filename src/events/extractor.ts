@@ -50,21 +50,68 @@ Session transcript:
 ${conversation}`;
 }
 
+// Default confidence threshold for accepting an LLM-extracted event.
+// Lowered from 0.7 → 0.55 after backfill of ~1000 sessions yielded only
+// 2 events: confidence below 0.7 happens often on routine sessions (bug
+// fix / refactor) where the model is uncertain whether the work is "an
+// event" — recall trade-off documented in scope-note 0593646d.
+// Can be overridden per-call (e.g. an admin tool that wants strict 0.7).
+// Env override: TM_EVENTS_MIN_CONFIDENCE (read by caller and passed in).
+export const EVENTS_MIN_CONFIDENCE_DEFAULT = 0.55;
+
+export class EventsParseError extends Error {
+  constructor(message: string, public readonly cause?: unknown) {
+    super(message);
+    this.name = 'EventsParseError';
+  }
+}
+
+/**
+ * Strict variant of parseEventsResponse: throws EventsParseError when the
+ * input can't be parsed as JSON or doesn't have the expected shape.
+ *
+ * Used by the extraction pipeline so it can retry once with backoff
+ * before giving up. The non-strict parseEventsResponse() wraps this and
+ * returns [] on any failure, preserving backwards compatibility with
+ * callers that don't care about the distinction.
+ */
+export function parseEventsResponseStrict(
+  raw: string,
+  opts: { minConfidence?: number } = {},
+): InsertEventParams[] {
+  const minConf = opts.minConfidence ?? EVENTS_MIN_CONFIDENCE_DEFAULT;
+  let obj: unknown;
+  try {
+    obj = JSON.parse(raw);
+  } catch (err) {
+    throw new EventsParseError('events response is not valid JSON', err);
+  }
+  if (!obj || typeof obj !== 'object') {
+    throw new EventsParseError('events response is not a JSON object');
+  }
+  const eventsField = (obj as { events?: unknown }).events;
+  if (!Array.isArray(eventsField)) {
+    throw new EventsParseError('events response missing `events` array');
+  }
+  return filterValidEvents(eventsField, minConf);
+}
+
 export function parseEventsResponse(
   raw: string,
   opts: { minConfidence?: number } = {},
 ): InsertEventParams[] {
-  const minConf = opts.minConfidence ?? 0.7;
-  let obj: unknown;
+  // Lenient wrapper: silently swallow EventsParseError into [] so legacy
+  // callers don't need to handle the error case. Strict callers (retry
+  // path in sessions/manager.ts) use parseEventsResponseStrict directly.
   try {
-    obj = JSON.parse(raw);
-  } catch {
-    return [];
+    return parseEventsResponseStrict(raw, opts);
+  } catch (err) {
+    if (err instanceof EventsParseError) return [];
+    throw err;
   }
-  if (!obj || typeof obj !== 'object') return [];
-  const eventsField = (obj as { events?: unknown }).events;
-  if (!Array.isArray(eventsField)) return [];
+}
 
+function filterValidEvents(eventsField: unknown[], minConf: number): InsertEventParams[] {
   const result: InsertEventParams[] = [];
   for (const ev of eventsField) {
     if (!ev || typeof ev !== 'object') continue;

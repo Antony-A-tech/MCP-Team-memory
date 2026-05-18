@@ -56,11 +56,34 @@ export class SyncWebSocketServer {
       // Verify token if auth is enabled
       const effectiveToken = this.apiToken?.trim();
       let resolvedAgentName: string | undefined;
+      let resolvedAgentTokenId: string | undefined;
 
       if (effectiveToken) {
-        // SECURITY NOTE: query param token may leak to access logs, proxies, browser history.
-        // Prefer Authorization: Bearer header. Query param kept for WebSocket clients that can't set headers.
-        const token = req.headers.authorization?.replace(/^Bearer\s+/i, '') || url.searchParams.get('token');
+        // SECURITY NOTE: query param tokens leak to access logs, reverse
+        // proxies, browser history, and referrer headers. Prefer
+        // Authorization: Bearer or the Sec-WebSocket-Protocol sub-protocol
+        // mechanism. The query param is DEPRECATED — operators can flip
+        // WS_ALLOW_QUERY_TOKEN=false in env to HARD-disable it and force
+        // every client to migrate. Default keeps the legacy path for
+        // backward compatibility but every use is logged at warn level.
+        const allowQueryToken = process.env.WS_ALLOW_QUERY_TOKEN !== 'false';
+        const headerToken = req.headers.authorization?.replace(/^Bearer\s+/i, '');
+        const rawQueryToken = url.searchParams.get('token') || undefined;
+        const queryToken = allowQueryToken ? rawQueryToken : undefined;
+        if (rawQueryToken && !headerToken) {
+          if (allowQueryToken) {
+            logger.warn(
+              { ip: req.socket.remoteAddress, host: req.headers.host },
+              'WS auth: token passed via query param `?token=` is DEPRECATED — switch the client to Authorization: Bearer header. Set WS_ALLOW_QUERY_TOKEN=false to hard-disable.',
+            );
+          } else {
+            logger.warn(
+              { ip: req.socket.remoteAddress, host: req.headers.host },
+              'WS auth: query-param token rejected (WS_ALLOW_QUERY_TOKEN=false). Client must use Authorization: Bearer header.',
+            );
+          }
+        }
+        const token = headerToken || queryToken;
         if (!token) {
           if (!this.allowReadonly) {
             ws.close(4401, 'Unauthorized');
@@ -72,6 +95,7 @@ export class SyncWebSocketServer {
           const agentInfo = this.agentTokenStore?.resolve(token);
           if (agentInfo) {
             resolvedAgentName = agentInfo.agentName;
+            resolvedAgentTokenId = agentInfo.id;
             this.agentTokenStore!.trackLastUsed(agentInfo.id);
           } else {
             // Fallback: master token (timing-safe)
@@ -89,6 +113,21 @@ export class SyncWebSocketServer {
       const isReadonlyClient = !resolvedAgentName && this.allowReadonly && !req.headers.authorization;
       const clientType = url.searchParams.get('client_type') === 'ui' ? 'ui' as const : 'agent' as const;
       const projectId = url.searchParams.get('project_id') || undefined;
+
+      // RBAC check (migration 028): if the connection used an agent token
+      // AND specified a project_id, that project must be in the token's
+      // allowlist. Without this the WS layer would bypass the REST RBAC
+      // enforcement — same threat profile as the broadcast leak Phase 3.F
+      // closed earlier.
+      if (resolvedAgentTokenId && projectId && this.agentTokenStore
+          && !this.agentTokenStore.hasProjectAccess(resolvedAgentTokenId, projectId)) {
+        logger.warn(
+          { agentName: resolvedAgentName, agentTokenId: resolvedAgentTokenId, projectId },
+          'WS connect rejected: agent token has no access to requested project',
+        );
+        ws.close(4403, 'Forbidden: no access to project');
+        return;
+      }
       const clientName = resolvedAgentName || req.headers['x-agent-name']?.toString() || (clientType === 'ui' ? `ui-${clientId.slice(0, 8)}` : `agent-${clientId.slice(0, 8)}`);
 
       const client: ConnectedClient = {
@@ -217,9 +256,53 @@ export class SyncWebSocketServer {
     }
   }
 
+  /**
+   * Extract `projectId` from an event payload if present. Used by broadcast/
+   * broadcastExcept to scope per-project events (memory:*, agent:connected,
+   * agent:disconnected) to clients connected to the same project — without
+   * this filter, a UI in project A would receive activity events from
+   * project B (REST audit found this leak).
+   *
+   * Returns undefined for global events (memory:sync ping/pong, etc.), which
+   * fan out to every connected client regardless of project binding.
+   */
+  private getProjectIdFromEvent(event: WSEvent): string | undefined {
+    const p = event.payload;
+    if (p && typeof p === 'object' && 'projectId' in p) {
+      const id = (p as { projectId?: unknown }).projectId;
+      if (typeof id === 'string') {
+        if (id.length === 0) {
+          // An empty-string projectId would fall through to "global event"
+          // semantics and leak to every connected client — almost certainly
+          // a bug at the emit site (uninitialised string vs undefined).
+          logger.warn({ eventType: event.type }, 'WS event has empty-string projectId; treating as global');
+          return undefined;
+        }
+        return id;
+      }
+    }
+    return undefined;
+  }
+
+  /**
+   * Decide whether to deliver an event with `eventProjectId` to a client
+   * whose subscription is bound to `clientProjectId`.
+   *
+   * - No projectId on the event → global → deliver to everyone.
+   * - Client has no projectId (legacy/global viewer) → deliver everything.
+   * - Otherwise match strictly.
+   */
+  private shouldDeliver(eventProjectId: string | undefined, clientProjectId: string | undefined): boolean {
+    if (!eventProjectId) return true;
+    if (!clientProjectId) return true;
+    return eventProjectId === clientProjectId;
+  }
+
   private broadcast(event: WSEvent): void {
     const message = JSON.stringify(event);
+    const targetProjectId = this.getProjectIdFromEvent(event);
     this.clients.forEach((client) => {
+      if (!this.shouldDeliver(targetProjectId, client.projectId)) return;
       if (client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(message, (err) => {
           if (err) logger.error({ clientName: client.name, err }, 'WebSocket broadcast failed');
@@ -230,8 +313,11 @@ export class SyncWebSocketServer {
 
   private broadcastExcept(excludeId: string, event: WSEvent): void {
     const message = JSON.stringify(event);
+    const targetProjectId = this.getProjectIdFromEvent(event);
     this.clients.forEach((client, id) => {
-      if (id !== excludeId && client.ws.readyState === WebSocket.OPEN) {
+      if (id === excludeId) return;
+      if (!this.shouldDeliver(targetProjectId, client.projectId)) return;
+      if (client.ws.readyState === WebSocket.OPEN) {
         client.ws.send(message, (err) => {
           if (err) logger.error({ clientName: client.name, err }, 'WebSocket broadcast failed');
         });

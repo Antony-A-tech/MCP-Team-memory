@@ -38,7 +38,12 @@ export class SessionStorage {
         ],
       );
 
-      // Batch insert messages (max ~5000 per batch to stay within PG 65535 param limit, 7 params/row)
+      // Batch insert messages (max ~5000 per batch to stay within PG 65535 param limit, 7 params/row).
+      // After the loop we assert total inserted == messages.length so any
+      // partial-insert scenario (DEFERRABLE constraints, triggers swallowing
+      // rows, etc.) throws and rolls back the transaction — sessions.message_count
+      // can never drift from the actual row count in session_messages.
+      let totalInserted = 0;
       if (data.messages.length > 0) {
         const BATCH_SIZE = 5000;
         for (let batchStart = 0; batchStart < data.messages.length; batchStart += BATCH_SIZE) {
@@ -53,12 +58,19 @@ export class SessionStorage {
             params.push(session.id, msg.role, msg.content, batchStart + i, hasToolUse, msg.toolNames, msg.timestamp ?? null);
           });
 
-          await client.query(
+          const insertRes = await client.query(
             `INSERT INTO session_messages (session_id, role, content, message_index, has_tool_use, tool_names, timestamp)
              VALUES ${values.join(', ')}`,
             params,
           );
+          totalInserted += insertRes.rowCount ?? 0;
         }
+      }
+      if (totalInserted !== data.messages.length) {
+        throw new Error(
+          `Session batch insert count mismatch: expected ${data.messages.length} messages, ` +
+          `actually inserted ${totalInserted} (sessionId=${session.id}). Aborting to prevent drift.`,
+        );
       }
 
       await client.query('COMMIT');
@@ -75,6 +87,37 @@ export class SessionStorage {
     const { rows } = await this.pool.query(
       'SELECT * FROM sessions WHERE agent_token_id = $1 AND external_id = $2',
       [agentTokenId, externalId],
+    );
+    return rows.length > 0 ? this.rowToSession(rows[0]) : null;
+  }
+
+  /**
+   * Fallback dedup lookup for session_import calls that don't carry an
+   * external_id. Matches on (agent_token_id, project_id, name, started_at)
+   * — the four fields a client-side caller can plausibly stabilise across
+   * retries. Returns the first match.
+   *
+   * Used by importSession when externalId is undefined: webhooks that
+   * predate the external_id contract, or manual UI imports.
+   */
+  async findByTuple(
+    agentTokenId: string,
+    projectId: string | undefined,
+    name: string | undefined,
+    startedAt: string | undefined,
+  ): Promise<Session | null> {
+    // All four parts must be present to make a stable tuple. Missing any
+    // one means the caller hasn't given us enough to dedup against, so we
+    // return null and let importSession create a new row.
+    if (!projectId || !name || !startedAt) return null;
+    const { rows } = await this.pool.query(
+      `SELECT * FROM sessions
+       WHERE agent_token_id = $1
+         AND project_id = $2
+         AND name = $3
+         AND started_at = $4
+       LIMIT 1`,
+      [agentTokenId, projectId, name, startedAt],
     );
     return rows.length > 0 ? this.rowToSession(rows[0]) : null;
   }

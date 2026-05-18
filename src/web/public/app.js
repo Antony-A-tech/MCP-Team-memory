@@ -212,6 +212,7 @@ document.addEventListener('DOMContentLoaded', async () => {
   initDomainModal();
   initDomainContextMenu();
   initEntryActions();
+  initAgentAccessModal();
   await loadProjects();
   await loadProjectDomains();
   renderDomainFilters();
@@ -434,20 +435,47 @@ function selectDomain(domain) {
 }
 
 async function switchProject(projectId) {
+  // Step 1: tear down the WebSocket *before* swapping currentProjectId so any
+  // in-flight onmessage handlers don't apply old-project updates to the new
+  // project's entries array (race that produced stale data on quick switches).
+  if (ws) {
+    ws.onclose = null;
+    try { ws.close(); } catch (_e) {}
+    ws = null;
+  }
+  // Also drop any pending WS-reload (memory:* events from the old project
+  // that have queued up inside the 150ms debounce window). Otherwise the
+  // first new-project loadEntries() can be immediately overwritten by a
+  // stale reload triggered by the late-arriving old event.
+  if (_wsReloadTimer) {
+    clearTimeout(_wsReloadTimer);
+    _wsReloadTimer = null;
+  }
+  _wsReloadFlags = { entries: false, stats: false };
+
+  // Step 2: swap the working set.
   currentProjectId = projectId;
   localStorage.setItem('selected-project', projectId);
   currentDomain = '';
+
+  // Step 3: await all data fetches so the UI reaches a consistent state
+  // before the new WebSocket starts pushing updates.
   await loadProjectDomains();
   renderDomainFilters();
   populateEntryDomainSelect();
-  loadEntries();
-  loadStats();
-  updateSessionNotesCounts();
-  // Reconnect WebSocket with new project_id
-  if (ws) {
-    ws.onclose = null; // prevent auto-reconnect with old project_id
-    ws.close();
-  }
+  await Promise.all([
+    loadEntries(),
+    loadStats(),
+    updateSessionNotesCounts(),
+    // Reload whichever alt-view tab is currently active so it doesn't show
+    // stale data from the previous project (scope-note M3 et al).
+    currentCategory === 'profile' ? loadProfile() : Promise.resolve(),
+    currentCategory === 'events' ? loadEvents() : Promise.resolve(),
+    currentCategory === 'notes' ? loadNotes() : Promise.resolve(),
+    currentCategory === 'sessions' ? loadSessions() : Promise.resolve(),
+  ]);
+
+  // Step 4: now safe to bring the WebSocket back up.
   initWebSocket();
 }
 
@@ -516,6 +544,8 @@ function transliterate(text) {
   }).join('');
 }
 
+let _domainModalA11yDetach = null;
+
 function openDomainModal(domain = null) {
   const modal = document.getElementById('domain-modal');
   const title = document.getElementById('domain-modal-title');
@@ -541,10 +571,14 @@ function openDomainModal(domain = null) {
   }
 
   modal.classList.add('active');
-  nameInput.focus();
+  _domainModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeDomainModal,
+    initialFocusSelector: '#domain-name',
+  });
 }
 
 function closeDomainModal() {
+  if (_domainModalA11yDetach) { _domainModalA11yDetach(); _domainModalA11yDetach = null; }
   document.getElementById('domain-modal').classList.remove('active');
 }
 
@@ -668,7 +702,7 @@ async function deleteDomain(domain) {
       msg += `\n\nУ ${count} записей установлен этот домен. Домен у них будет сброшен.`;
     }
 
-    if (!confirm(msg)) return;
+    if (!await showConfirmModal({ title: 'Удалить домен', message: msg, confirmText: 'Удалить', danger: true })) return;
 
     const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/domains/${encodeURIComponent(domain.slug)}`, {
       method: 'DELETE'
@@ -810,7 +844,7 @@ function initNavigation() {
       if (notesLoadMore) notesLoadMore.remove();
 
       // Reset all alternative-view containers before showing the active one.
-      const altContainers = ['sessions-container', 'notes-container', 'events-container'];
+      const altContainers = ['sessions-container', 'notes-container', 'events-container', 'profile-container'];
       altContainers.forEach(id => {
         const el = document.getElementById(id);
         if (el) el.style.display = 'none';
@@ -840,6 +874,15 @@ function initNavigation() {
         statusSelect.style.display = 'none';
         pageTitle.textContent = 'События';
         loadEvents();
+      } else if (currentCategory === 'profile') {
+        // v5: profile is a single curated entry per project — show single
+        // markdown card view instead of the grid used for other categories.
+        document.getElementById('entries-container').style.display = 'none';
+        document.getElementById('profile-container').style.display = '';
+        document.getElementById('domain-filters').style.display = 'none';
+        statusSelect.style.display = 'none';
+        pageTitle.textContent = 'Профиль проекта';
+        loadProfile();
       } else {
         // entries-container path covers: all, pinned, profile, knowledge, and
         // any legacy categories (if their nav buttons are unhidden later).
@@ -1107,6 +1150,16 @@ function renderMarkdown(text) {
   html = html.replace(/(<\/h[234]>)<br>/g, '$1');
   html = html.replace(/(<\/ul>)<br>/g, '$1');
   html = html.replace(/(<\/li>)<br>/g, '$1');
+  // Final defense-in-depth pass through DOMPurify. escapeHtml() above already
+  // blocks any literal <script>/event handlers from the raw input, but a
+  // future regex bug could re-introduce them; whitelist the tags we
+  // actually use so anything unexpected gets stripped instead of executed.
+  if (typeof window.DOMPurify !== 'undefined') {
+    html = window.DOMPurify.sanitize(html, {
+      ALLOWED_TAGS: ['strong', 'em', 'u', 'code', 'h2', 'h3', 'h4', 'ul', 'ol', 'li', 'br', 'p', 'a'],
+      ALLOWED_ATTR: ['href'],
+    });
+  }
   return html;
 }
 
@@ -1132,18 +1185,28 @@ function openReadModal(id) {
   readModal.classList.add('active');
   readModal.dataset.entryId = id;
 
-  document.getElementById('read-modal-close').onclick = () => readModal.classList.remove('active');
+  let detach = null;
+  const close = () => {
+    if (detach) { detach(); detach = null; }
+    readModal.classList.remove('active');
+  };
+
+  document.getElementById('read-modal-close').onclick = close;
   const readEditBtn = document.getElementById('read-modal-edit');
   if (isReadOnly) {
     readEditBtn.style.display = 'none';
   } else {
     readEditBtn.style.display = '';
     readEditBtn.onclick = () => {
-      readModal.classList.remove('active');
+      close();
       editEntry(id);
     };
   }
-  readModal.onclick = (e) => { if (e.target === readModal) readModal.classList.remove('active'); };
+  readModal.onclick = (e) => { if (e.target === readModal) close(); };
+  detach = window.attachModalA11y(readModal, {
+    onClose: close,
+    initialFocusSelector: '#read-modal-close',
+  });
   lucide.createIcons();
 }
 
@@ -1159,6 +1222,8 @@ function initModal() {
 
   entryForm.addEventListener('submit', handleFormSubmit);
 }
+
+let _entryModalA11yDetach = null;
 
 function openModal(entry = null) {
   populateEntryDomainSelect();
@@ -1194,9 +1259,14 @@ function openModal(entry = null) {
   }
 
   modal.classList.add('active');
+  _entryModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeModal,
+    initialFocusSelector: '#entry-title',
+  });
 }
 
 function closeModal() {
+  if (_entryModalA11yDetach) { _entryModalA11yDetach(); _entryModalA11yDetach = null; }
   modal.classList.remove('active');
 }
 
@@ -1262,13 +1332,20 @@ function initProjectsModal() {
   document.getElementById('btn-create-project').addEventListener('click', createProject);
 }
 
+let _projectsModalA11yDetach = null;
+
 function openProjectsModal() {
   projectsModal.classList.add('active');
   renderProjectsList();
   lucide.createIcons();
+  _projectsModalA11yDetach = window.attachModalA11y(projectsModal, {
+    onClose: closeProjectsModal,
+    initialFocusSelector: '#projects-modal-close',
+  });
 }
 
 function closeProjectsModal() {
+  if (_projectsModalA11yDetach) { _projectsModalA11yDetach(); _projectsModalA11yDetach = null; }
   projectsModal.classList.remove('active');
 }
 
@@ -1391,7 +1468,12 @@ window.deleteProject = async function(id) {
   const project = projects.find(p => p.id === id);
   if (!project) return;
 
-  if (!confirm(`Удалить проект "${project.name}" и все его записи?`)) return;
+  if (!await showConfirmModal({
+    title: 'Удалить проект',
+    message: `Удалить проект "${project.name}" и все его записи?`,
+    confirmText: 'Удалить',
+    danger: true,
+  })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/projects/${id}`, { method: 'DELETE' });
@@ -1418,7 +1500,12 @@ window.deleteProject = async function(id) {
 };
 
 async function renameProject(id, currentName) {
-  const newName = prompt('Новое название проекта:', currentName);
+  const newName = await showPromptModal({
+    title: 'Переименовать проект',
+    label: 'Новое название',
+    defaultValue: currentName,
+    submitText: 'Сохранить',
+  });
   if (!newName || newName.trim() === '' || newName.trim() === currentName) return;
 
   try {
@@ -1650,7 +1737,7 @@ window.editEntry = function(id) {
 };
 
 window.archiveEntry = async function(id) {
-  if (!confirm('Архивировать эту запись?')) return;
+  if (!await showConfirmModal({ title: 'Архивировать запись', message: 'Архивировать эту запись?', confirmText: 'Архивировать' })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/memory/${id}`, {
@@ -1673,7 +1760,7 @@ window.archiveEntry = async function(id) {
 };
 
 window.deleteEntry = async function(id) {
-  if (!confirm('Удалить эту запись навсегда?')) return;
+  if (!await showConfirmModal({ title: 'Удалить запись', message: 'Удалить эту запись навсегда?', confirmText: 'Удалить', danger: true })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/memory/${id}?archive=false`, {
@@ -1740,7 +1827,7 @@ window.showHistory = async function(id) {
       `v${v.version} [${new Date(v.createdAt).toLocaleString()}]\n  ${v.title} (${v.status})`
     ).join('\n\n');
 
-    alert(`История версий:\n\n${text}`);
+    await showAlertModal({ title: 'История версий', message: text });
   } catch (error) {
     showToast('Ошибка загрузки истории', 'error');
     console.error(error);
@@ -1793,18 +1880,40 @@ function isEventForCurrentProject(payload) {
   return payload.projectId === currentProjectId;
 }
 
+// WebSocket reload debounce — when the server broadcasts a burst of
+// memory:* events (bulk import, mass-archive, etc.) we'd otherwise call
+// loadEntries() once per event. With ~100 entries flying in, the UI
+// re-renders 100 times within a few hundred ms and the tab visibly freezes.
+// Coalesce into a single reload per ~150ms window.
+let _wsReloadTimer = null;
+let _wsReloadFlags = { entries: false, stats: false };
+function scheduleWsReload(flags) {
+  if (flags.entries) _wsReloadFlags.entries = true;
+  if (flags.stats) _wsReloadFlags.stats = true;
+  if (_wsReloadTimer) return;
+  _wsReloadTimer = setTimeout(() => {
+    _wsReloadTimer = null;
+    const f = _wsReloadFlags;
+    _wsReloadFlags = { entries: false, stats: false };
+    if (f.entries && currentCategory !== 'sessions' && currentCategory !== 'notes') {
+      loadEntries();
+    }
+    if (f.stats) loadStats();
+  }, 150);
+}
+
 function handleWSMessage(data) {
   switch (data.type) {
     case 'memory:created':
     case 'memory:updated':
     case 'memory:deleted':
       if (isEventForCurrentProject(data.payload)) {
-        // Don't reload entries on sessions/notes tabs — they use separate APIs
-        if (currentCategory !== 'sessions' && currentCategory !== 'notes') {
-          loadEntries();
-        }
-        loadStats();
+        scheduleWsReload({ entries: true, stats: true });
         if (data.type === 'memory:created') {
+          // Toasts are not debounced — one per event is fine and we'd lose
+          // the "N new entries" signal if we coalesced them. If we ever
+          // observe toast spam under load, switch this to a count + show
+          // "N новых записей" after the debounce.
           showToast('Новая запись добавлена', 'info');
         }
       }
@@ -1812,13 +1921,13 @@ function handleWSMessage(data) {
 
     case 'agent:connected':
       if (isEventForCurrentProject(data.payload) && !data.payload.renamed) {
-        loadStats();
+        scheduleWsReload({ stats: true });
       }
       break;
 
     case 'agent:disconnected':
       if (isEventForCurrentProject(data.payload)) {
-        loadStats();
+        scheduleWsReload({ stats: true });
       }
       break;
   }
@@ -2085,6 +2194,7 @@ function initAgentsPanel() {
       if (action === 'revoke') { await revokeAgent(id, name); return; }
       if (action === 'activate') { await activateAgent(id, name); return; }
       if (action === 'delete') { await deleteAgent(id, name); return; }
+      if (action === 'editAccess') { await openAgentAccessModal(id, name); return; }
     }
 
     // Row click — toggle token row
@@ -2111,6 +2221,9 @@ async function loadAgents() {
       return;
     }
 
+    // Total project count is known from the projects selector cache. Used
+    // to render the "N из M" access badge per agent.
+    const totalProjects = Array.isArray(projects) ? projects.length : 0;
     tbody.innerHTML = data.tokens.map(t => {
       const statusDot = t.isActive ? '<span class="agent-status-dot active"></span>Активен' : '<span class="agent-status-dot inactive"></span>Отключён';
       const roleIcons = { developer: 'code-2', qa: 'bug', lead: 'crown', devops: 'container' };
@@ -2122,7 +2235,15 @@ async function loadAgents() {
       const lastUsed = t.lastUsedAt ? formatDate(t.lastUsedAt) : 'никогда';
       const cost = formatAgentCost(t.totalCostUsd, t.totalPromptTokens, t.totalCompletionTokens);
 
+      // RBAC access badge — colour-coded so "0 of N" pops as a warning.
+      const accessCount = Array.isArray(t.allowedProjects) ? t.allowedProjects.length : 0;
+      let accessClass = '';
+      if (totalProjects > 0 && accessCount === 0) accessClass = 'none';
+      else if (totalProjects > 0 && accessCount === totalProjects) accessClass = 'full';
+      const accessBadge = `<span class="agent-access-badge ${accessClass}" data-action="editAccess" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}" title="Управление доступом к проектам">${accessCount} из ${totalProjects}</span>`;
+
       const actions = [];
+      actions.push(`<button class="btn-access" data-action="editAccess" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Доступ</button>`);
       if (t.isActive) {
         actions.push(`<button class="btn-revoke" data-action="revoke" data-id="${escapeHtml(t.id)}" data-name="${escapeHtml(t.agentName)}">Отключить</button>`);
       } else {
@@ -2135,13 +2256,14 @@ async function loadAgents() {
         <td>${statusDot}</td>
         <td><strong>${escapeHtml(t.agentName)}</strong></td>
         <td>${roleBadge}</td>
+        <td>${accessBadge}</td>
         <td>${created}</td>
         <td>${lastUsed}</td>
         <td class="agent-cost">${cost}</td>
         <td class="agents-actions">${actions.join(' ')}</td>
       </tr>
       <tr class="agent-token-row" id="${rowId}" style="display:none">
-        <td colspan="7">
+        <td colspan="8">
           <div class="agent-token-inline">
             <code>${escapeHtml(t.token)}</code>
             <button class="btn-copy-inline" data-action="copy" data-token="${escapeHtml(t.token)}" title="Копировать">
@@ -2192,7 +2314,12 @@ async function createAgent() {
 }
 
 async function revokeAgent(id, name) {
-  if (!confirm(`Отключить токен для "${name}"?`)) return;
+  if (!await showConfirmModal({
+    title: 'Отключить токен',
+    message: `Отключить токен для "${name}"?`,
+    confirmText: 'Отключить',
+    danger: true,
+  })) return;
   try {
     const res = await authFetch(`${API_BASE}/agent-tokens/${id}/revoke`, { method: 'POST' });
     const data = await res.json();
@@ -2223,7 +2350,12 @@ async function activateAgent(id, name) {
 }
 
 async function deleteAgent(id, name) {
-  if (!confirm(`Удалить токен "${name}" навсегда? Это действие нельзя отменить.`)) return;
+  if (!await showConfirmModal({
+    title: 'Удалить токен',
+    message: `Удалить токен "${name}" навсегда? Это действие нельзя отменить.`,
+    confirmText: 'Удалить навсегда',
+    danger: true,
+  })) return;
   try {
     const res = await authFetch(`${API_BASE}/agent-tokens/${id}`, { method: 'DELETE' });
     const data = await res.json();
@@ -2239,8 +2371,133 @@ async function deleteAgent(id, name) {
 }
 
 // ============================================
+// Per-token project access (RBAC, migration 028)
+// ============================================
+
+let _agentAccessModalA11yDetach = null;
+let _agentAccessCurrentTokenId = null;
+
+async function openAgentAccessModal(tokenId, agentName) {
+  const modal = document.getElementById('agent-access-modal');
+  const list = document.getElementById('agent-access-list');
+  const subtitle = document.getElementById('agent-access-subtitle');
+  const status = document.getElementById('agent-access-status');
+  if (!modal || !list) return;
+
+  _agentAccessCurrentTokenId = tokenId;
+  status.innerHTML = '';
+  subtitle.textContent = `Отметьте проекты, к которым агент "${agentName}" может обращаться. Master-токен видит всё всегда.`;
+  list.innerHTML = '<div class="agent-access-empty">Загрузка…</div>';
+  modal.classList.add('active');
+
+  if (_agentAccessModalA11yDetach) { _agentAccessModalA11yDetach(); _agentAccessModalA11yDetach = null; }
+  _agentAccessModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeAgentAccessModal,
+    initialFocusSelector: '#agent-access-cancel',
+  });
+
+  try {
+    const [accessRes, projectsRes] = await Promise.all([
+      authFetch(`${API_BASE}/agent-tokens/${tokenId}/projects`),
+      authFetch(`${API_BASE}/projects`),
+    ]);
+    const accessData = await accessRes.json();
+    const projectsData = await projectsRes.json();
+    const allowed = new Set((accessData.projects || []).map(String));
+    const allProjects = projectsData.projects || projectsData || [];
+
+    if (allProjects.length === 0) {
+      list.innerHTML = '<div class="agent-access-empty">Ещё нет ни одного проекта. Создайте проект, чтобы выдать доступ.</div>';
+      return;
+    }
+
+    list.innerHTML = allProjects.map(p => {
+      const checked = allowed.has(String(p.id)) ? 'checked' : '';
+      const desc = p.description ? `<span class="agent-access-row-desc">${escapeHtml(p.description)}</span>` : '';
+      return `<label class="agent-access-row">
+        <input type="checkbox" data-project-id="${escapeHtml(p.id)}" ${checked} />
+        <span class="agent-access-row-name">${escapeHtml(p.name)}</span>
+        ${desc}
+      </label>`;
+    }).join('');
+  } catch (err) {
+    list.innerHTML = `<div class="agent-access-empty" style="color: var(--red, #ef4444);">Не удалось загрузить: ${escapeHtml(err.message || String(err))}</div>`;
+  }
+}
+
+function closeAgentAccessModal() {
+  const modal = document.getElementById('agent-access-modal');
+  if (!modal) return;
+  if (_agentAccessModalA11yDetach) { _agentAccessModalA11yDetach(); _agentAccessModalA11yDetach = null; }
+  modal.classList.remove('active');
+  _agentAccessCurrentTokenId = null;
+  // Reset transient state so the next open() starts clean. saveAgentAccess
+  // sets disabled=true at the start of its request; on the success path it
+  // closes the modal without re-enabling, so a second "Доступ" click for
+  // another agent would land on a frozen Save button.
+  const saveBtn = document.getElementById('agent-access-save');
+  if (saveBtn) saveBtn.disabled = false;
+  const status = document.getElementById('agent-access-status');
+  if (status) {
+    status.textContent = '';
+    status.style.color = '';
+  }
+}
+
+function initAgentAccessModal() {
+  const modal = document.getElementById('agent-access-modal');
+  if (!modal) return;
+  modal.addEventListener('click', (e) => { if (e.target === modal) closeAgentAccessModal(); });
+  document.getElementById('agent-access-close')?.addEventListener('click', closeAgentAccessModal);
+  document.getElementById('agent-access-cancel')?.addEventListener('click', closeAgentAccessModal);
+  document.getElementById('agent-access-select-all')?.addEventListener('click', () => {
+    modal.querySelectorAll('#agent-access-list input[type="checkbox"]').forEach((c) => { c.checked = true; });
+  });
+  document.getElementById('agent-access-clear-all')?.addEventListener('click', () => {
+    modal.querySelectorAll('#agent-access-list input[type="checkbox"]').forEach((c) => { c.checked = false; });
+  });
+  document.getElementById('agent-access-save')?.addEventListener('click', saveAgentAccess);
+}
+
+async function saveAgentAccess() {
+  const tokenId = _agentAccessCurrentTokenId;
+  if (!tokenId) return;
+  const modal = document.getElementById('agent-access-modal');
+  const status = document.getElementById('agent-access-status');
+  const saveBtn = document.getElementById('agent-access-save');
+  const checks = Array.from(modal.querySelectorAll('#agent-access-list input[type="checkbox"]'));
+  const selected = checks.filter(c => c.checked).map(c => c.dataset.projectId);
+  saveBtn.disabled = true;
+  status.textContent = 'Сохранение…';
+  status.style.color = 'var(--text-secondary)';
+  try {
+    const res = await authFetch(`${API_BASE}/agent-tokens/${tokenId}/projects`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ projects: selected }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      status.textContent = '❌ ' + (data.error || `HTTP ${res.status}`);
+      status.style.color = 'var(--red, #ef4444)';
+      saveBtn.disabled = false;
+      return;
+    }
+    showToast(`Сохранено: ${selected.length} проектов`, 'success');
+    closeAgentAccessModal();
+    loadAgents();
+  } catch (err) {
+    status.textContent = '❌ Ошибка сети: ' + escapeHtml(err.message || String(err));
+    status.style.color = 'var(--red, #ef4444)';
+    saveBtn.disabled = false;
+  }
+}
+
+// ============================================
 // Theme Switching
 // ============================================
+
+let _themeModalA11yDetach = null;
 
 function getCurrentTheme() {
   return document.documentElement.dataset.theme || 'nothing';
@@ -2329,9 +2586,15 @@ function openThemeModal() {
   themeModal.onclick = (e) => {
     if (e.target === themeModal) handleClose();
   };
+
+  _themeModalA11yDetach = window.attachModalA11y(themeModal, {
+    onClose: handleClose,
+    initialFocusSelector: '#theme-modal-close',
+  });
 }
 
 function closeThemeModal() {
+  if (_themeModalA11yDetach) { _themeModalA11yDetach(); _themeModalA11yDetach = null; }
   document.getElementById('theme-modal').classList.remove('active');
 }
 
@@ -2340,23 +2603,8 @@ function initThemeSwitcher() {
   if (btn) {
     btn.addEventListener('click', openThemeModal);
   }
-
-  document.addEventListener('keydown', (e) => {
-    if (e.key === 'Escape') {
-      const themeModal = document.getElementById('theme-modal');
-      if (themeModal && themeModal.classList.contains('active')) {
-        closeThemeModal();
-      }
-      const noteModal = document.getElementById('note-modal');
-      if (noteModal && noteModal.classList.contains('active')) {
-        closeNoteModal();
-      }
-      const noteReadModal = document.getElementById('note-read-modal');
-      if (noteReadModal && noteReadModal.classList.contains('active')) {
-        noteReadModal.classList.remove('active');
-      }
-    }
-  });
+  // ESC handling for theme/note/note-read modals now lives inside
+  // attachModalA11y(), which scopes per-modal and respects modal stacking.
 }
 
 // ===== Sessions UI =====
@@ -2625,7 +2873,12 @@ document.getElementById('session-back-btn').addEventListener('click', () => {
 
 // Delete session
 async function deleteSession(id) {
-  if (!confirm('Удалить сессию навсегда?')) return;
+  if (!await showConfirmModal({
+    title: 'Удалить сессию',
+    message: 'Удалить сессию навсегда?',
+    confirmText: 'Удалить',
+    danger: true,
+  })) return;
 
   try {
     const response = await authFetch(`${API_BASE}/sessions/${id}`, {
@@ -2847,7 +3100,10 @@ async function openShareNoteModal(noteId) {
   const note = notesData.find(n => n.id === noteId);
   if (!note) return;
   if (note.sharedToEntryId) {
-    alert('Эта заметка уже расшарена. Открой связанную запись через иконку ссылки.');
+    await showAlertModal({
+      title: 'Заметка уже расшарена',
+      message: 'Открой связанную запись через иконку ссылки.',
+    });
     return;
   }
 
@@ -2873,7 +3129,7 @@ async function openShareNoteModal(noteId) {
             <input id="share-note-title" type="text" maxlength="500" />
           </div>
           <div class="form-group">
-            <label for="share-note-category">Категория</label>
+            <label>Категория</label>
             <!--
               v5: NotesManager.share accepts these legacy values and translates
               them into category='knowledge' + the kind tag (architecture /
@@ -2881,24 +3137,38 @@ async function openShareNoteModal(noteId) {
               author still picks WHAT kind of fact they're sharing — the
               translation is internal.
             -->
-            <select id="share-note-category">
-              <option value="decisions">decisions — почему мы выбрали X</option>
-              <option value="architecture">architecture — структура / контракты</option>
-              <option value="conventions">conventions — правила и стандарты</option>
-            </select>
+            <input type="hidden" id="share-note-category" value="decisions">
+            <div class="custom-select" id="share-note-category-select">
+              <button class="custom-select-trigger" type="button">
+                <span class="custom-select-value">decisions — почему мы выбрали X</span>
+                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+              </button>
+              <div class="custom-select-options">
+                <div class="custom-select-option selected" data-value="decisions"><span class="custom-select-option-name">decisions — почему мы выбрали X</span></div>
+                <div class="custom-select-option" data-value="architecture"><span class="custom-select-option-name">architecture — структура / контракты</span></div>
+                <div class="custom-select-option" data-value="conventions"><span class="custom-select-option-name">conventions — правила и стандарты</span></div>
+              </div>
+            </div>
           </div>
           <div class="form-group">
             <label for="share-note-content">Содержимое</label>
             <textarea id="share-note-content" rows="6"></textarea>
           </div>
           <div class="form-group">
-            <label for="share-note-on-match">При найденном дубликате</label>
-            <select id="share-note-on-match">
-              <option value="prompt">Спросить (показать совпадение)</option>
-              <option value="confirm_existing">Подтвердить существующую</option>
-              <option value="merge">Объединить</option>
-              <option value="create_new">Создать новую (игнорировать)</option>
-            </select>
+            <label>При найденном дубликате</label>
+            <input type="hidden" id="share-note-on-match" value="prompt">
+            <div class="custom-select" id="share-note-on-match-select">
+              <button class="custom-select-trigger" type="button">
+                <span class="custom-select-value">Спросить (показать совпадение)</span>
+                <i data-lucide="chevron-down" class="custom-select-arrow"></i>
+              </button>
+              <div class="custom-select-options">
+                <div class="custom-select-option selected" data-value="prompt"><span class="custom-select-option-name">Спросить (показать совпадение)</span></div>
+                <div class="custom-select-option" data-value="confirm_existing"><span class="custom-select-option-name">Подтвердить существующую</span></div>
+                <div class="custom-select-option" data-value="merge"><span class="custom-select-option-name">Объединить</span></div>
+                <div class="custom-select-option" data-value="create_new"><span class="custom-select-option-name">Создать новую (игнорировать)</span></div>
+              </div>
+            </div>
           </div>
           <div id="share-note-status" style="margin-top: 12px;"></div>
         </div>
@@ -2910,6 +3180,12 @@ async function openShareNoteModal(noteId) {
     `;
     document.body.appendChild(modal);
 
+    // Wire up the themed custom-selects (replaces the native <select>s that
+    // ignored project theme and were jarring next to the rest of the modal).
+    initFormSelect('share-note-category-select', 'share-note-category');
+    initFormSelect('share-note-on-match-select', 'share-note-on-match');
+    if (window.lucide) window.lucide.createIcons();
+
     modal.addEventListener('click', e => {
       if (e.target === modal) closeShareNoteModal();
       if (e.target.dataset?.action === 'closeShareModal') closeShareNoteModal();
@@ -2920,14 +3196,21 @@ async function openShareNoteModal(noteId) {
   modal.dataset.noteId = note.id;
   modal.querySelector('#share-note-title').value = note.title;
   modal.querySelector('#share-note-content').value = note.content;
-  modal.querySelector('#share-note-category').value = 'decisions';
-  modal.querySelector('#share-note-on-match').value = 'prompt';
+  setFormSelectValue('share-note-category-select', 'share-note-category', 'decisions');
+  setFormSelectValue('share-note-on-match-select', 'share-note-on-match', 'prompt');
   modal.querySelector('#share-note-status').innerHTML = '';
   modal.querySelector('#share-note-submit').disabled = false;
   modal.style.display = 'flex';
+  _shareModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeShareNoteModal,
+    initialFocusSelector: '#share-note-title',
+  });
 }
 
+let _shareModalA11yDetach = null;
+
 function closeShareNoteModal() {
+  if (_shareModalA11yDetach) { _shareModalA11yDetach(); _shareModalA11yDetach = null; }
   const modal = document.getElementById('share-note-modal');
   if (modal) modal.style.display = 'none';
 }
@@ -2974,13 +3257,16 @@ async function submitShareNote() {
 
     if (data.action === 'match_found_pending_user_decision' && data.existingEntry) {
       const score = (data.matchScore ?? 0).toFixed(2);
-      const proceed = confirm(
-        `Найдена похожая запись (cosine ${score}):\n\n` +
-        `${data.existingEntry.title}\n\n` +
-        `Подтвердить связь с существующей записью?`,
-      );
+      const proceed = await showConfirmModal({
+        title: 'Найдена похожая запись',
+        message:
+          `cosine ${score}\n\n` +
+          `${data.existingEntry.title}\n\n` +
+          `Подтвердить связь с существующей записью?`,
+        confirmText: 'Подтвердить связь',
+      });
       if (proceed) {
-        modal.querySelector('#share-note-on-match').value = 'confirm_existing';
+        setFormSelectValue('share-note-on-match-select', 'share-note-on-match', 'confirm_existing');
         await submitShareNote();
         return;
       }
@@ -3023,20 +3309,32 @@ function openNoteReadModal(noteId) {
   modal.classList.add('active');
   modal.dataset.noteId = noteId;
 
-  document.getElementById('note-read-close').onclick = () => modal.classList.remove('active');
+  let detach = null;
+  const close = () => {
+    if (detach) { detach(); detach = null; }
+    modal.classList.remove('active');
+  };
+
+  document.getElementById('note-read-close').onclick = close;
   const noteEditBtn = document.getElementById('note-read-edit');
   if (isReadOnly) {
     noteEditBtn.style.display = 'none';
   } else {
     noteEditBtn.style.display = '';
     noteEditBtn.onclick = () => {
-      modal.classList.remove('active');
+      close();
       openNoteModal(noteId);
     };
   }
-  modal.onclick = (e) => { if (e.target === modal) modal.classList.remove('active'); };
+  modal.onclick = (e) => { if (e.target === modal) close(); };
+  detach = window.attachModalA11y(modal, {
+    onClose: close,
+    initialFocusSelector: '#note-read-close',
+  });
   lucide.createIcons();
 }
+
+let _noteModalA11yDetach = null;
 
 function openNoteModal(noteId = null) {
   const modal = document.getElementById('note-modal');
@@ -3061,6 +3359,10 @@ function openNoteModal(noteId = null) {
 
   populateNoteSessionSelect();
   modal.classList.add('active');
+  _noteModalA11yDetach = window.attachModalA11y(modal, {
+    onClose: closeNoteModal,
+    initialFocusSelector: '#note-title-input',
+  });
 }
 
 async function populateNoteSessionSelect() {
@@ -3085,6 +3387,7 @@ async function populateNoteSessionSelect() {
 }
 
 function closeNoteModal() {
+  if (_noteModalA11yDetach) { _noteModalA11yDetach(); _noteModalA11yDetach = null; }
   document.getElementById('note-modal').classList.remove('active');
 }
 
@@ -3120,7 +3423,13 @@ document.getElementById('note-form').addEventListener('submit', async (e) => {
       if (result.success) {
         showToast('Заметка обновлена', 'success');
         closeNoteModal();
-        loadNotes();
+        // Optimistic replace in notesData; reconcile via loadNotes after.
+        if (result.note && Array.isArray(notesData)) {
+          const idx = notesData.findIndex(n => n.id === result.note.id);
+          if (idx !== -1) notesData[idx] = result.note;
+          renderNotes();
+        }
+        await loadNotes();
       } else {
         showToast(result.error || 'Ошибка обновления', 'error');
       }
@@ -3138,7 +3447,16 @@ document.getElementById('note-form').addEventListener('submit', async (e) => {
       if (result.success) {
         showToast('Заметка создана', 'success');
         closeNoteModal();
-        loadNotes();
+        // Optimistic insert — note returned by API already has id/timestamps;
+        // user sees it instantly without waiting for the GET round-trip.
+        // The await below reconciles in case server-side rules changed the
+        // order or other fields.
+        if (result.note && Array.isArray(notesData)) {
+          notesData.unshift(result.note);
+          renderNotes();
+          if (typeof updateSessionNotesCounts === 'function') updateSessionNotesCounts();
+        }
+        await loadNotes();
       } else {
         showToast(result.error || 'Ошибка создания', 'error');
       }
@@ -3150,7 +3468,12 @@ document.getElementById('note-form').addEventListener('submit', async (e) => {
 });
 
 async function deleteNote(noteId) {
-  if (!confirm('Удалить заметку?')) return;
+  if (!await showConfirmModal({
+    title: 'Удалить заметку',
+    message: 'Удалить заметку?',
+    confirmText: 'Удалить',
+    danger: true,
+  })) return;
   try {
     const response = await authFetch(`${API_BASE}/notes/${noteId}`, { method: 'DELETE' });
     const result = await response.json();
@@ -3158,6 +3481,7 @@ async function deleteNote(noteId) {
       showToast('Заметка удалена', 'success');
       notesData = notesData.filter(n => n.id !== noteId);
       renderNotes();
+      if (typeof updateSessionNotesCounts === 'function') updateSessionNotesCounts();
     } else {
       showToast(result.error || 'Ошибка удаления', 'error');
     }
@@ -3260,6 +3584,166 @@ const EVENT_TYPE_LABELS = {
   milestone: { icon: 'flag', title: 'Milestone' },
 };
 
+// ===== Profile (v5 — one curated active entry per project) =====
+
+async function loadProfile() {
+  const container = document.getElementById('profile-container');
+  if (!container) return;
+  if (!currentProjectId) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="map"></i>
+        <h3>Выбери проект</h3>
+        <p>Профиль привязан к конкретному проекту. Выбери его в селекторе слева.</p>
+      </div>`;
+    if (window.lucide) window.lucide.createIcons();
+    return;
+  }
+
+  container.innerHTML = `<div class="loading"><i data-lucide="loader-2" class="spin"></i><span>Загрузка...</span></div>`;
+  if (window.lucide) window.lucide.createIcons();
+
+  try {
+    const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/profile`);
+    if (response.status === 404) {
+      renderEmptyProfile(container);
+      return;
+    }
+    if (!response.ok) {
+      const err = await response.json().catch(() => ({}));
+      container.innerHTML = `<div class="empty-state"><i data-lucide="alert-triangle"></i><h3>Ошибка</h3><p>${escapeHtml(err.error || `HTTP ${response.status}`)}</p></div>`;
+      if (window.lucide) window.lucide.createIcons();
+      return;
+    }
+    const data = await response.json();
+    renderProfileCard(container, data.profile);
+  } catch (err) {
+    container.innerHTML = `<div class="empty-state"><i data-lucide="wifi-off"></i><h3>Ошибка сети</h3><p>${escapeHtml(err.message || 'Не удалось загрузить профиль')}</p></div>`;
+    if (window.lucide) window.lucide.createIcons();
+  }
+}
+
+function renderEmptyProfile(container) {
+  if (isReadOnly) {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="map"></i>
+        <h3>Профиль не задан</h3>
+        <p>Администратор ещё не создал профиль этого проекта.</p>
+      </div>`;
+  } else {
+    container.innerHTML = `
+      <div class="empty-state">
+        <i data-lucide="map"></i>
+        <h3>Профиль не задан</h3>
+        <p>Эталонная карточка проекта для онбординга агентов: миссия, стек, repo-map, конвенции, guard-rails.</p>
+        <button class="btn btn-primary" id="profile-create-btn">Создать профиль</button>
+      </div>`;
+    if (window.lucide) window.lucide.createIcons();
+    document.getElementById('profile-create-btn')?.addEventListener('click', () => openProfileEdit(null));
+  }
+  if (window.lucide) window.lucide.createIcons();
+}
+
+function renderProfileCard(container, profile) {
+  const updated = profile.updatedAt ? new Date(profile.updatedAt).toLocaleString() : '';
+  const tagsHtml = (profile.tags || []).map(t => `<span class="tag">${escapeHtml(t)}</span>`).join(' ');
+  const renderedBody = (typeof window.marked !== 'undefined' && typeof window.DOMPurify !== 'undefined')
+    ? window.DOMPurify.sanitize(window.marked.parse(profile.content || ''))
+    : `<pre>${escapeHtml(profile.content || '')}</pre>`;
+
+  container.innerHTML = `
+    <article class="profile-card">
+      <header class="profile-card-header">
+        <div class="profile-card-title">
+          <i data-lucide="map"></i>
+          <h2>${escapeHtml(profile.title || 'Project Profile')}</h2>
+        </div>
+        <div class="profile-card-actions">
+          ${!isReadOnly ? `<button class="btn btn-secondary" id="profile-edit-btn"><i data-lucide="edit"></i> Редактировать</button>` : ''}
+        </div>
+      </header>
+      <div class="profile-card-meta">
+        <span class="profile-card-updated">Обновлено: ${escapeHtml(updated)}</span>
+        ${tagsHtml ? `<span class="profile-card-tags">${tagsHtml}</span>` : ''}
+      </div>
+      <div class="profile-card-body markdown-body">${renderedBody}</div>
+    </article>`;
+  if (window.lucide) window.lucide.createIcons();
+  document.getElementById('profile-edit-btn')?.addEventListener('click', () => openProfileEdit(profile));
+}
+
+function openProfileEdit(currentProfile) {
+  const container = document.getElementById('profile-container');
+  const content = currentProfile?.content ?? '';
+  const tags = (currentProfile?.tags ?? []).join(', ');
+  container.innerHTML = `
+    <article class="profile-card profile-card--editing">
+      <header class="profile-card-header">
+        <div class="profile-card-title">
+          <i data-lucide="edit"></i>
+          <h2>${currentProfile ? 'Редактирование профиля' : 'Создание профиля'}</h2>
+        </div>
+      </header>
+      <form id="profile-edit-form">
+        <div class="form-group">
+          <label for="profile-content-input">Содержимое (markdown, до 64 KB)</label>
+          <textarea id="profile-content-input" rows="18" required>${escapeHtml(content)}</textarea>
+        </div>
+        <div class="form-group">
+          <label for="profile-tags-input">Теги (через запятую)</label>
+          <input type="text" id="profile-tags-input" value="${escapeHtml(tags)}" placeholder="mission, stack, repo-map">
+        </div>
+        <div id="profile-edit-status" class="form-status"></div>
+        <div class="form-actions">
+          <button type="button" class="btn btn-secondary" id="profile-cancel-btn">Отмена</button>
+          <button type="submit" class="btn btn-primary" id="profile-save-btn">Сохранить</button>
+        </div>
+      </form>
+    </article>`;
+  if (window.lucide) window.lucide.createIcons();
+
+  document.getElementById('profile-cancel-btn').addEventListener('click', () => loadProfile());
+
+  document.getElementById('profile-edit-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const newContent = document.getElementById('profile-content-input').value;
+    const tagsRaw = document.getElementById('profile-tags-input').value;
+    const newTags = tagsRaw.split(',').map(t => t.trim()).filter(Boolean);
+    const status = document.getElementById('profile-edit-status');
+    const saveBtn = document.getElementById('profile-save-btn');
+    saveBtn.disabled = true;
+    status.textContent = '';
+
+    try {
+      const response = await authFetch(`${API_BASE}/projects/${currentProjectId}/profile`, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ content: newContent, tags: newTags }),
+      });
+      const data = await response.json().catch(() => ({}));
+      if (response.status === 409) {
+        status.textContent = '⚠️ Профиль изменён параллельно — обновите страницу и повторите.';
+        status.style.color = 'var(--error, #c0392b)';
+        saveBtn.disabled = false;
+        return;
+      }
+      if (!response.ok || !data.success) {
+        status.textContent = '❌ ' + (data.error || `HTTP ${response.status}`);
+        status.style.color = 'var(--error, #c0392b)';
+        saveBtn.disabled = false;
+        return;
+      }
+      showToast('Профиль сохранён', 'success');
+      await loadProfile();
+    } catch (err) {
+      status.textContent = '❌ Ошибка сети: ' + escapeHtml(err.message || '');
+      status.style.color = 'var(--error, #c0392b)';
+      saveBtn.disabled = false;
+    }
+  });
+}
+
 async function loadEvents() {
   const container = document.getElementById('events-container');
   if (!currentProjectId) {
@@ -3346,12 +3830,37 @@ function renderEventsTimeline(events) {
   return `<div class="events-timeline">${items}</div>`;
 }
 
+// Whitelist mirrors ExternalRefsSchema in src/memory/jsonb-schemas.ts. Backend
+// strips unknown keys on write, so DB-side data is clean — this filter is
+// defence-in-depth for legacy rows that predate the schema and for any
+// future channel that bypasses NoteShareSchema/POST validation.
+//
+// Labels are humanised — "pr_number" → "PR", "commit_sha" → "Commit" — and
+// values pass through escapeHtml regardless of inferred type.
+const KNOWN_EXTERNAL_REF_KEYS = {
+  pr_number: { label: 'PR', format: (v) => `#${v}` },
+  commit_sha: { label: 'Commit', format: (v) => String(v).slice(0, 8) },
+  version_tag: { label: 'Version', format: (v) => String(v) },
+  deployment_url: { label: 'Deployment', format: (v) => String(v) },
+  incident_id: { label: 'Incident', format: (v) => String(v) },
+  pipeline_id: { label: 'Pipeline', format: (v) => String(v) },
+  work_item_id: { label: 'Work item', format: (v) => `#${v}` },
+  azure_pr_url: { label: 'Azure PR', format: (v) => String(v) },
+  azure_event_id: { label: 'Azure event', format: (v) => String(v) },
+};
+
 function renderEventRefs(refs) {
   if (!refs || typeof refs !== 'object' || Object.keys(refs).length === 0) return '';
-  const parts = Object.entries(refs).map(([k, v]) => {
-    const value = typeof v === 'object' ? JSON.stringify(v) : String(v);
-    return `<span class="event-ref"><strong>${escapeHtml(k)}</strong>: ${escapeHtml(value)}</span>`;
-  });
+  const parts = [];
+  for (const [k, v] of Object.entries(refs)) {
+    if (!Object.prototype.hasOwnProperty.call(KNOWN_EXTERNAL_REF_KEYS, k)) continue;
+    if (v === null || v === undefined || v === '') continue;
+    // Reject obvious garbage: arrays/nested objects aren't part of the schema.
+    if (typeof v === 'object') continue;
+    const meta = KNOWN_EXTERNAL_REF_KEYS[k];
+    parts.push(`<span class="event-ref"><strong>${escapeHtml(meta.label)}</strong>: ${escapeHtml(meta.format(v))}</span>`);
+  }
+  if (parts.length === 0) return '';
   return `<div class="event-refs">${parts.join(' · ')}</div>`;
 }
 

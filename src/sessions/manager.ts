@@ -10,7 +10,7 @@ import { NoteMerger } from '../extraction/merger.js';
 import type { MemoryManager } from '../memory/manager.js';
 import type { EvidenceSource } from '../extraction/types.js';
 import type { EventsManager } from '../events/manager.js';
-import { buildEventsPrompt, parseEventsResponse } from '../events/extractor.js';
+import { buildEventsPrompt, parseEventsResponseStrict, EventsParseError } from '../events/extractor.js';
 import { chunkMessage } from './chunking.js';
 import logger from '../logger.js';
 
@@ -18,6 +18,84 @@ import logger from '../logger.js';
 function chunkPointId(messageId: string, chunkIndex: number): string {
   const hash = crypto.createHash('sha1').update(`${messageId}:${chunkIndex}`).digest('hex');
   return `${hash.slice(0, 8)}-${hash.slice(8, 12)}-${hash.slice(12, 16)}-${hash.slice(16, 20)}-${hash.slice(20, 32)}`;
+}
+
+/**
+ * Parse the "Title: ...\nTags: a, b\nSummary: ..." block emitted by the
+ * summarisation prompt. The old regex implementation was fragile: missing a
+ * section, an extra blank line, or a multi-line summary all confused it.
+ *
+ * Strategy: line-based scan. Header lines are recognised by their literal
+ * prefix; everything after a `Summary:` line is collected into the summary
+ * body. Title/tags validation is permissive — anything that doesn't pass
+ * just gets dropped, letting the caller fall back to defaults.
+ *
+ * Exported for unit tests.
+ */
+export interface ParsedLlmSummary {
+  title?: string;
+  summary: string;
+  tags: string[];
+}
+
+const SUMMARY_MIN_LENGTH = 20;
+const TITLE_MIN_LENGTH = 3;
+const TITLE_MAX_LENGTH = 120;
+
+export function parseLlmSummary(raw: string): ParsedLlmSummary | null {
+  if (typeof raw !== 'string' || raw.trim().length === 0) return null;
+
+  const lines = raw.split('\n');
+  let title: string | undefined;
+  const tags: string[] = [];
+  const summaryLines: string[] = [];
+  let inSummary = false;
+
+  for (const rawLine of lines) {
+    const trimmed = rawLine.trim();
+    if (!inSummary) {
+      const titleMatch = /^Title:\s*(.*)$/i.exec(trimmed);
+      if (titleMatch) {
+        const value = titleMatch[1].trim();
+        if (value.length >= TITLE_MIN_LENGTH && value.length <= TITLE_MAX_LENGTH) {
+          title = value;
+        }
+        continue;
+      }
+      const tagsMatch = /^Tags:\s*(.*)$/i.exec(trimmed);
+      if (tagsMatch) {
+        const list = tagsMatch[1]
+          .split(',')
+          .map((t) => t.trim().toLowerCase())
+          .filter(Boolean);
+        tags.push(...list);
+        continue;
+      }
+      const summaryMatch = /^Summary:\s*(.*)$/i.exec(trimmed);
+      if (summaryMatch) {
+        inSummary = true;
+        if (summaryMatch[1].trim()) summaryLines.push(summaryMatch[1]);
+        continue;
+      }
+      // Line outside any known section — ignored before Summary: appears.
+    } else {
+      // Inside the Summary body: keep original line (preserves indentation
+      // and blank-line spacing the LLM emitted).
+      summaryLines.push(rawLine);
+    }
+  }
+
+  const explicitSummary = summaryLines.join('\n').trim();
+  // If we got nothing labelled `Summary:`, fall back to using the whole raw
+  // text — the LLM may have ignored the prompt template. If we got something
+  // too short to be useful, also fall back (caller may decide to discard).
+  const summaryCandidate = explicitSummary.length >= SUMMARY_MIN_LENGTH
+    ? explicitSummary
+    : raw.trim();
+
+  if (summaryCandidate.length === 0) return null;
+
+  return { title, summary: summaryCandidate, tags };
 }
 
 export class SessionManager {
@@ -36,6 +114,9 @@ export class SessionManager {
     private extractionEnabled: boolean = true,
     private maxMergesPerSession: number = 3,
     private eventsManager?: EventsManager,
+    // Per-instance override for events confidence threshold; falls back to
+    // the EVENTS_MIN_CONFIDENCE_DEFAULT inside parseEventsResponse if absent.
+    private eventsMinConfidence?: number,
   ) {}
 
   setEventsManager(em: EventsManager): void {
@@ -58,53 +139,85 @@ export class SessionManager {
     endedAt?: string;
     messages: Array<{ role: string; content: string; timestamp?: string; toolNames: string[] }>;
   }): Promise<Session> {
-    // Check duplicate — upsert if session grew (new messages added)
-    if (data.externalId) {
-      const existing = await this.storage.findByExternalId(agentTokenId, data.externalId);
-      if (existing) {
-        // If new data has more messages, update the session
-        if (data.messages.length > existing.messageCount) {
-          // Skip upsert if worker is actively processing this session
-          if (existing.embeddingStatus === 'summarizing' || existing.embeddingStatus === 'embedding') {
-            logger.info({ sessionId: existing.id, status: existing.embeddingStatus },
-              'Session upsert skipped — worker is processing, will retry next sync');
-            return existing;
-          }
-
-          await this.storage.replaceMessages(existing.id, data.messages);
-          await this.storage.updateSessionMeta(existing.id, {
-            messageCount: data.messages.length,
-            endedAt: data.endedAt,
-          });
-
-          // Re-queue for LLM summary + embedding (content changed)
-          const needsSummary = !data.summary;
-          await this.storage.updateEmbeddingStatus(existing.id, needsSummary ? 'queued' : 'queued_embed');
-
-          // Clean old vectors — worker will regenerate
-          if (this.vectorStore) {
-            this.vectorStore.delete('sessions', [existing.id]).catch(err =>
-              logger.warn({ err, sessionId: existing.id }, 'Failed to clean old session vector during upsert'));
-            this.vectorStore.deleteByFilter('session_messages', {
-              must: [{ key: 'session_id', match: { value: existing.id } }],
-            }).catch(err =>
-              logger.warn({ err, sessionId: existing.id }, 'Failed to clean old message vectors during upsert'));
-          }
-
-          logger.info({ sessionId: existing.id, oldCount: existing.messageCount, newCount: data.messages.length },
-            'Session updated with new messages, re-queued');
-          return { ...existing, messageCount: data.messages.length, endedAt: data.endedAt ?? existing.endedAt };
+    // Resolve a possible duplicate via two paths:
+    //   1. external_id — strongest signal, used when the caller controls a
+    //      stable identifier (Claude Code session UUID, Azure event id).
+    //   2. (project_id, name, started_at) tuple — fallback for callers that
+    //      can't supply external_id (legacy webhooks, manual UI imports).
+    //      All three parts must be set to form a stable key; otherwise we
+    //      fall through and create a new row.
+    // The "if grew, upsert" logic below applies to either match.
+    const existing = data.externalId
+      ? await this.storage.findByExternalId(agentTokenId, data.externalId)
+      : await this.storage.findByTuple(agentTokenId, data.projectId, data.name, data.startedAt);
+    if (existing) {
+      // If new data has more messages, update the session
+      if (data.messages.length > existing.messageCount) {
+        // Skip upsert if worker is actively processing this session
+        if (existing.embeddingStatus === 'summarizing' || existing.embeddingStatus === 'embedding') {
+          logger.info({ sessionId: existing.id, status: existing.embeddingStatus },
+            'Session upsert skipped — worker is processing, will retry next sync');
+          return existing;
         }
-        // Same or fewer messages — no update needed
-        return existing;
+
+        await this.storage.replaceMessages(existing.id, data.messages);
+        await this.storage.updateSessionMeta(existing.id, {
+          messageCount: data.messages.length,
+          endedAt: data.endedAt,
+        });
+
+        // Re-queue for LLM summary + embedding (content changed)
+        const needsSummary = !data.summary;
+        await this.storage.updateEmbeddingStatus(existing.id, needsSummary ? 'queued' : 'queued_embed');
+
+        // Clean old vectors — worker will regenerate
+        if (this.vectorStore) {
+          this.vectorStore.delete('sessions', [existing.id]).catch(err =>
+            logger.warn({ err, sessionId: existing.id }, 'Failed to clean old session vector during upsert'));
+          this.vectorStore.deleteByFilter('session_messages', {
+            must: [{ key: 'session_id', match: { value: existing.id } }],
+          }).catch(err =>
+            logger.warn({ err, sessionId: existing.id }, 'Failed to clean old message vectors during upsert'));
+        }
+
+        logger.info({ sessionId: existing.id, oldCount: existing.messageCount, newCount: data.messages.length },
+          'Session updated with new messages, re-queued');
+        return { ...existing, messageCount: data.messages.length, endedAt: data.endedAt ?? existing.endedAt };
       }
+      // Same or fewer messages — no update needed
+      return existing;
     }
 
     // New session
     const summary = data.summary || 'Pending summarization...';
     const needsSummary = !data.summary;
 
-    const session = await this.storage.createSession({ agentTokenId, ...data, summary });
+    let session: Session;
+    try {
+      session = await this.storage.createSession({ agentTokenId, ...data, summary });
+    } catch (err: unknown) {
+      // Migration 027 added a partial unique index on the dedup tuple.
+      // A second concurrent caller racing the same (agent_token_id,
+      // project_id, name, started_at) tuple will hit 23505 here. Re-run
+      // findByTuple to grab the row the other caller created and return
+      // it like a normal dedup hit. This closes the TOCTOU window
+      // between findByTuple + createSession.
+      const code = (err as { code?: string } | undefined)?.code;
+      if (code === '23505') {
+        const dupe = await this.storage.findByTuple(
+          agentTokenId,
+          data.projectId,
+          data.name,
+          data.startedAt,
+        );
+        if (dupe) {
+          logger.info({ sessionId: dupe.id, agentTokenId },
+            'Session import: concurrent dedup race detected, returning existing row');
+          return dupe;
+        }
+      }
+      throw err;
+    }
 
     // Set status to 'queued' — background worker will process LLM + embedding
     await this.storage.updateEmbeddingStatus(session.id, needsSummary ? 'queued' : 'queued_embed');
@@ -142,28 +255,29 @@ export class SessionManager {
               messages.map(m => ({ role: m.role, content: m.content })),
             );
 
-            // Parse "Title: ...\nTags: ...\nSummary: ..." format from LLM
-            const titleMatch = llmResult.match(/^(.+?)(?:\n|Tags:)/s);
-            const tagsMatch = llmResult.match(/Tags:\s*(.+?)(?:\n|Summary:)/s);
-            const summaryMatch = llmResult.match(/Summary:\s*(.+)/s);
-            const title = titleMatch?.[1]?.replace(/^Title:\s*/i, '').trim();
-            const summary = summaryMatch?.[1]?.trim() || llmResult.trim();
-            const llmTags = tagsMatch?.[1]?.split(',').map(t => t.trim().toLowerCase()).filter(Boolean) || [];
-
-            await this.storage.updateSummary(session.id, summary);
-            const meta: { name?: string; tags?: string[] } = {};
-            if (title) meta.name = title;
-            if (llmTags.length > 0) {
-              // Merge LLM tags with existing import tags (auto-sync, mass-import)
-              const existingTags = session.tags || [];
-              meta.tags = [...new Set([...existingTags, ...llmTags])];
+            const parsed = parseLlmSummary(llmResult);
+            if (!parsed) {
+              // 5.H — empty / unparseable LLM output. Don't overwrite the
+              // placeholder with empty string. Skip and let the fallback
+              // path below populate from the first user message.
+              logger.warn({ sessionId: session.id, rawLength: llmResult?.length ?? 0 },
+                'LLM returned empty or unparseable summary; using fallback');
+            } else {
+              await this.storage.updateSummary(session.id, parsed.summary);
+              const meta: { name?: string; tags?: string[] } = {};
+              if (parsed.title) meta.name = parsed.title;
+              if (parsed.tags.length > 0) {
+                // Merge LLM tags with existing import tags (auto-sync, mass-import)
+                const existingTags = session.tags || [];
+                meta.tags = [...new Set([...existingTags, ...parsed.tags])];
+              }
+              if (Object.keys(meta).length > 0) {
+                await this.storage.updateSessionMeta(session.id, meta);
+              }
+              const updated = await this.storage.getSession(session.id);
+              if (updated) Object.assign(session, updated);
+              logger.info({ sessionId: session.id, title: parsed.title }, 'Session summary generated by LLM');
             }
-            if (Object.keys(meta).length > 0) {
-              await this.storage.updateSessionMeta(session.id, meta);
-            }
-            const updated = await this.storage.getSession(session.id);
-            if (updated) Object.assign(session, updated);
-            logger.info({ sessionId: session.id, title }, 'Session summary generated by LLM');
           } catch (err) {
             logger.warn({ err, sessionId: session.id }, 'LLM summarization failed, using fallback');
           }
@@ -434,8 +548,30 @@ export class SessionManager {
       summary: session.summary,
       messages,
     });
-    const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
-    const candidates = parseEventsResponse(raw);
+
+    // Two attempts: malformed JSON is sometimes a transient LLM glitch
+    // (rate-limit retry, truncated response). One retry after a brief
+    // backoff recovers most of those without burning resources on
+    // persistent failures.
+    const EVENTS_RETRY_BACKOFF_MS = 2000;
+    let candidates: ReturnType<typeof parseEventsResponseStrict>;
+    try {
+      const raw = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
+      candidates = parseEventsResponseStrict(raw, { minConfidence: this.eventsMinConfidence });
+    } catch (parseErr) {
+      if (!(parseErr instanceof EventsParseError)) throw parseErr;
+      logger.warn({ err: parseErr, sessionId: session.id, backoffMs: EVENTS_RETRY_BACKOFF_MS },
+        'events extraction parse failed; retrying once after backoff');
+      await new Promise((r) => setTimeout(r, EVENTS_RETRY_BACKOFF_MS));
+      try {
+        const raw2 = await this.llmClient.generate(prompt, { temperature: 0.1, maxTokens: 800 });
+        candidates = parseEventsResponseStrict(raw2, { minConfidence: this.eventsMinConfidence });
+      } catch (retryErr) {
+        logger.warn({ err: retryErr, sessionId: session.id },
+          'events extraction parse failed on retry; skipping for this session');
+        return;
+      }
+    }
 
     if (candidates.length === 0) {
       logger.info({ sessionId: session.id }, 'events extraction yielded zero candidates');
@@ -566,6 +702,20 @@ export class SessionManager {
 
   async countByEmbeddingStatus(projectId?: string): Promise<Record<string, number>> {
     return this.storage.countByEmbeddingStatus(projectId);
+  }
+
+  /**
+   * Cheap metadata-only lookup used by REST handlers to scope-check a
+   * session ID against the caller's project before doing the full
+   * read/delete. Returns null if the session doesn't exist OR if the
+   * agent token doesn't own it — the caller can't distinguish, which is
+   * intentional (don't leak existence of other agents' sessions).
+   */
+  async getSessionMeta(sessionId: string, agentTokenId: string): Promise<Session | null> {
+    const session = await this.storage.getSession(sessionId);
+    if (!session) return null;
+    if (agentTokenId && session.agentTokenId !== agentTokenId) return null;
+    return session;
   }
 
   async readSession(sessionId: string, agentTokenId: string, from?: number, to?: number): Promise<{

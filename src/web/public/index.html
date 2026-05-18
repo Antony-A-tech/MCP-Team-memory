@@ -6,7 +6,7 @@
   <title>Team Memory - Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="favicon.svg">
   <script src="theme-init.js"></script>
-  <link rel="stylesheet" href="styles.css?v=15">
+  <link rel="stylesheet" href="styles.css?v=16">
   <link rel="stylesheet" href="themes.css?v=2">
   <script src="https://unpkg.com/lucide@latest/dist/umd/lucide.min.js"></script>
   <!-- Graph visualization: force-graph (2D canvas, d3-force) -->
@@ -296,6 +296,14 @@
         </div>
       </div>
 
+      <!-- Profile View (hidden by default) — v5 single curated entry per project -->
+      <div class="profile-container" id="profile-container" style="display:none">
+        <div class="loading">
+          <i data-lucide="loader-2" class="spin"></i>
+          <span>Загрузка...</span>
+        </div>
+      </div>
+
       <!-- Notes List (hidden by default) -->
       <div class="notes-container" id="notes-container" style="display:none">
         <div class="loading">
@@ -370,6 +378,7 @@
                 <th>Статус</th>
                 <th>Имя</th>
                 <th>Роль</th>
+                <th title="Сколько проектов агенту разрешено видеть из общего числа">Доступ</th>
                 <th>Создан</th>
                 <th>Последняя активность</th>
                 <th title="Расход на Gemini API по этому агенту">Расходы</th>
@@ -483,6 +492,35 @@
           </button>
         </div>
         <button class="btn btn-primary btn-sm" id="btn-close-reveal">Готово</button>
+      </div>
+    </div>
+
+    <!-- Agent project access modal (RBAC, migration 028) -->
+    <div class="modal" id="agent-access-modal">
+      <div class="modal-content" style="max-width: 520px;">
+        <div class="modal-header">
+          <h2>Доступ к проектам</h2>
+          <button class="modal-close" id="agent-access-close" aria-label="Закрыть">
+            <i data-lucide="x"></i>
+          </button>
+        </div>
+        <div class="modal-body">
+          <p id="agent-access-subtitle" style="margin-top: 0; color: var(--text-secondary);">
+            Отметьте проекты, к которым этот агент может обращаться.
+          </p>
+          <div class="agent-access-toolbar">
+            <button class="btn btn-secondary btn-sm" type="button" id="agent-access-select-all">Выбрать все</button>
+            <button class="btn btn-secondary btn-sm" type="button" id="agent-access-clear-all">Снять все</button>
+          </div>
+          <div id="agent-access-list" class="agent-access-list">
+            <!-- Populated dynamically -->
+          </div>
+          <div id="agent-access-status" style="margin-top: 12px;"></div>
+        </div>
+        <div class="modal-footer">
+          <button class="btn btn-secondary" id="agent-access-cancel">Отмена</button>
+          <button class="btn btn-primary" id="agent-access-save">Сохранить</button>
+        </div>
       </div>
     </div>
 
@@ -798,8 +836,9 @@
     </div>
   </div>
 
-  <script src="app.js?v=6"></script>
+  <script src="components/modal.js?v=3"></script>
+  <script src="app.js?v=13"></script>
   <script src="graph.js?v=6"></script>
-  <script src="chat.js?v=16"></script>
+  <script src="chat.js?v=18"></script>
 </body>
 </html>

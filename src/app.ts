@@ -21,6 +21,10 @@ import { createAuthMiddleware } from './middleware/auth.js';
 import { createHealthHandler } from './health.js';
 import { createLogger } from './logger.js';
 import { createRateLimiter } from './middleware/rate-limit.js';
+import { createIdempotencyMiddleware } from './middleware/idempotency.js';
+import { parsePagination } from './middleware/pagination.js';
+import { enforceProjectScope } from './middleware/project-scope.js';
+import { NoteWriteSchema } from './notes/validation.js';
 import { AuditLogger } from './storage/audit.js';
 import { VersionManager } from './storage/versioning.js';
 import { AgentTokenStore } from './auth/agent-tokens.js';
@@ -40,8 +44,29 @@ async function main(): Promise<void> {
 
   logger.info({ transport: 'http', database: config.databaseUrl.replace(/\/\/.*:.*@/, '//***:***@'), port: config.port }, 'Team Memory MCP Server v2 starting');
 
+  if (!process.env.DATABASE_URL) {
+    logger.warn('DATABASE_URL is not set — using built-in default. Set it explicitly in production.');
+  }
+
   // Initialize storage
   const storage = new PgStorage(config.databaseUrl, config.ftsLanguage);
+
+  // Fail-fast connectivity probe. PgStorage uses lazy connections, so a wrong
+  // DATABASE_URL or down Postgres only surfaces when the first query runs —
+  // which can be deep in migration logic with a confusing error. A simple
+  // `SELECT 1` here turns "database is unreachable" into a clean startup
+  // failure with a redacted DSN logged.
+  try {
+    await storage.getPool().query('SELECT 1');
+    logger.info('Database connectivity OK');
+  } catch (err) {
+    logger.fatal(
+      { err, database: config.databaseUrl.replace(/\/\/.*:.*@/, '//***:***@') },
+      'Cannot reach the database — check DATABASE_URL and Postgres availability',
+    );
+    process.exit(1);
+  }
+
   const auditLogger = new AuditLogger(storage.getPool());
   const versionManager = new VersionManager(storage.getPool());
   const memoryManager = new MemoryManager(storage, auditLogger, versionManager);
@@ -63,7 +88,43 @@ async function main(): Promise<void> {
 
   // Create Express app
   const app = express();
-  app.use(express.json({ limit: '50mb' }));  // Large limit for session_import (sessions can be 10-50MB)
+  // Trust proxy: required so `req.ip` resolves to the real client IP when
+  // running behind a reverse proxy (nginx/Caddy/Cloud Run). Without this
+  // the rate limiter (IP-keyed for anonymous + master tiers) degenerates to
+  // a single shared bucket = the proxy address.
+  //
+  // SECURITY: defaults to `false`. If trust proxy is enabled when the server
+  // is reachable directly (no proxy in front), any client can spoof
+  // X-Forwarded-For to dodge per-IP rate limits and to charge buckets to
+  // other clients' IPs. Operators behind a proxy MUST opt in via TRUST_PROXY
+  // env: `TRUST_PROXY=1` for single-hop, `TRUST_PROXY=2` for two hops, or a
+  // string for an IP/CIDR whitelist (passed through to Express).
+  const trustProxyEnv = process.env.TRUST_PROXY;
+  if (trustProxyEnv !== undefined && trustProxyEnv !== '') {
+    const asNum = Number(trustProxyEnv);
+    app.set('trust proxy', Number.isFinite(asNum) ? asNum : trustProxyEnv);
+  } else {
+    app.set('trust proxy', false);
+  }
+  // JSON body limits are split by route:
+  //   - /mcp gets 50mb because session_import is a JSON-RPC `tools/call`
+  //     payload that can carry a whole Claude Code transcript (10–50 MB
+  //     when sessions are long).
+  //   - Everything else (REST API) caps at 10mb. Notes are < 50 KB,
+  //     entries < 1 MB; a 50 MB cap on /api/* was a DoS surface (a single
+  //     malicious POST could pin event-loop memory).
+  //
+  // ORDER MATTERS: the path-mounted `/mcp` parser MUST be registered before
+  // the global one. Express runs middleware in registration order, and the
+  // first json() to actually consume the body wins (subsequent json() calls
+  // see `req._body === true` and skip). Swap these two lines and `/mcp`
+  // silently inherits the 10mb cap, breaking session_import for any
+  // transcript over 10 MB.
+  //
+  // Body must be parsed BEFORE auth/rate-limit middleware run, so register
+  // here.
+  app.use('/mcp', express.json({ limit: '50mb' }));
+  app.use(express.json({ limit: '10mb' }));
 
   // CORS — allow configurable origins
   const allowedOrigin = process.env.MEMORY_CORS_ORIGIN || '*';
@@ -131,6 +192,12 @@ async function main(): Promise<void> {
 
   // Rate limiting
   app.use(createRateLimiter({ windowMs: 60_000, maxRequests: 100 }));
+
+  // Idempotency-Key support for POST endpoints — clients that retry the
+  // same logical operation (e.g., Azure DevOps webhook redelivery) get the
+  // cached response back instead of executing the handler twice. Scoped by
+  // (tokenId, path, key); only 2xx responses are cached for 24h.
+  app.use(createIdempotencyMiddleware());
 
   // MCP transport is mounted later, after optional managers are created
   // (see below: mountMcpTransport call after Qdrant + NotesManager setup)
@@ -274,6 +341,7 @@ async function main(): Promise<void> {
       config.extractNotesEnabled,
       config.extractMaxMergesPerSession,
       eventsManager,
+      config.eventsMinConfidence,
     );
     sessionManager.startWorker(30); // Process queued sessions every 30 sec
     logger.info('Session manager initialized with background worker');
@@ -367,8 +435,8 @@ async function main(): Promise<void> {
     if (!sessionManager) { res.json({ success: true, sessions: [], hasMore: false, offset: 0, limit: 20 }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     const projectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = parseInt(req.query.offset as string) || 0;
+    if (!enforceProjectScope(req, res, projectId)) return;
+    const { limit, offset } = parsePagination(req, { limit: 20 });
     try {
       const sessions = await sessionManager.listSessions(agentTokenId || '', {
         projectId,
@@ -405,6 +473,14 @@ async function main(): Promise<void> {
     const from = parseInt(req.query.from as string) || 0;
     const to = req.query.to ? parseInt(req.query.to as string) : undefined;
     try {
+      // Scope-check FIRST: resolve session metadata, verify caller's
+      // X-Project-Id matches the session's projectId. Without this, an
+      // agent token bound to project A could pass any session UUID and
+      // read content owned by other projects (if the same agent imported
+      // sessions across multiple projects).
+      const meta = await sessionManager.getSessionMeta(req.params.id, agentTokenId || '');
+      if (!meta) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      if (!enforceProjectScope(req, res, meta.projectId ?? null)) return;
       const result = await sessionManager.readSession(req.params.id, agentTokenId || '', from, to);
       if (!result) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
       res.json({
@@ -425,8 +501,13 @@ async function main(): Promise<void> {
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     const query = req.query.q as string;
     if (!query) { res.status(400).json({ success: false, error: 'Query parameter "q" is required' }); return; }
-    const limit = parseInt(req.query.limit as string) || 20;
+    // M2 review fix: route through shared parsePagination instead of an
+    // ad-hoc parseInt without a cap.
+    const { limit } = parsePagination(req, { limit: 20 });
     try {
+      const meta = await sessionManager.getSessionMeta(req.params.id, agentTokenId || '');
+      if (!meta) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      if (!enforceProjectScope(req, res, meta.projectId ?? null)) return;
       const messages = await sessionManager.searchMessagesInSession(req.params.id, agentTokenId || '', query, limit);
       res.json({ success: true, messages });
     } catch (err: any) {
@@ -441,6 +522,9 @@ async function main(): Promise<void> {
     if (!sessionManager) { res.status(404).json({ success: false, error: 'Sessions not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     try {
+      const meta = await sessionManager.getSessionMeta(req.params.id, agentTokenId || '');
+      if (!meta) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
+      if (!enforceProjectScope(req, res, meta.projectId ?? null)) return;
       const deleted = await sessionManager.deleteSession(req.params.id, agentTokenId || '');
       if (!deleted) { res.status(404).json({ success: false, error: 'Session not found' }); return; }
       res.json({ success: true });
@@ -453,6 +537,7 @@ async function main(): Promise<void> {
 
   // === Project Profile (v5) ===
   app.get('/api/projects/:id/profile', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     try {
       const profile = await memoryManager.getProfile(req.params.id);
       if (!profile) { res.status(404).json({ success: false, error: 'Profile not set for this project' }); return; }
@@ -464,6 +549,7 @@ async function main(): Promise<void> {
   });
 
   app.put('/api/projects/:id/profile', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     const { content, tags } = req.body ?? {};
     if (typeof content !== 'string' || content.trim() === '') {
       res.status(400).json({ success: false, error: 'content (non-empty string) is required' });
@@ -500,9 +586,15 @@ async function main(): Promise<void> {
 
   // === Project Events (v5) ===
   app.get('/api/projects/:id/events', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     const events = memoryManager.getEventsManager();
     if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
-    const limit = Math.min(parseInt(req.query.limit as string) || 10, 200);
+    // M2 review fix: route through shared parsePagination instead of the
+    // inline `Math.min(parseInt(limit)||10, 200)` — keeps the cap rule
+    // consistent across every list endpoint. Global cap (500) is wider
+    // than the old inline cap (200) but events payloads are small and
+    // the wider cap matches the rest of the API.
+    const { limit } = parsePagination(req, { limit: 10 });
     const eventType = req.query.event_type as string | undefined;
     const since = req.query.since as string | undefined;
     if (eventType && !EVENT_TYPES.includes(eventType as EventType)) {
@@ -523,6 +615,7 @@ async function main(): Promise<void> {
   });
 
   app.post('/api/projects/:id/events', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.id)) return;
     const events = memoryManager.getEventsManager();
     if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
     const { event_type, occurred_at, title, description, actor, refs } = req.body ?? {};
@@ -552,6 +645,7 @@ async function main(): Promise<void> {
   });
 
   app.delete('/api/projects/:projectId/events/:eventId', async (req, res) => {
+    if (!enforceProjectScope(req, res, req.params.projectId)) return;
     const events = memoryManager.getEventsManager();
     if (!events) { res.status(503).json({ success: false, error: 'Events not configured' }); return; }
     try {
@@ -568,11 +662,12 @@ async function main(): Promise<void> {
   app.get('/api/notes', async (req, res) => {
     if (!notesManager) { res.json({ success: true, notes: [], hasMore: false, offset: 0, limit: 20 }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
-    const limit = parseInt(req.query.limit as string) || 20;
-    const offset = parseInt(req.query.offset as string) || 0;
+    const notesProjectId = (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined;
+    if (!enforceProjectScope(req, res, notesProjectId)) return;
+    const { limit, offset } = parsePagination(req, { limit: 20 });
     try {
       const notes = await notesManager.read(agentTokenId || null, {
-        projectId: (req.query.project_id as string) || (req.headers['x-project-id'] as string) || undefined,
+        projectId: notesProjectId,
         sessionId: (req.query.session_id as string) || undefined,
         search: (req.query.search as string) || undefined,
         status: 'active',
@@ -606,6 +701,7 @@ async function main(): Promise<void> {
     try {
       const note = await notesManager.getById(req.params.id, agentTokenId || null);
       if (!note) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      if (!enforceProjectScope(req, res, note.projectId ?? null)) return;
       res.json({ success: true, note });
     } catch (err) {
       logger.error({ err }, 'GET /api/notes/:id failed');
@@ -616,12 +712,24 @@ async function main(): Promise<void> {
   app.post('/api/notes', async (req, res) => {
     if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
-    const { title, content, tags, session_id } = req.body;
-    if (!title || !content) { res.status(400).json({ success: false, error: 'title and content are required' }); return; }
+
+    // Validate request body against NoteWriteSchema instead of manual extract —
+    // gives length/type/uuid checks and rejects unknown fields silently.
+    const parsed = NoteWriteSchema.safeParse(req.body);
+    if (!parsed.success) {
+      res.status(400).json({
+        success: false,
+        error: 'Invalid request body',
+        details: parsed.error.issues.map((i) => ({ path: i.path.join('.'), message: i.message })),
+      });
+      return;
+    }
+    const body = parsed.data;
+
     // v5 invariant: project_id required (param or X-Project-Id header). Enforced
     // in DB by migration 025 NOT NULL constraint — reject early with 400 so the
     // caller gets a clear message instead of a 500.
-    const projectId = (req.body.project_id as string) || (req.headers['x-project-id'] as string) || null;
+    const projectId = body.project_id || (req.headers['x-project-id'] as string | undefined) || null;
     if (!projectId) {
       res.status(400).json({
         success: false,
@@ -629,15 +737,16 @@ async function main(): Promise<void> {
       });
       return;
     }
+    if (!enforceProjectScope(req, res, projectId)) return;
     try {
       if (!agentTokenId) { res.status(400).json({ success: false, error: 'Agent token required to create notes. Use an agent token instead of master token.' }); return; }
       const note = await notesManager.write(agentTokenId, {
-        title,
-        content,
-        tags: Array.isArray(tags) ? tags : (tags ? String(tags).split(',').map((t: string) => t.trim()).filter(Boolean) : []),
-        priority: req.body.priority || 'medium',
+        title: body.title,
+        content: body.content,
+        tags: body.tags,
+        priority: body.priority,
         projectId,
-        sessionId: session_id || null,
+        sessionId: body.session_id || null,
       });
       res.json({ success: true, note });
     } catch (err) {
@@ -650,6 +759,12 @@ async function main(): Promise<void> {
     if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     try {
+      // Pre-fetch for scope check. Adds one storage round-trip but prevents
+      // an agent token pinned to project A from mutating notes that live in
+      // project B (even if the same agent token owns them).
+      const existing = await notesManager.getById(req.params.id, agentTokenId || null);
+      if (!existing) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      if (!enforceProjectScope(req, res, existing.projectId ?? null)) return;
       const updates: Record<string, unknown> = {};
       if (req.body.title !== undefined) updates.title = req.body.title;
       if (req.body.content !== undefined) updates.content = req.body.content;
@@ -671,6 +786,9 @@ async function main(): Promise<void> {
     if (!notesManager) { res.status(404).json({ success: false, error: 'Notes not configured' }); return; }
     const agentTokenId = (req as any).auth?.agentTokenId as string | undefined;
     try {
+      const existing = await notesManager.getById(req.params.id, agentTokenId || null);
+      if (!existing) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
+      if (!enforceProjectScope(req, res, existing.projectId ?? null)) return;
       const deleted = await notesManager.delete(req.params.id, agentTokenId || null, false);
       if (!deleted) { res.status(404).json({ success: false, error: 'Note not found' }); return; }
       res.json({ success: true });
@@ -758,6 +876,17 @@ async function main(): Promise<void> {
     }
 
     try {
+      // Scope-check before share: an agent A pinned to project X must not
+      // be able to share a note (their own) that lives in project Y into
+      // project X's team memory. The share operation creates a memory
+      // entry — its projectId is derived from the note's projectId.
+      const noteForScope = await notesManager.getById(req.params.id, agentTokenId);
+      if (!noteForScope) {
+        res.status(404).json({ success: false, error: 'Note not found or not yours' });
+        return;
+      }
+      if (!enforceProjectScope(req, res, noteForScope.projectId ?? null)) return;
+
       const result = await notesManager.share({
         noteId: req.params.id,
         agentTokenId,
@@ -846,11 +975,18 @@ async function main(): Promise<void> {
     // 2. Close WebSocket connections
     wsServer.stop();
 
-    // 3. Hard-kill safety net — if graceful shutdown hangs, force exit after 10s
+    // 3. Hard-kill safety net — if graceful shutdown hangs, force exit.
+    // 10s default; override via SHUTDOWN_TIMEOUT_MS for slow databases or
+    // larger Qdrant collections. Bound at [1s, 120s] so misconfiguration
+    // can't break shutdown semantics entirely.
+    const rawTimeout = Number(process.env.SHUTDOWN_TIMEOUT_MS);
+    const shutdownTimeoutMs = Number.isFinite(rawTimeout) && rawTimeout > 0
+      ? Math.min(Math.max(rawTimeout, 1000), 120_000)
+      : 10_000;
     setTimeout(() => {
-      logger.error('Shutdown timed out, forcing exit');
+      logger.error({ shutdownTimeoutMs }, 'Shutdown timed out, forcing exit');
       process.exit(1);
-    }, 10_000).unref();
+    }, shutdownTimeoutMs).unref();
 
     // 4. Wait briefly for in-flight requests to complete
     await new Promise(resolve => setTimeout(resolve, 2000));
@@ -937,10 +1073,11 @@ export function registerChatRoutes(app: import('express').Express, deps: ChatRou
     const agentTokenId = resolve(req);
     if (!agentTokenId) { res.status(401).json({ error: 'Unauthorized' }); return; }
     try {
+      const { limit, offset } = parsePagination(req, { limit: 50 });
       const sessions = await chatManager.list(agentTokenId, {
         projectId: req.query.project_id as string | undefined,
-        limit: req.query.limit ? Number(req.query.limit) : 50,
-        offset: req.query.offset ? Number(req.query.offset) : 0,
+        limit,
+        offset,
       });
       res.json(sessions);
     } catch {

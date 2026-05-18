@@ -36,11 +36,16 @@ export const SessionSearchSchema = z.object({
   limit: z.number().int().min(1).default(10).transform(v => Math.min(v, 50)),
 });
 
-export const SessionReadSchema = z.object({
-  session_id: UuidSchema,
-  message_from: z.number().int().min(0).default(0),
-  message_to: z.number().int().min(0).optional(),
-});
+export const SessionReadSchema = z
+  .object({
+    session_id: UuidSchema,
+    message_from: z.number().int().min(0).default(0),
+    message_to: z.number().int().min(0).optional(),
+  })
+  .refine(
+    (v) => v.message_to === undefined || v.message_to >= v.message_from,
+    { message: 'message_to must be >= message_from', path: ['message_to'] },
+  );
 
 export const SessionMessageSearchSchema = z.object({
   query: z.string().min(1).max(500),

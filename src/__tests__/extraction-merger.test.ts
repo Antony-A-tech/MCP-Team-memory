@@ -65,17 +65,15 @@ describe('NoteMerger', () => {
     expect(out.fact.length).toBe(500);
   });
 
-  it('falls back to candidate fields when LLM returns malformed JSON', async () => {
+  it('throws when LLM returns malformed JSON (caller falls back to CREATE_NEW)', async () => {
+    // Phase 5.D: previously fell back to candidate verbatim, which silently
+    // wrote a near-duplicate. Now we throw so the caller can choose
+    // CREATE_NEW deliberately.
     const provider = fakeProvider(['not even close to JSON']);
     const m = new NoteMerger(provider);
-    const out = await m.merge(
-      { title: 'Old', content: 'Old fact', tags: ['old'] },
-      candidate,
-    );
-    expect(out.title).toBe(candidate.title);
-    expect(out.fact).toBe(candidate.fact);
-    // Tags still combined for the fallback path
-    expect(out.tags).toEqual(expect.arrayContaining(['old', 'new', 'jwt']));
+    await expect(
+      m.merge({ title: 'Old', content: 'Old fact', tags: ['old'] }, candidate),
+    ).rejects.toThrow(/malformed LLM output/);
   });
 
   it('canMerge respects per-session counter limit', () => {

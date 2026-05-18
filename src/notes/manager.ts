@@ -297,18 +297,31 @@ export class NotesManager {
           }
 
           if (onMatch === 'merge' && p.merger && existing) {
-            const merged = await p.merger.merge(
-              { title: existing.title, content: existing.content, tags: existing.tags },
-              candidate,
-            );
-            await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
-            const linked = await this.storage.setSharedToEntry(note.id, decision.entry_id);
-            if (!linked) {
-              throw new Error('Note already shared');
+            try {
+              const merged = await p.merger.merge(
+                { title: existing.title, content: existing.content, tags: existing.tags },
+                candidate,
+              );
+              await p.memoryManager.mergeIntoExisting(decision.entry_id, merged, evidence);
+              const linked = await this.storage.setSharedToEntry(note.id, decision.entry_id);
+              if (!linked) {
+                throw new Error('Note already shared');
+              }
+              return { action: 'merged', entryId: decision.entry_id };
+            } catch (err) {
+              // Merger throws (malformed LLM output) — fall through to
+              // CREATE_NEW below instead of silently writing a near-
+              // duplicate via the old candidate-fallback. The user gets a
+              // separate entry; recoverable by manual merge. The
+              // alternative (silent merge of candidate-as-is) destroyed
+              // the existing entry's nuance and was strictly worse.
+              logger.warn({ err, noteId: note.id, existingEntryId: decision.entry_id },
+                'Merge failed, falling back to CREATE_NEW for this share');
+              // Continue to the CREATE_NEW path below.
             }
-            return { action: 'merged', entryId: decision.entry_id };
           }
-          // onMatch='create_new' (or 'merge' without merger) → fall through to create.
+          // onMatch='create_new' (or 'merge' without merger / merger failed)
+          // → fall through to create.
         }
       }
     }
@@ -328,7 +341,36 @@ export class NotesManager {
       // Concurrent share won the race. Roll back our duplicate entry so the
       // user sees only one auto-entry per note. archive=true keeps the row
       // for forensics; flip to false if hard-delete is preferred.
-      await p.memoryManager.delete({ id: entryId, archive: true });
+      let rollbackFailed: unknown = null;
+      try {
+        const rollback = await p.memoryManager.delete({ id: entryId, archive: true });
+        if (typeof rollback === 'object' && rollback && 'conflict' in rollback) {
+          rollbackFailed = `version conflict (currentVersion=${(rollback as { currentVersion?: number }).currentVersion ?? '?'})`;
+        } else if (rollback === false) {
+          rollbackFailed = 'delete returned false (entry not found)';
+        }
+      } catch (err) {
+        // delete() can throw on storage errors. Surface the failure to the
+        // caller — leaving an orphan entry in place with no shared_to_entry
+        // link is the kind of inconsistency that ops needs to know about,
+        // not hide behind a generic "Note already shared" error.
+        rollbackFailed = err instanceof Error ? err.message : String(err);
+      }
+      if (rollbackFailed) {
+        // Full failure detail (including any storage error text) is in the
+        // logs, where it's visible to ops. The client gets a stable,
+        // sanitised message that includes the orphan ID (so the user can
+        // request manual cleanup) but no raw error strings (which could
+        // contain SQL fragments, internal paths, or transient stack
+        // traces that aren't useful to API consumers).
+        logger.error(
+          { noteId: note.id, orphanEntryId: entryId, rollbackError: rollbackFailed },
+          'share race-loss rollback failed; orphan entry remains in the DB',
+        );
+        throw new Error(
+          `Note already shared; orphan entry ${entryId} requires manual cleanup (see server logs).`,
+        );
+      }
       logger.warn(
         { noteId: note.id, orphanEntryId: entryId },
         'share lost race — archived duplicate entry',

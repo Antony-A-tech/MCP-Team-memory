@@ -1323,6 +1323,120 @@ select:focus {
   border-top: 1px solid var(--border-color);
 }
 
+/* App-modal — themed confirm/prompt/alert dialogs */
+/* (replaces native window.confirm/prompt/alert) */
+.app-modal .app-modal-content {
+  max-width: 480px;
+}
+
+.app-modal .app-modal-body {
+  padding: 24px 32px;
+}
+
+.app-modal-message {
+  margin: 0;
+  font-size: 15px;
+  line-height: 1.5;
+  color: var(--text-primary);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.app-modal .app-modal-prompt-input {
+  width: 100%;
+  margin-top: 12px;
+}
+
+/* Profile single-card view (v5) */
+.profile-container {
+  padding: 24px;
+}
+
+.profile-card {
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  border-radius: var(--radius-lg);
+  padding: 24px 28px;
+  max-width: 1000px;
+  margin: 0 auto;
+}
+
+.profile-card-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin-bottom: 8px;
+}
+
+.profile-card-title {
+  display: flex;
+  gap: 10px;
+  align-items: center;
+}
+
+.profile-card-title h2 {
+  font-size: 22px;
+  font-weight: 600;
+  margin: 0;
+}
+
+.profile-card-meta {
+  display: flex;
+  gap: 16px;
+  align-items: center;
+  margin-bottom: 18px;
+  color: var(--text-muted);
+  font-size: 13px;
+  flex-wrap: wrap;
+}
+
+.profile-card-body {
+  line-height: 1.6;
+  color: var(--text-primary);
+  font-size: 15px;
+}
+
+.profile-card-body h1, .profile-card-body h2, .profile-card-body h3 {
+  margin-top: 1.2em;
+  margin-bottom: 0.4em;
+}
+
+.profile-card-body p { margin: 0.6em 0; }
+
+.profile-card-body code {
+  background: var(--bg-tertiary);
+  padding: 2px 6px;
+  border-radius: var(--radius-sm);
+  font-size: 0.92em;
+}
+
+.profile-card-body pre {
+  background: var(--bg-tertiary);
+  padding: 14px 16px;
+  border-radius: var(--radius-sm);
+  overflow-x: auto;
+}
+
+.profile-card--editing #profile-content-input {
+  font-family: var(--mono-font, 'Consolas', 'Monaco', monospace);
+  font-size: 14px;
+  width: 100%;
+  resize: vertical;
+  min-height: 320px;
+}
+
+.profile-card .form-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 16px;
+}
+
+.profile-card .form-status {
+  margin-top: 12px;
+  font-size: 14px;
+}
+
 #entry-form {
   padding: 28px 32px;
 }
@@ -2334,6 +2448,91 @@ select:focus {
 .btn-delete:hover {
   background: var(--text-muted);
   color: var(--bg-primary);
+}
+
+/* Per-token project access (RBAC, migration 028) */
+.btn-access {
+  background: transparent;
+  padding: 4px 10px;
+  border-radius: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: all 0.2s;
+  border: 1px solid var(--accent, #3b82f6);
+  color: var(--accent, #3b82f6);
+}
+.btn-access:hover {
+  background: var(--accent, #3b82f6);
+  color: #fff;
+}
+
+.agent-access-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 2px 8px;
+  border-radius: 12px;
+  background: var(--bg-secondary);
+  border: 1px solid var(--border-color);
+  font-size: 12px;
+  color: var(--text-secondary);
+  cursor: pointer;
+}
+.agent-access-badge.none {
+  border-color: var(--red, #ef4444);
+  color: var(--red, #ef4444);
+}
+.agent-access-badge.full {
+  border-color: var(--green, #22c55e);
+  color: var(--green, #22c55e);
+}
+.agent-access-badge:hover {
+  background: var(--bg-hover);
+}
+
+.agent-access-toolbar {
+  display: flex;
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+.agent-access-list {
+  max-height: 340px;
+  overflow-y: auto;
+  border: 1px solid var(--border-color);
+  border-radius: 6px;
+  padding: 8px;
+  background: var(--bg-secondary);
+}
+
+.agent-access-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 6px;
+  border-radius: 4px;
+  cursor: pointer;
+  transition: background 0.15s;
+}
+.agent-access-row:hover {
+  background: var(--bg-hover);
+}
+.agent-access-row input[type="checkbox"] {
+  cursor: pointer;
+  flex-shrink: 0;
+}
+.agent-access-row-name {
+  flex: 1;
+  font-size: 14px;
+}
+.agent-access-row-desc {
+  font-size: 12px;
+  color: var(--text-muted);
+}
+.agent-access-empty {
+  text-align: center;
+  padding: 24px;
+  color: var(--text-muted);
 }
 
 .agent-row {

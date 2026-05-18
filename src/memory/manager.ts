@@ -2,7 +2,7 @@ import crypto from 'crypto';
 import { PgStorage } from '../storage/pg-storage.js';
 import { AuditLogger } from '../storage/audit.js';
 import { VersionManager } from '../storage/versioning.js';
-import { DEFAULT_PROJECT_ID } from './types.js';
+import { DEFAULT_PROJECT_ID, stripDecayInternals } from './types.js';
 import logger from '../logger.js';
 import { computeImportanceScore, uniqueAuthorsFromEvidence } from './importance.js';
 import { archiveSingletonAutoEntries } from './decay.js';
@@ -115,7 +115,14 @@ export class MemoryManager {
   private emit(type: WSEventType, payload: unknown): void {
     const event: WSEvent = {
       type,
-      payload,
+      // memory:* events broadcast over WS to client tabs / agents. Strip
+      // decay-internal fields (readCount, lastReadAt) so they don't leak
+      // through the WebSocket the same way Phase 4.I closed the REST leak.
+      // Other event types (agent:*, memory:sync) aren't entries, pass
+      // through untouched.
+      payload: (type === 'memory:created' || type === 'memory:updated')
+        ? stripDecayInternals(payload)
+        : payload,
       timestamp: new Date().toISOString()
     };
     this.listeners.forEach(listener => listener(event));
@@ -127,8 +134,14 @@ export class MemoryManager {
     return this.storage.createProject(params);
   }
 
-  async listProjects(): Promise<Project[]> {
-    return this.storage.listProjects();
+  /**
+   * List projects. When `filterByTokenId` is supplied, returns only the
+   * projects that token has access to via token_project_access (RBAC).
+   * Master tokens pass undefined and get the full list — they're
+   * cross-project by design.
+   */
+  async listProjects(filterByTokenId?: string): Promise<Project[]> {
+    return this.storage.listProjects(filterByTokenId);
   }
 
   async getProject(id: string): Promise<Project | undefined> {
@@ -808,11 +821,14 @@ export class MemoryManager {
     return null;
   }
 
-  async delete(params: DeleteParams): Promise<boolean> {
-    const { id, archive = true } = params;
+  async delete(params: DeleteParams): Promise<boolean | ConflictError> {
+    const { id, archive = true, expectedVersion } = params;
 
     if (archive) {
-      const archived = await this.storage.archive(id);
+      const archived = await this.storage.archive(id, expectedVersion);
+      if (archived && 'conflict' in archived) {
+        return archived;
+      }
       if (archived) {
         this.emit('memory:updated', archived);
         this.auditLogger?.log({
@@ -837,7 +853,9 @@ export class MemoryManager {
     const existing = await this.storage.getById(id);
     const deleted = await this.storage.delete(id);
     if (deleted) {
-      this.emit('memory:deleted', { id });
+      // projectId attached so WS layer can scope the delete event to clients
+      // connected to that project (see SyncWebSocketServer.broadcast filter).
+      this.emit('memory:deleted', { id, projectId: existing?.projectId });
       this.auditLogger?.log({
         entryId: id,
         projectId: existing?.projectId,
@@ -891,10 +909,10 @@ export class MemoryManager {
    * archive it first. Always pinned, always priority=high.
    *
    * Throws if content exceeds MAX_PROFILE_BYTES (64 KB UTF-8).
-   * The archive-then-write is two queries — concurrent setProfile calls
-   * may both archive the same existing row and race on the partial UNIQUE
-   * index; the loser gets a 23505. Caller should treat that as a conflict
-   * and retry. See profile-manager tests for the expected behaviour.
+   * Archive-then-write is atomic: a pg_advisory_xact_lock keyed on the
+   * project serialises concurrent setProfile calls so the partial UNIQUE
+   * idx_entries_one_active_profile is never violated. See
+   * setProfile-transaction.test.ts for the concurrency contract.
    */
   async setProfile(
     projectId: string,
@@ -908,20 +926,73 @@ export class MemoryManager {
         `profile content exceeds ${MemoryManager.MAX_PROFILE_BYTES} bytes (got ${byteLen})`,
       );
     }
-    const existing = await this.getProfile(projectId);
-    if (existing) {
-      await this.delete({ id: existing.id, archive: true });
-    }
-    return this.write({
+
+    // Single transaction: archive existing active profile (if any) and
+    // insert the new one atomically. Without the row lock two concurrent
+    // setProfile calls could both pass getProfile/delete and then race on
+    // the partial UNIQUE idx_entries_one_active_profile, producing a 23505
+    // for the loser.
+    const resolvedAuthor = author ?? 'claude-agent';
+    const { entry, archivedEntryId } = await this.storage.setProfileAtomic({
       projectId,
-      category: 'profile',
       title: 'Project Profile',
       content,
       tags,
+      author: resolvedAuthor,
       priority: 'high',
       pinned: true,
-      author,
     });
+
+    // Post-transaction side-effects (audit + events + embedding). These run
+    // outside the transaction so a slow embedding call never holds a row
+    // lock; ordering matches the previous write()/delete() behaviour.
+    if (archivedEntryId) {
+      this.emit('memory:updated', { ...entry, id: archivedEntryId, status: 'archived' });
+      this.auditLogger?.log({
+        entryId: archivedEntryId,
+        projectId,
+        action: 'archive',
+        actor: resolvedAuthor,
+        changes: { reason: 'profile-rotation' },
+      }).catch(err => logger.error({ err }, 'Audit log failed (setProfile archive)'));
+    }
+
+    try {
+      entry.importanceScore = await this.recomputeImportanceScore(entry.id);
+    } catch (err) {
+      logger.warn({ err, entryId: entry.id }, 'Importance score recompute failed on setProfile');
+    }
+
+    this.emit('memory:created', entry);
+    this.auditLogger?.log({
+      entryId: entry.id,
+      projectId,
+      action: 'create',
+      actor: resolvedAuthor,
+      changes: { title: entry.title, category: entry.category },
+    }).catch(err => logger.error({ err }, 'Audit log failed (setProfile create)'));
+
+    if (this.embeddingProvider?.isReady()) {
+      this.embeddingProvider
+        .embed(`${entry.title} ${entry.content}`, 'document')
+        .then(async (emb) => {
+          if (this.vectorStore) {
+            await this.vectorStore.upsert('entries', entry.id, emb, {
+              entry_id: entry.id,
+              project_id: entry.projectId,
+              category: entry.category,
+              domain: entry.domain ?? '',
+              status: entry.status,
+              tags: entry.tags,
+              author: entry.author,
+            });
+          }
+          await this.storage.saveEmbedding(entry.id, emb);
+        })
+        .catch(err => logger.error({ err, entryId: entry.id }, 'Embedding generation failed (setProfile)'));
+    }
+
+    return entry;
   }
 
   async pin(id: string, pinned: boolean = true): Promise<MemoryEntry | null> {

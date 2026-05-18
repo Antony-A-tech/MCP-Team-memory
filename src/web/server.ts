@@ -3,16 +3,43 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import type { MemoryManager } from '../memory/manager.js';
 import type { SyncWebSocketServer } from '../sync/websocket.js';
-import { PROJECT_ROLES } from '../memory/types.js';
+import { PROJECT_ROLES, stripDecayInternals } from '../memory/types.js';
 import type { MemoryEntry } from '../memory/types.js';
 import { ReadParamsSchema, WriteParamsSchema, UpdateParamsSchema, formatZodError } from '../memory/validation.js';
 import { exportEntries, type ExportFormat } from '../export/exporter.js';
 import type { AgentTokenStore } from '../auth/agent-tokens.js';
 import { buildAutoContext } from '../recall.js';
+import { enforceProjectScope } from '../middleware/project-scope.js';
 import logger from '../logger.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
+
+/**
+ * Build pg_dump invocation parameters without leaking the database password
+ * into argv. Password is passed via PGPASSWORD env var for the direct path;
+ * the docker path relies on local socket trust auth inside the container and
+ * intentionally does not propagate the credential (`-e PGPASSWORD=...` would
+ * still leak it to host `ps` output).
+ *
+ * Exported for testability.
+ */
+export function buildPgDumpInvocation(
+  dbUrl: string,
+  container: string,
+): { directArgs: string[]; dockerArgs: string[]; env: NodeJS.ProcessEnv } {
+  const url = new URL(dbUrl);
+  const dbName = decodeURIComponent(url.pathname.slice(1));
+  const dbUser = decodeURIComponent(url.username);
+  const dbPassword = url.password ? decodeURIComponent(url.password) : '';
+  const dbHost = url.hostname || 'localhost';
+  const dbPort = url.port || '5432';
+  return {
+    directArgs: ['-h', dbHost, '-p', dbPort, '-U', dbUser, '-d', dbName],
+    dockerArgs: ['exec', container, 'pg_dump', '-U', dbUser, '-d', dbName],
+    env: { ...process.env, PGPASSWORD: dbPassword },
+  };
+}
 
 export class WebServer {
   private app: Express | null = null;
@@ -61,9 +88,27 @@ export class WebServer {
 
     // === Projects API ===
 
-    app.get('/api/projects', async (_req: Request, res: Response) => {
+    app.get('/api/projects', async (req: Request, res: Response) => {
       try {
-        const projects = await this.memoryManager.listProjects();
+        // RBAC visibility:
+        //   - master tokens (admin scope): see every project
+        //   - agent tokens: see only projects in their token_project_access
+        //   - readonly viewers (allowReadonly + no token): see NOTHING.
+        //     Operator decision: personal projects must not leak to
+        //     anonymous browsers even when readonly mode is on. A future
+        //     `public: boolean` flag on projects could relax this.
+        const auth = (req as any).auth as
+          | { agentTokenId?: string; scopes?: string[] }
+          | undefined;
+        const isMaster = auth?.scopes?.includes('admin') ?? false;
+        const isReadonlyViewer = req.readOnly === true || auth?.scopes?.includes('readonly');
+        if (isReadonlyViewer && !isMaster && !auth?.agentTokenId) {
+          res.json({ success: true, projects: [] });
+          return;
+        }
+        const filterTokenId =
+          !isMaster && auth?.agentTokenId ? auth.agentTokenId : undefined;
+        const projects = await this.memoryManager.listProjects(filterTokenId);
         res.json({ success: true, projects });
       } catch (error) {
         logger.error({ err: error }, 'API error');
@@ -79,6 +124,32 @@ export class WebServer {
           return;
         }
         const project = await this.memoryManager.createProject({ name, description, domains });
+        // Auto-grant access to the creator's token (RBAC, migration 028).
+        // Agent-token holders get an "owned" project: they see it
+        // immediately, but no other agent does until master grants them.
+        // Master-token requests skip the grant — they bypass RBAC anyway
+        // and don't have an agent_tokens row to grant against.
+        const auth = (req as any).auth as
+          | { agentTokenId?: string; clientId?: string; scopes?: string[] }
+          | undefined;
+        const isMaster = auth?.scopes?.includes('admin') ?? false;
+        if (!isMaster && auth?.agentTokenId && this.agentTokenStore) {
+          try {
+            await this.agentTokenStore.grantProjectAccess(
+              auth.agentTokenId,
+              project.id,
+              auth.clientId ?? auth.agentTokenId,
+            );
+          } catch (grantErr) {
+            // Don't fail the whole POST if the grant write hiccups — the
+            // project exists, the operator can grant access from the
+            // Agents page. Just log loudly so the inconsistency is visible.
+            logger.error(
+              { err: grantErr, projectId: project.id, agentTokenId: auth.agentTokenId },
+              'Project created but auto-grant to creator failed',
+            );
+          }
+        }
         res.json({ success: true, project });
       } catch (error) {
         logger.error({ err: error }, 'API error');
@@ -257,6 +328,7 @@ export class WebServer {
         }
 
         const { project_id, category, domain, search, status, tags: parsedTags, limit, offset, pinned } = parsed.data;
+        if (!enforceProjectScope(req, res, project_id)) return;
         const entries = await this.memoryManager.read({
           projectId: project_id,
           category,
@@ -270,7 +342,11 @@ export class WebServer {
           mode: 'full',
         });
 
-        res.json({ success: true, entries, offset, limit, hasMore: entries.length === limit });
+        // Strip decay-scoring internals (readCount, lastReadAt) before
+        // exposing entries to clients. Shared helper — applied at every REST
+        // boundary AND inside MemoryManager.emit() for WS broadcasts (see
+        // src/memory/types.ts stripDecayInternals).
+        res.json({ success: true, entries: stripDecayInternals(entries), offset, limit, hasMore: entries.length === limit });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -315,10 +391,11 @@ export class WebServer {
         }
 
         const { project_id, ...writeData } = parsed.data;
+        if (!enforceProjectScope(req, res, project_id)) return;
         // Override author if agent token was used
         if (req.agentName) writeData.author = req.agentName;
         const entry = await this.memoryManager.write({ ...writeData, projectId: project_id });
-        res.json({ success: true, entry });
+        res.json({ success: true, entry: stripDecayInternals(entry) });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -340,7 +417,7 @@ export class WebServer {
           return;
         }
 
-        res.json({ success: true, entry: updated });
+        res.json({ success: true, entry: stripDecayInternals(updated) });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -353,8 +430,12 @@ export class WebServer {
         const { id } = req.params;
         const archive = req.query.archive !== 'false';
 
-        const success = await this.memoryManager.delete({ id, archive });
-        if (!success) {
+        const deleteResult = await this.memoryManager.delete({ id, archive });
+        if (typeof deleteResult === 'object' && deleteResult && 'conflict' in deleteResult) {
+          res.status(409).json({ success: false, error: deleteResult.message, conflict: true, currentVersion: deleteResult.currentVersion });
+          return;
+        }
+        if (!deleteResult) {
           res.status(404).json({ success: false, error: 'Entry not found' });
           return;
         }
@@ -378,7 +459,7 @@ export class WebServer {
           return;
         }
 
-        res.json({ success: true, entry: updated });
+        res.json({ success: true, entry: stripDecayInternals(updated) });
       } catch (error) {
         logger.error({ err: error }, 'API error');
         res.status(500).json({ success: false, error: 'Internal server error' });
@@ -394,6 +475,14 @@ export class WebServer {
           res.status(501).json({ success: false, error: 'Audit logging not enabled' });
           return;
         }
+        // Resolve the entry's projectId for scope check. Without this, an
+        // agent token bound to project A could supply any entry UUID and
+        // read full audit history (title/body/category/actor) for entries
+        // it has no project access to — exactly the leak class Phase 0.A
+        // closed for global audit, just at entry granularity.
+        const targetEntry = await this.memoryManager.getById(req.params.entryId);
+        if (!targetEntry) { res.status(404).json({ success: false, error: 'Entry not found' }); return; }
+        if (!enforceProjectScope(req, res, targetEntry.projectId)) return;
         const entries = await auditLogger.getByEntry(req.params.entryId);
         res.json({ success: true, audit: entries });
       } catch (error) {
@@ -409,13 +498,20 @@ export class WebServer {
           res.status(501).json({ success: false, error: 'Audit logging not enabled' });
           return;
         }
-        const projectId = req.query.project_id as string | undefined;
+        const queryProjectId = req.query.project_id as string | undefined;
+        const headerProjectId =
+          ((req as any).auth?.projectId as string | undefined) ??
+          (req.headers['x-project-id'] as string | undefined);
+        const projectId = queryProjectId || headerProjectId;
         const limit = req.query.limit ? Math.min(parseInt(req.query.limit as string, 10), 200) : 50;
 
-        const entries = projectId
-          ? await auditLogger.getByProject(projectId, limit)
-          : await auditLogger.getRecent(limit);
+        if (!projectId) {
+          res.status(400).json({ success: false, error: 'project_id is required (query or X-Project-Id header). Global audit log is not exposed for project isolation.' });
+          return;
+        }
+        if (!enforceProjectScope(req, res, projectId)) return;
 
+        const entries = await auditLogger.getByProject(projectId, limit);
         res.json({ success: true, audit: entries });
       } catch (error) {
         logger.error({ err: error }, 'API error');
@@ -432,6 +528,11 @@ export class WebServer {
           res.status(501).json({ success: false, error: 'Versioning not enabled' });
           return;
         }
+        // Scope check before exposing version history — same reasoning as
+        // the audit endpoint above.
+        const targetEntry = await this.memoryManager.getById(req.params.id);
+        if (!targetEntry) { res.status(404).json({ success: false, error: 'Entry not found' }); return; }
+        if (!enforceProjectScope(req, res, targetEntry.projectId)) return;
         const versions = await vm.getVersions(req.params.id);
         res.json({ success: true, versions });
       } catch (error) {
@@ -498,16 +599,18 @@ export class WebServer {
 
         const dbUrl = process.env.DATABASE_URL || 'postgresql://memory:memory@localhost:5432/team_memory';
         const container = process.env.PG_CONTAINER || 'team-memory-pg';
+        const { directArgs, dockerArgs, env: childEnv } = buildPgDumpInvocation(dbUrl, container);
         const fd = fs.openSync(backupFile, 'w');
         try {
           try {
             execFileSync('pg_dump', ['--version'], { stdio: 'pipe' });
-            execFileSync('pg_dump', [dbUrl], { stdio: ['pipe', fd, 'pipe'] });
+            execFileSync('pg_dump', directArgs, { stdio: ['pipe', fd, 'pipe'], env: childEnv });
           } catch {
-            // pg_dump not in PATH — use docker exec
-            const url = new URL(dbUrl);
-            execFileSync('docker', ['exec', container, 'pg_dump', '-U', url.username, url.pathname.slice(1)],
-              { stdio: ['pipe', fd, 'pipe'] });
+            // pg_dump not in PATH — use docker exec. Inside the container,
+            // pg_dump connects via local socket which defaults to trust auth
+            // on the official postgres image; no PGPASSWORD needed and we
+            // avoid leaking the credential into host argv via `-e`.
+            execFileSync('docker', dockerArgs, { stdio: ['pipe', fd, 'pipe'] });
           }
         } finally {
           fs.closeSync(fd);
@@ -643,6 +746,61 @@ export class WebServer {
         res.json({ success });
       } catch (error) {
         logger.error({ err: error }, 'API error');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    // === Per-token project access (RBAC, migration 028) ===
+    //
+    // Master-only endpoints — the agents page is admin UX. Agents can't
+    // grant themselves access to other projects; that would defeat the
+    // allowlist.
+    app.get('/api/agent-tokens/:id/projects', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const allowed = await this.agentTokenStore.getAllowedProjects(req.params.id);
+        res.json({ success: true, projects: allowed });
+      } catch (error) {
+        logger.error({ err: error }, 'GET /api/agent-tokens/:id/projects failed');
+        res.status(500).json({ success: false, error: 'Internal server error' });
+      }
+    });
+
+    app.put('/api/agent-tokens/:id/projects', async (req: Request, res: Response) => {
+      try {
+        if (!requireAdmin(req, res)) return;
+        if (!this.agentTokenStore) {
+          res.status(503).json({ success: false, error: 'Agent tokens not available' });
+          return;
+        }
+        const body = req.body as { projects?: unknown };
+        if (!Array.isArray(body?.projects)) {
+          res.status(400).json({ success: false, error: 'Body must be { projects: string[] }' });
+          return;
+        }
+        // Strict UUID check on every entry — protects against typos and
+        // injection-shaped values reaching the partial UNIQUE constraint.
+        const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+        for (const p of body.projects) {
+          if (typeof p !== 'string' || !UUID_RE.test(p)) {
+            res.status(400).json({ success: false, error: `Invalid project UUID: ${String(p).slice(0, 64)}` });
+            return;
+          }
+        }
+        const granter = (req as any).auth?.clientId as string | undefined;
+        await this.agentTokenStore.setAllowedProjects(req.params.id, body.projects as string[], granter);
+        const allowed = await this.agentTokenStore.getAllowedProjects(req.params.id);
+        res.json({ success: true, projects: allowed });
+      } catch (error: any) {
+        if (typeof error?.message === 'string' && error.message.includes('migration 028')) {
+          res.status(503).json({ success: false, error: error.message });
+          return;
+        }
+        logger.error({ err: error }, 'PUT /api/agent-tokens/:id/projects failed');
         res.status(500).json({ success: false, error: 'Internal server error' });
       }
     });

@@ -104,14 +104,18 @@ Output VALID JSON, no markdown:
           provider: this.provider.name,
           existingTitle: safeExistingTitle,
         },
-        'merger: malformed JSON, falling back to raw candidate',
+        'merger: malformed JSON — throwing, caller should treat candidate as CREATE_NEW',
       );
-      return {
-        title: candidate.title.slice(0, MAX_TITLE_CHARS),
-        fact: candidate.fact.slice(0, MAX_FACT_CHARS),
-        why: candidate.why.slice(0, MAX_WHY_CHARS),
-        tags: combineTags(existing.tags, candidate.tags, []),
-      };
+      // Previously we returned the raw candidate verbatim. That silently
+      // wrote a near-duplicate next to the existing entry (because the
+      // dedup pipeline had already chosen MERGE based on cosine similarity
+      // ≥ 0.70). Throwing surfaces the LLM failure so the caller can fall
+      // back to CREATE_NEW — a duplicate row is preferable to a corrupted
+      // merge that loses both entries' nuance. Include the raw snippet as
+      // a hint so triage doesn't require log diving for the original output.
+      const err = new Error('NoteMerger: malformed LLM output, merge aborted');
+      (err as Error & { rawSnippet?: string }).rawSnippet = raw.slice(0, 200);
+      throw err;
     }
 
     const fact = String(parsed.fact ?? candidate.fact).slice(0, MAX_FACT_CHARS);

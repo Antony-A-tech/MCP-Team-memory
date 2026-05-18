@@ -13,6 +13,7 @@
 
 import type { EmbeddingProvider } from '../embedding/provider.js';
 import type { VectorStore } from '../vector/vector-store.js';
+import logger from '../logger.js';
 import type { CandidateNote, DedupAction, DedupResult } from './types.js';
 
 export interface DedupConfig {
@@ -48,9 +49,23 @@ export class DedupResolver {
     // drops from 5 sequential round-trips to 1 embedBatch + 5 parallel
     // searches — meaningfully cheaper under bursty session imports.
     const texts = candidates.map(c => `${c.title}\n${c.fact}\n${c.why}`);
-    const vectors = this.embedding.embedBatch
-      ? await this.embedding.embedBatch(texts, 'document')
-      : await Promise.all(texts.map(t => this.embedding.embed(t, 'document')));
+    let vectors: number[][];
+    try {
+      vectors = this.embedding.embedBatch
+        ? await this.embedding.embedBatch(texts, 'document')
+        : await Promise.all(texts.map(t => this.embedding.embed(t, 'document')));
+    } catch (err) {
+      // If embedding fails for any candidate the batch is unusable. Don't
+      // fall back to zero vectors (they corrupt cosine similarity); instead
+      // skip dedup entirely and treat every candidate as CREATE_NEW. Worst
+      // case is a duplicate row, which is recoverable; corrupting the dedup
+      // graph is not. Logged at error level because the fallback creates
+      // entries that would otherwise have been merged — operators need to
+      // see this in alerting rather than as a routine warn.
+      logger.error({ err, candidateCount: candidates.length, projectId },
+        'Dedup embed failed — falling back to CREATE_NEW for all candidates');
+      return { decisions: candidates.map((c) => ({ type: 'CREATE_NEW', candidate: c })) };
+    }
 
     const matchesPerCandidate = await Promise.all(
       candidates.map((c, i) =>

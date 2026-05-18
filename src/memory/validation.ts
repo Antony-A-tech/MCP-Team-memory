@@ -62,6 +62,7 @@ export const UpdateParamsSchema = z.object({
 export const DeleteParamsSchema = z.object({
   id: UuidSchema,
   archive: z.boolean().default(true),
+  expectedVersion: z.number().int().min(0).optional(),
 });
 
 export const SyncParamsSchema = z.object({

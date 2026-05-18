@@ -100,6 +100,30 @@ export interface ProjectDomain {
   createdAt: string;
 }
 
+/**
+ * Strip decay-pipeline internals (readCount, lastReadAt) from a MemoryEntry-
+ * shaped payload before exposing it to a client (REST, WebSocket). These
+ * fields are best-effort signals used internally by the decay/importance
+ * computation and are not part of the public contract.
+ *
+ * Accepts arrays, single entries, or arbitrary shapes — anything without
+ * the fields passes through unchanged. Returns a shallow copy when stripping
+ * occurs; original input is never mutated.
+ */
+export function stripDecayInternals<T>(payload: T): T {
+  if (payload === null || payload === undefined) return payload;
+  if (Array.isArray(payload)) {
+    return payload.map((p) => stripDecayInternals(p)) as unknown as T;
+  }
+  if (typeof payload !== 'object') return payload;
+  const obj = payload as Record<string, unknown>;
+  if (!('readCount' in obj) && !('lastReadAt' in obj)) return payload;
+  const copy = { ...obj };
+  delete copy.readCount;
+  delete copy.lastReadAt;
+  return copy as unknown as T;
+}
+
 // Запись в памяти
 export interface MemoryEntry {
   id: string;
@@ -241,6 +265,14 @@ export interface ConflictError {
 export interface DeleteParams {
   id: string;
   archive?: boolean;
+  /**
+   * Optimistic-lock guard. When provided, archive=true delegates to
+   * archive(id, expectedVersion) which returns a ConflictError instead of
+   * silently succeeding if the entry was modified between the caller's
+   * read and the archive call. Ignored when archive=false (hard delete is
+   * unconditional).
+   */
+  expectedVersion?: number;
 }
 
 // Параметры синхронизации
