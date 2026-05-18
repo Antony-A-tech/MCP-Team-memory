@@ -2677,7 +2677,7 @@ select:focus {
 }
 
 /* === AI Chat === */
-.teammemory-brand {
+.chat-brand {
   font-weight: 300;
   background: linear-gradient(135deg, #4caf50 0%, #2e7d32 100%);
   -webkit-background-clip: text;
@@ -2685,7 +2685,7 @@ select:focus {
   background-clip: text;
 }
 
-.teammemory-chat {
+.chat-brand-suffix {
   font-weight: 400;
   color: var(--text-primary);
   margin-left: 2px;

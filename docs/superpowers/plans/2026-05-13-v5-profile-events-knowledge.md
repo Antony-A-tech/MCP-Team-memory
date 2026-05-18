@@ -8,7 +8,7 @@
 
 **Tech Stack:** Node.js 20, TypeScript 5.x, PostgreSQL 16 (с миграционным runner-ом в `src/storage/migrator.ts`), `pg` driver, `vitest` для тестов, `@modelcontextprotocol/sdk` для MCP, Express для REST. LLM-extractor использует Ollama (`OllamaProvider` в `src/embedding/ollama.ts`) и Gemini (для chat в RAG).
 
-**Source spec:** `C:\Users\a.nozhenko\.claude\plans\abstract-squishing-fern.md` — первый черновик, одобрен пользователем. Этот файл — детализация под subagent-driven execution.
+**Source spec:** локальный черновик плана (`~/.claude/plans/`), одобрен пользователем. Этот файл — детализация под subagent-driven execution.
 
 **Working directory:** `D:\MCP\team-memory-mcp` (this is the repo root for all paths below).
 
@@ -2798,7 +2798,7 @@ Expected: 025, 024, 023, 022, 021 в списке.
 3. **Existing memory_write callers** — если кто-то ещё шлёт `category='architecture'` напрямую через старый deprecated `memory_write`, после migration 022 это всё ещё работает (категория валидна в CHECK), но новый код не должен на это полагаться.
 4. **`web/` UI — known regression.** Web UI имеет вкладки «Architecture / Decisions / Conventions», которые фетчат записи по `category=<name>`. После migration 022 эти запросы вернут пустые списки (все записи теперь `category='knowledge'`). UI **сломается визуально** — три вкладки покажут «нет записей». Mitigation на короткое время: либо (a) deploy v5 со follow-up UI-PR одновременно (фильтр по `category='knowledge' AND tag = X`), либо (b) принять регрессию и сразу после merge выпустить hotfix UI-PR. **Web UI обновление — отдельный план**, ссылка добавится сюда после ревью.
 5. **Backward compat для MCP-клиентов которые ожидают category в ответах** — старые tools могут возвращать `category='knowledge'` в ответах вместо ожидаемого `architecture`. Mitigation: клиент должен парсить теги; либо добавить compat-shim в `memory_read` (если `tag='architecture'` → response `category='architecture'`).
-6. **DEFAULT_PROJECT_ID (00000000-…)** — это Project 2.0. Если backfill для него запустить, разрушит ту команду. Решение: backfill вручную, по проекту, с подтверждением.
+6. **DEFAULT_PROJECT_ID (00000000-…)** — это проект по умолчанию с реальными данными. Если backfill для него запустить, разрушит ту команду. Решение: backfill вручную, по проекту, с подтверждением.
 7. **Partial migration crash safety.** Migrator (`src/storage/migrator.ts`) пробегает миграции по одной в собственной транзакции. Если 021 commit-ит, а 022 падает (OOM, lock-conflict), DB остаётся в промежуточном состоянии: `'profile'` валидный, но `'knowledge'` нет, и архив-тег ещё не записан. **Безопасно для re-run** (migrator повторно прогонит pending). НО: v5 server-код после Milestone 3 **assume** что миграции 021-024 все применились. Deploy ordering: **сначала** migrations done, **потом** restart server в новом коде. В Task 4.1 Step 2 это явно прописано.
 
 ---

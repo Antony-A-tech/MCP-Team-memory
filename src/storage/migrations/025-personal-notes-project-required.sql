@@ -8,10 +8,10 @@
 -- can re-introduce orphans.
 --
 -- Backfill: every existing orphaned row is bound to the DEFAULT_PROJECT_ID
--- (Project 2.0, '00000000-0000-0000-0000-000000000000'). Admins can
--- re-bind any individual note via note_update after the migration if the
--- default is wrong for their case — we never had a non-default fallback
--- anyway, so the choice is information-preserving.
+-- ('00000000-0000-0000-0000-000000000000'). Admins can re-bind any individual
+-- note via note_update after the migration if the default is wrong for their
+-- case — we never had a non-default fallback anyway, so the choice is
+-- information-preserving.
 
 UPDATE personal_notes
 SET project_id = '00000000-0000-0000-0000-000000000000'

@@ -2,8 +2,8 @@
 
 > **Status:** research only. Not a plan. Inputs for a future brainstorming + planning session.
 > **Date:** 2026-05-14
-> **Target:** integrate team-memory-mcp (`D:\MCP\team-memory-mcp`) with on-prem Azure DevOps Server 2025 H2 at `https://tfs.example.com/DefaultCollection`.
-> **Author context:** v5 memory model is live (`profile` + `knowledge` + `project_events` per `2026-05-13-v5-profile-events-knowledge.md`). Migrations 021–024 applied. `EventsManager.add` exists. PAT auth + on-prem TFS pattern is already battle-tested by `@tiberriver256/mcp-server-azure-devops` in `d:/Project2.0`.
+> **Target:** integrate team-memory-mcp with an on-prem Azure DevOps Server 2025 H2 at `https://tfs.example.com/DefaultCollection`.
+> **Author context:** v5 memory model is live (`profile` + `knowledge` + `project_events` per `2026-05-13-v5-profile-events-knowledge.md`). Migrations 021–024 applied. `EventsManager.add` exists. PAT auth + on-prem TFS pattern is already battle-tested by `@tiberriver256/mcp-server-azure-devops`.
 
 ---
 
@@ -45,7 +45,7 @@ The v5 model has three native layers (Profile, Knowledge, project_events) and on
 - **API:** `POST {tfs}/_apis/hooks/subscriptions?api-version=7.1` with `consumerId=webHooks`, `consumerActionId=httpRequest`, `publisherInputs.eventType=git.pullrequest.merged` (etc.), `consumerInputs.url=https://team-memory.example.com/api/azure-webhook`.
 - **Pros:** Real-time. Lowest latency. Native event filtering at source (per-pipeline, per-repo, per-build-result). Doesn't burn TSTU on the team-memory side.
 - **Cons:**
-  - **On-prem TFS is firewalled.** `https://tfs.example.com` likely cannot reach a public team-memory endpoint without a tunnel (Cloudflare Tunnel, ngrok, or a reverse proxy on the intranet). If team-memory is co-located on example.com intranet, this is moot.
+  - **On-prem TFS is firewalled.** An on-prem TFS host likely cannot reach a public team-memory endpoint without a tunnel (Cloudflare Tunnel, ngrok, or a reverse proxy on the intranet). If team-memory is co-located on the same intranet, this is moot.
   - **No HMAC signature on webhook bodies.** Azure DevOps service hooks do NOT sign payloads. The only auth on the receiving side is HTTP Basic (PAT or shared secret in `consumerInputs.basicAuthUsername` / `basicAuthPassword`). Required mitigation: TLS + basic auth + IP allowlist of the TFS server.
   - **Subscription management overhead.** One subscription per event type per project. Lifecycle (create/update/delete on project rotation) must be scripted.
   - **At-least-once delivery.** Webhook may retry. Need idempotency keys — use `payload.id` (event GUID) and `payload.resource.pullRequestId` / `payload.resource.id` to dedupe in `project_events.refs.azure_event_id`.
@@ -64,7 +64,7 @@ The v5 model has three native layers (Profile, Knowledge, project_events) and on
 - Wrap Azure REST as MCP tools (`work_item_get`, `pr_list`, `pipeline_status`, `wiki_search`). Agent dereferences on demand. No team-memory state.
 - **Pros:** Zero sync. Fresh data per call. No public endpoint. Lowest schema impact.
 - **Cons:**
-  - **Heavy overlap with existing `@tiberriver256/mcp-server-azure-devops`** already configured in `d:/Project2.0`. Re-implementing the same tool surface in team-memory creates two MCP servers competing for the same purpose. Scope creep.
+  - **Heavy overlap with the existing `@tiberriver256/mcp-server-azure-devops`** MCP server. Re-implementing the same tool surface in team-memory creates two MCP servers competing for the same purpose. Scope creep.
   - **No persistence** ⇒ no contribution to onboard digest, no timeline, no events.
   - **Per-call latency** in agent loops.
 
@@ -87,7 +87,7 @@ Recommendation: **Pattern D**. Reuse existing MCP server for read-on-demand. Add
 | `EventRefs` interface | `src/events/types.ts:7-14` | Already permissive (`[key: string]: unknown`). Pre-declared keys: `pr_number`, `commit_sha`, `version_tag`, `deployment_url`, `incident_id`. Add (no schema change): `azure_event_id`, `pipeline_id`, `definition_id`, `iteration_path`, `repo_name`. |
 | `entries.external_refs` JSONB | migration 018, `src/storage/migrations/018-auto-notes.sql:12` + GIN index | For knowledge entries derived from Wiki: put `azure_wiki_page_id`, `azure_wiki_url`, `last_updated_in_azure`. Already indexed (GIN), queryable. |
 | `evidence_sources JSONB` | migration 018 + `EvidenceSource` type | For each auto-extracted knowledge entry derived from a Wiki page, emit one evidence source `{type: 'azure_wiki', page_id, url, revision}`. |
-| `Profile.external_refs` | (profile uses same `entries.external_refs` per migration 021) | Bind project to Azure: `external_refs.azure_project_url = "https://tfs.example.com/DefaultCollection/Project"`, `external_refs.azure_default_branch = "main"`. Onboard text uses these to print clickable links. |
+| `Profile.external_refs` | (profile uses same `entries.external_refs` per migration 021) | Bind project to Azure: `external_refs.azure_project_url = "https://tfs.example.com/DefaultCollection/YourProject"`, `external_refs.azure_default_branch = "main"`. Onboard text uses these to print clickable links. |
 | `personal_notes` table | migration 012 + `note_share` flow | Wiki pages auto-imported land here as drafts per agent. User reviews + calls `note_share` to promote to `knowledge`. Matches v4.5 manual-share UX. |
 | Auth/agent-tokens | `src/auth/agent-tokens.ts` | Agent token can carry an `azure_unique_name` (email) attribute later for actor resolution. No schema change needed if we put it in a new mapping table. |
 | Migration runner | `src/storage/migrator.ts` | Auto-picks new `NNN-name.sql`. No bootstrap work. |
@@ -183,7 +183,7 @@ PAT scope strings come from the Azure DevOps PAT scope reference; an admin gener
 3. `POST /api/projects/:id/azure/link` — admin links a project (provides PAT, base URL, project name). Saves encrypted.
 4. `POST /api/azure-webhook` — basic-auth-protected. Handles ONE event type: `git.pullrequest.merged`. Writes `project_events` row, `eventType=merge`.
 5. Programmatic creation of the one subscription on link.
-6. End-to-end smoke: merge a PR in Project on `tfs.example.com` → see event in team-memory timeline within 30s.
+6. End-to-end smoke: merge a PR in a project on the TFS server → see event in team-memory timeline within 30s.
 
 **Why this MVP?** Single event, one auth path, no polling, no Wiki, no PAT rotation. Validates the entire pipeline: network reachability, schema, idempotency, subscription provisioning.
 
@@ -219,9 +219,9 @@ PAT scope strings come from the Azure DevOps PAT scope reference; an admin gener
 
 These are decisions the user must make before a plan can be written. **Do not assume answers; collect them.**
 
-1. **Network reachability.** Where will team-memory be hosted? Same intranet as `tfs.example.com` (webhooks viable) or external (need tunnel / fall back to polling)?
-2. **Cardinality.** One team-memory project ↔ one Azure project? Or many-to-many (e.g., Project has 3 sub-products that should aggregate into one team-memory project)?
-3. **Webhook vs polling preference** for an on-prem TFS where firewall traversal is sometimes painful. Operations would prefer polling; latency would prefer webhooks. What's the network reality at example.com?
+1. **Network reachability.** Where will team-memory be hosted? Same intranet as the TFS server (webhooks viable) or external (need tunnel / fall back to polling)?
+2. **Cardinality.** One team-memory project ↔ one Azure project? Or many-to-many (e.g., one product with 3 sub-products that should aggregate into one team-memory project)?
+3. **Webhook vs polling preference** for an on-prem TFS where firewall traversal is sometimes painful. Operations would prefer polling; latency would prefer webhooks. What's the network reality on the target intranet?
 4. **Wiki sync direction.** Wiki is read-only source from Azure (one-way push to team-memory)? Or do we ever write summaries *back* to Azure Wiki (e.g., "onboarding doc auto-generated by team-memory")?
 5. **Legacy backfill.** On first link, do we want to backfill the last 30/90 days of merge/deploy/release events, or strictly forward-only? Backfill is rate-limit-expensive.
 6. **Incident triggers.** Which counts as `incident`?

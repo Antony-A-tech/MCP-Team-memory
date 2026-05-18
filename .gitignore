@@ -9,8 +9,13 @@ dist/
 .env.local
 .env.*.local
 
-# Data & Backups (optional - remove if you want to track)
+# Data & Backups — never commit real memory data (contains private project info)
 data/backups/
+data/memory.db
+data/memory.db-shm
+data/memory.db-wal
+data/memory.json
+data/memory.json.migrated
 
 # Logs
 *.log

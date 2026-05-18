@@ -48,7 +48,7 @@
     "ai-agents",
     "postgresql"
   ],
-  "author": "Project Team",
+  "author": "Antony Nozhenko",
   "license": "MIT",
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.0.0",

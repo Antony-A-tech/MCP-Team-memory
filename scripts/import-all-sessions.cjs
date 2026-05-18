@@ -19,14 +19,14 @@ const args = process.argv.slice(2);
 const DRY_RUN = args.includes('--dry-run');
 const FILTER_PROJECT = args.find((a, i) => args[i - 1] === '--project');
 
-// Project directory → cwd mapping (for .mcp.json resolution)
+// Project directory → cwd mapping (for .mcp.json resolution).
+// Claude Code stores sessions under ~/.claude/projects/<slug>, where <slug>
+// is the working directory with path separators replaced by '-'. Decoding a
+// slug back to a real path is ambiguous, so list the projects you want to
+// import explicitly. Sessions whose slug is not listed here are skipped.
+// Example: { 'my--project-slug': '/abs/path/to/project' }
 const PROJECT_CWD_MAP = {
-  'd--MCP': 'd:/MCP',
-  'D--MCP-team-memory-mcp': 'd:/MCP/team-memory-mcp',
-  'd--Project2-0': 'd:/Project2.0',
-  'D--Project-2-0': 'd:/Project2.0',
-  'D--Chess-site': 'd:/Chess-site',
-  'C--Users-a-nozhenko': 'C:/Users/a.nozhenko',
+  // Add your own project slug → cwd entries here.
 };
 
 // === Main ===

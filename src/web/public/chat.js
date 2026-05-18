@@ -578,8 +578,8 @@
 
     const pageTitle = document.getElementById('page-title');
     if (pageTitle) pageTitle.innerHTML =
-      '<span class="teammemory-brand">Team Memory</span> ' +
-      '<span class="teammemory-chat">AIChat</span>';
+      '<span class="chat-brand">Team Memory</span> ' +
+      '<span class="chat-brand-suffix">AIChat</span>';
 
     document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
     const chatBtn = document.getElementById('btn-ai-chat');
